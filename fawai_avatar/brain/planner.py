@@ -141,6 +141,10 @@ def _system_prompt(
 - observe_kinds 必须从观察候选选；查代码/改产品优先 obs_fs 或 none。
 - 遵守历史中的【执行反省】/【步骤重复】constraints。
 - 最终给用户的话写在 success/failed 的 thought；勿贴原始 stdout。
+- 查找落点/账号优先 lore 与 fs_read（含 FAWAI_READ_ROOTS 绝对路径，默认整盘只读）；禁止开场 `grep -r ~`；勿用 shell cat/cp 绕过 fs。
+- 升级/同步远端：读配置取 host/port 后优先 `fawai_shovels/shell/rsync-ssh-deploy.sh` 或 `ssh-run-with-pass.sh`（口令仅 env）；可在 work_root 临时写脚本再跑；禁止无口令 BatchMode ssh 空探针当主路径。
+- 用户说不在电脑边/远程操作：禁止要求粘贴文件或拷进工作区；读不到则 failed 并在 thought 给出可复制命令。
+- 压缩观察须 fs_read 落盘全文再总结；问询收尾禁过程元叙述与过薄盘点。
 - 默认尽最大努力；仅猜错代价高（不可逆写删/提交/外发/花钱/互斥路线）才 status=need_input；有选项须带 options≥2，勿改开放长答。
 {coding_extra}{image_extra}{gui_rule}格式：
 {{"thought":"≤40字","title":"≤16字","status":"continue|success|failed|need_input","done":false,"observe_kinds":["obs_fs"],"doc_refs":[],"architecture_skip_reason":"","options":[{{"id":"a","label":"选项A"}}],"actions":[{{"kind":"{kinds}","args":{{}},"needs_foreground":false,"write_resources":[]}}]}}
@@ -159,7 +163,7 @@ def _system_prompt(
 - fs_write/fs_replace/fs_patch：args.path + 相应字段；write_resources 必须列路径；replace/patch 的 old 必须与文件原文完全一致（先定向 fs_read）。
 - **定位文件（高带宽）**：开场优先 `explore_search` 或 `fs_grep`（**必须**带有意义的 pattern，推荐 context_before/after），再 `fs_glob`/`code_symbols`。`fs_glob` 支持 `**` 与 `{{html,js}}`。禁止无 pattern/无 offset 的整文件盲 `fs_read` 当定位手段。若连续空结果或需要目录树概览，再用 shell（`ls`/`find`），并遵守上方平台命令口径（macOS 勿用 `find -printf`）。
 - code_symbols / code_map / explore_search：改代码前先定位（多语言符号索引；explore 每条 query 自动 grep+symbols）；fs_grep 参数名是 **pattern**（不要写 query）；可带 context_before/after。索引可疑时用 code_index_refresh。
-- fs_read：args.path 必填；按行定向读用 **offset**（1-based 起始行）+ **limit**；也兼容 start_line/end_line。已有 path:line 时只准小窗核对，禁止整段重读。
+- fs_read：args.path 必填；按行定向读用 **offset**（1-based 起始行）+ **limit**；也兼容 start_line/end_line；文件头省略 offset 或写 1（勿依赖 0）。已有 path:line 时只准小窗核对，禁止整段重读。
 - fs_grep / explore_search 命中只在工具结果观察里；禁止臆造 `grep_result_*.txt` 再 fs_read_many。hits 已压缩或命中过宽时：收窄 pattern / 按行号读，禁止同范围再宽搜。
 - 收到【定位预算】或【宽检索降质】时必须改写或收窄，不得继续同 path 空转确认。
 - skill_write：args 含 id/title/when_to_use/steps（及可选 tags/source）；skill_search 用 args.query。
@@ -171,8 +175,10 @@ def _system_prompt(
 - 执行结果会在下一轮以「执行结果（工具结果观察）」返回；若上一轮失败，会先有【执行反省】裁决（retry/alternate/abort）。
 - 收到【执行反省】/【步骤重复】时必须遵守其 constraints；禁止无视裁决原样重试同一指纹动作；alternate 须换工具或换命令结构；无法换道则 status=failed。不得把「按 grep 行号附近定向 fs_read」当成盲目无效。
 - **面向用户的最终回答写在 success/failed 那一轮的 thought 里**（会话层会把该 thought 发给用户）；禁止把原始 stdout/top 全文当作结论；禁止在 thought 里写明文口令。
-- **问询/状态/查找/配置盘点收尾**：thought 须直接写出可验收事实（状态、数字、是否完成、边界、来源路径）；禁止只写「已获取/已汇总/已找到并结束」等过程元叙述。查硬件/配置时用短结论 + 分项列表或表，覆盖证据里已有的 GPU/CPU/内存/磁盘/系统/路径等维度，禁止只报一两项交差；工具输出被压缩时须先 fs_read observe 落盘全文再总结。材料不足则 failed 或 need_input，说明缺什么。
-- **执行中澄清**：默认尽最大努力完成；可查可推断的不要问。仅当继续猜会有明显坏结果（不可逆写/删、提交、外发、花钱、互斥执行路线必选一）时用 status=need_input；thought 为给用户的问句；done=false；actions 必须为空数组。若已有明确互斥选项，必须填 options（≥2 的 id+label），引导用户选一项，禁止改成开放式「请描述」。低风险缺省可合理假设并继续。
+- **问询/状态/查找/配置盘点收尾**：thought 须直接写出可验收事实（状态、数字、是否完成、边界、来源路径）；禁止只写「已获取/已汇总/已找到并结束」等过程元叙述。查硬件/配置时用短结论 + 分项列表或表，覆盖证据里已有的 GPU/CPU/内存/磁盘/系统/路径等维度，禁止只报一两项交差；工具输出被压缩时须先 fs_read observe 落盘全文（优先相对 path）再总结，禁止 shell cat 代替。材料不足则 failed 或 need_input，说明缺什么。
+- **查找账号/地址/配置落点**：优先 lore_search / 规则已点名文档，再用 fs_read 绝对路径（FAWAI_READ_ROOTS 默认 `/`）；禁止开场对整个家目录 `grep -r ~`。禁止 shell cat/cp 绕过 fs。远端可用 shell ssh / rsync 部署 shovel（凭据从已授权可读文件取进 env，勿把明文口令写进 thought）。
+- **升级/部署到远端**：定位部署说明与 SSH 落点后，优先在 work_root 调用已有 `rsync-ssh-deploy.sh` / `ssh-run-with-pass.sh`，或临时 `fs_write` 脚本再 shell 执行；禁止只做 BatchMode 公钥探针就 abort。
+- **执行中澄清**：默认尽最大努力完成；可查可推断的不要问。用户表示远程/不在电脑边时，禁止 options 要求「粘贴配置/拷进工作区」。仅当继续猜会有明显坏结果（不可逆写/删、提交、外发、花钱、互斥执行路线必选一）时用 status=need_input；thought 为给用户的问句；done=false；actions 必须为空数组。若已有明确互斥选项，必须填 options（≥2 的 id+label），引导用户选一项，禁止改成开放式「请描述」。低风险缺省可合理假设并继续。
 格式：
 {{"thought":"简短推理或给用户的结论","title":"≤16字主题短名","status":"continue|success|failed|need_input","done":false,"observe_kinds":["obs_fs"],"doc_refs":["doc/功能/控制/说明.md"],"architecture_skip_reason":"","options":[{{"id":"a","label":"选项A"}}],"actions":[{{"kind":"{kinds}","args":{{}},"needs_foreground":false,"write_resources":[]}}]}}
 - status 为 success 或 failed 时通常 done 为 true；continue / need_input 时 done 为 false。

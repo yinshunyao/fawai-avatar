@@ -183,6 +183,21 @@ class Controller:
                 message="shell requires args.cmd（或 command / argv）",
                 data={"args": dict(action.args)},
             )
+        from fawai_avatar.control.shell_guard import shell_local_fs_bypass_error
+
+        cfg = RuntimeConfig.from_env()
+        cmd_text = cmd if isinstance(cmd, str) else " ".join(str(x) for x in cmd)
+        bypass = shell_local_fs_bypass_error(
+            cmd_text,
+            work_root=cfg.work_root,
+            read_roots=list(cfg.read_roots),
+        )
+        if bypass:
+            return ExecResult(
+                ok=False,
+                message=bypass,
+                data={"cmd": cmd_text, "blocked": "shell_local_fs_bypass"},
+            )
         cwd = action.args.get("cwd")
         proc = subprocess.run(
             cmd if isinstance(cmd, list) else str(cmd),
@@ -194,7 +209,6 @@ class Controller:
         ok = proc.returncode == 0
         out = (proc.stdout or "").strip()
         err = (proc.stderr or "").strip()
-        cmd_text = cmd if isinstance(cmd, str) else " ".join(str(x) for x in cmd)
         if ok:
             message = out or f"exit {proc.returncode}"
         else:

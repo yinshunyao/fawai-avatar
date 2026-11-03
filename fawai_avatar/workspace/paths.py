@@ -18,6 +18,7 @@ _EVOLUTION_FORBID_EXACT: frozenset[str] = frozenset(
         "fawai_avatar/runtime/releases.py",
         "fawai_avatar/runtime/keeper.py",
         "fawai_avatar/runtime/code_watch.py",
+        "fawai_avatar/runtime/reload_gate.py",
         "fawai_avatar/runtime/port_guard.py",
         "fawai_avatar/workspace/paths.py",
     }
@@ -36,6 +37,41 @@ def normalize_work_root(work_root: str | Path) -> Path:
     return root
 
 
+def parse_read_roots(raw: str | None, *, default: str = "/") -> list[Path]:
+    """解析 FAWAI_READ_ROOTS：冒号/分号分隔；空或缺省 → default（默认根目录 `/`）。
+
+    特殊值 ``work`` / ``.`` 表示不另开只读根（仅 work_root）。
+    """
+    text = (raw if raw is not None else default).strip()
+    if not text or text.lower() in {"work", ".", "work_root"}:
+        return []
+    out: list[Path] = []
+    for part in text.replace(";", ":").split(":"):
+        item = part.strip()
+        if not item:
+            continue
+        if item.lower() in {"work", ".", "work_root"}:
+            continue
+        try:
+            p = Path(item).expanduser().resolve()
+        except OSError:
+            continue
+        if p not in out:
+            out.append(p)
+    return out
+
+
+def path_under_any(path: Path, roots: list[Path]) -> bool:
+    resolved = path.resolve()
+    for root in roots:
+        try:
+            resolved.relative_to(root.resolve())
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 def resolve_under_root(work_root: Path, user_path: str) -> Path:
     """Resolve user_path relative to work_root; reject escape."""
     root = work_root.resolve()
@@ -50,6 +86,41 @@ def resolve_under_root(work_root: Path, user_path: str) -> Path:
     except ValueError as exc:
         raise WorkspacePathError(f"path escapes work root: {user_path}") from exc
     return candidate
+
+
+def resolve_for_read(
+    work_root: Path,
+    user_path: str,
+    *,
+    read_roots: list[Path] | None = None,
+) -> Path:
+    """读路径：相对路径仍相对 work_root；绝对/~ 路径须落在 work_root 或 FAWAI_READ_ROOTS。"""
+    roots = list(read_roots or [])
+    raw = (user_path or ".").strip().replace("\\", "/")
+    while raw.startswith("./"):
+        raw = raw[2:]
+    expanded = Path(raw).expanduser()
+    if expanded.is_absolute() or raw.startswith("~"):
+        candidate = expanded.resolve()
+        if path_under_any(candidate, [work_root.resolve(), *roots]):
+            return candidate
+        raise WorkspacePathError(
+            f"path escapes work root and read roots: {user_path}"
+        )
+    try:
+        return resolve_under_root(work_root, raw)
+    except WorkspacePathError:
+        # 相对路径只认 work_root，避免歧义挂到只读根
+        raise
+
+
+def display_path(path: Path, work_root: Path) -> str:
+    """优先返回 work_root 相对路径；否则绝对 posix。"""
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(work_root.resolve()).as_posix()
+    except ValueError:
+        return resolved.as_posix()
 
 
 def rel_posix(path: Path, work_root: Path) -> str:

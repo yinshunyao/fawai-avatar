@@ -254,41 +254,100 @@ def ensure_gui_permissions() -> tuple[bool, str]:
     )
 
 
+def full_disk_access_likely() -> bool:
+    """尽力探测「完全磁盘访问」：可读家目录外受保护路径之一则视为已授权。"""
+    if not is_macos():
+        return True
+    probes = [
+        Path.home() / "Library" / "Mail",
+        Path.home() / "Library" / "Safari",
+        Path("/Library/Application Support"),
+    ]
+    for p in probes:
+        try:
+            if p.exists():
+                next(p.iterdir(), None)
+                return True
+        except PermissionError:
+            continue
+        except OSError:
+            continue
+    # 探针都不存在时无法断定；默认不拦启动
+    return True
+
+
+def prompt_full_disk_access(*, force_dialog: bool = True) -> bool:
+    """引导打开「完全磁盘访问」；macOS 无程序化授权 API，只能开设置页。"""
+    if not is_macos():
+        return True
+    if full_disk_access_likely():
+        return True
+    if not force_dialog or (_startup_done and not _allow_runtime_dialogs):
+        return False
+    _osascript(
+        'display dialog "fawai-avatar 默认可只读整盘（FAWAI_READ_ROOTS=/）。'
+        '请在系统设置中为运行本程序的终端 / Cursor / Python 开启「完全磁盘访问」，'
+        '否则部分配置目录读不到。" '
+        'buttons {"打开设置", "稍后"} default button 1 with title "需要完全磁盘访问"'
+    )
+    _open_privacy_pane("Privacy_AllFiles")
+    return full_disk_access_likely()
+
+
 @dataclass(frozen=True)
 class PermissionReport:
     accessibility: bool
     screen_recording: bool
     prompted: bool
+    full_disk_access: bool = True
+    read_roots: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "accessibility": self.accessibility,
             "screen_recording": self.screen_recording,
             "prompted": self.prompted,
+            "full_disk_access": self.full_disk_access,
+            "read_roots": list(self.read_roots),
         }
 
     def summary_line(self) -> str:
         ax = "已授权" if self.accessibility else "未授权"
         sc = "已授权" if self.screen_recording else "未授权"
-        return f"辅助功能={ax}  屏幕录制={sc}"
+        fda = "已授权/可用" if self.full_disk_access else "可能未授权"
+        roots = ":".join(self.read_roots) if self.read_roots else "(仅 work_root)"
+        return f"辅助功能={ax}  屏幕录制={sc}  完全磁盘={fda}  只读根={roots}"
 
 
 def ensure_startup_permissions(
     *,
     accessibility: bool = True,
     screen_recording: bool = True,
+    full_disk_access: bool = True,
     force: bool = False,
 ) -> PermissionReport:
     """进程启动时调用：一次性请求相关权限，避免任务中反复弹窗。
 
     同一进程默认只执行一次（``force=True`` 可再请求）。
+    当 FAWAI_READ_ROOTS 默认含 ``/`` 时，会引导「完全磁盘访问」。
     """
     global _startup_done, _allow_runtime_dialogs
+
+    from fawai_avatar.config import RuntimeConfig
+
+    cfg = RuntimeConfig.from_env()
+    roots = tuple(cfg.read_roots)
 
     if not is_macos():
         _startup_done = True
         _allow_runtime_dialogs = False
-        return PermissionReport(accessibility=True, screen_recording=True, prompted=False)
+        return PermissionReport(
+            accessibility=True,
+            screen_recording=True,
+            prompted=False,
+            full_disk_access=True,
+            read_roots=roots,
+        )
 
     if _startup_done and not force:
         clear_permission_cache()
@@ -296,6 +355,8 @@ def ensure_startup_permissions(
             accessibility=accessibility_trusted(),
             screen_recording=screen_recording_granted(),
             prompted=False,
+            full_disk_access=full_disk_access_likely(),
+            read_roots=roots,
         )
 
     prompted = False
@@ -311,6 +372,14 @@ def ensure_startup_permissions(
         prompted = True
         clear_permission_cache()
 
+    want_fda = full_disk_access and any(
+        str(r) in {"/", "/System", "/Volumes"} or str(r).startswith("/")
+        for r in roots
+    )
+    if want_fda and not full_disk_access_likely():
+        prompt_full_disk_access(force_dialog=True)
+        prompted = True
+
     _startup_done = True
     # 启动已引导过：任务内不再弹自定义对话框（仍可读状态拒绝动作）
     _allow_runtime_dialogs = False
@@ -319,4 +388,6 @@ def ensure_startup_permissions(
         accessibility=accessibility_trusted(),
         screen_recording=screen_recording_granted(),
         prompted=prompted,
+        full_disk_access=full_disk_access_likely(),
+        read_roots=roots,
     )

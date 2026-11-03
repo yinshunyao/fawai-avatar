@@ -534,7 +534,28 @@ def case_d6_path_and_secret(work: Path, data: Path) -> dict[str, Any]:
                 blob += p.read_text(encoding="utf-8", errors="ignore")
     if "super-secret-eval" in blob:
         return _fail("D6-path-secret", "secret leaked into version store")
-    return _pass("D6-path-secret", {"snapshot_files": files, "escape_msg": esc.message})
+
+    # 只读根：绝对路径可读；写仍拒逃逸
+    outside = data / "d6" / "outside_cfg.md"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_text("port=9\n", encoding="utf-8")
+    fs_ro = WorkspaceFs(work, read_roots=["/"])
+    try:
+        body = fs_ro.read(str(outside), offset=1, limit=5)
+    except Exception as exc:  # noqa: BLE001
+        return _fail("D6-path-secret", f"read_roots read failed: {exc}")
+    if not any("port=9" in row["text"] for row in body.get("lines") or []):
+        return _fail("D6-path-secret", f"read_roots content miss: {body}")
+    try:
+        fs_ro.write(str(outside), "hack\n")
+        return _fail("D6-path-secret", "read_roots must not allow outside write")
+    except WorkspacePathError:
+        pass
+
+    return _pass(
+        "D6-path-secret",
+        {"snapshot_files": files, "escape_msg": esc.message, "read_roots": True},
+    )
 
 
 def main(*, try_capture: bool) -> dict[str, Any]:

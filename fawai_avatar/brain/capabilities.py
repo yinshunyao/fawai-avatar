@@ -122,7 +122,10 @@ CAPABILITIES: tuple[Capability, ...] = (
         id="fs_read",
         name="工作区文件·读取",
         modality="background",
-        when_to_use="读取工作区文件；args.path 必填；定向读用 offset+limit（1-based 起始行）；兼容 start_line/end_line",
+        when_to_use=(
+            "读取工作区文件；args.path 必填；定向读用 offset+limit（1-based 起始行，"
+            "文件头省略 offset 或写 1；0 会按 1 处理）；兼容 start_line/end_line"
+        ),
         action_kind="fs_read",
     ),
     Capability(
@@ -494,14 +497,14 @@ def capabilities_prompt_block(
         "定位文件优先 fs_glob/fs_grep/explore_search；连续空 glob 再用 shell ls/find（遵守平台口径）；"
         "定位代码结构 → code_symbols / code_map / explore_search（多语言索引；explore 每 query 自动借用符号）；"
         "文本内容搜索用 fs_grep（args.pattern，可带 context_before/after）；索引过期可 code_index_refresh；"
-        "定向读文件用 fs_read 的 offset+limit（1-based；也认 start_line/end_line）；"
+        "定向读文件用 fs_read 的 offset+limit（1-based，0 按文件头；也认 start_line/end_line）；"
         "写后用 code_check（或 shell_verify）回证；编码类目标未 check 不得直接 success；"
         "Git 用 git_status/git_diff/git_commit（不 push）；多文件改动须 write_resources 列全路径；"
         "编码任务每步优先 1～2 个 actions（逐步工具调用）；"
         "Skill/教训 → skill_write / skill_search / skill_get；"
         "个人知识库 → lore_search / lore_get / lore_set / lore_note_upsert / lore_buffer_list / lore_vector_reindex；"
         "禁止用 click/type/hotkey 代替写文件或写 Skill；"
-        "禁止改进化最少核（versioning/、runtime/releases|keeper|code_watch|port_guard.py、"
+        "禁止改进化最少核（versioning/、runtime/releases|keeper|code_watch|reload_gate|port_guard.py、"
         "workspace/paths.py）与已存在的 doc/版本/v*/ 归档（仅本智能体写路径；人工/Cursor 不限）；"
     )
     if is_headless():

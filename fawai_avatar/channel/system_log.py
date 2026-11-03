@@ -73,6 +73,8 @@ _KIND_TO_LOG: dict[str, tuple[str, str]] = {
     "recover": ("task", "recover"),
     "fs_read": ("file", "read"),
     "fs_read_many": ("file", "read"),
+    "fs_glob": ("file", "read"),
+    "fs_grep": ("file", "read"),
     "fs_write": ("file", "write"),
     "fs_replace": ("file", "write"),
     "fs_patch": ("file", "write"),
@@ -216,6 +218,16 @@ def build_action_detail(action: Action, result: ExecResult | None = None) -> dic
         else:
             paths = args.get("paths") or data.get("paths") or []
             detail["paths"] = [str(p) for p in paths] if isinstance(paths, list) else []
+    elif kind in {"fs_glob", "fs_grep"}:
+        if args.get("path"):
+            detail["path"] = str(args.get("path"))
+        if args.get("pattern") or args.get("glob") or args.get("q"):
+            detail["query"] = str(
+                args.get("pattern") or args.get("glob") or args.get("q") or ""
+            )
+        hits = data.get("hits") or data.get("matches") or data.get("paths")
+        if isinstance(hits, list):
+            detail["hit_count"] = len(hits)
     elif kind in {"fs_write", "fs_replace", "fs_patch"}:
         path = str(args.get("path") or data.get("path") or "")
         detail["path"] = path
@@ -330,10 +342,17 @@ class SystemLogStore:
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
-        """打开连接；离开 with 时必须 close（sqlite 的 with conn 不会关 FD）。"""
+        """打开连接；成功离开时 commit，异常 rollback；必须 close（sqlite 的 with conn 不关 FD）。"""
         conn = self._open()
         try:
             yield conn
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:  # noqa: BLE001 — 关闭前尽力回滚
+                pass
+            raise
         finally:
             conn.close()
 
@@ -617,20 +636,16 @@ class SystemLogStore:
                 conn.commit()
                 return int(cur.rowcount or 0)
 
-    def list_logs(
+    def _filter_clauses(
         self,
         *,
-        limit: int = 100,
         action: str | None = None,
         category: str | None = None,
         task_id: str | None = None,
         since: float | None = None,
         ok: bool | None = None,
         analyzed: bool | None = None,
-    ) -> list[SystemLogEntry]:
-        if self._degraded:
-            return []
-        limit = max(1, min(int(limit or 100), 500))
+    ) -> tuple[str, list[Any]]:
         clauses: list[str] = []
         params: list[Any] = []
         if category:
@@ -657,11 +672,63 @@ class SystemLogStore:
                 "(analyze_task_id IS NULL OR TRIM(analyze_task_id) = '')"
             )
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        return where, params
+
+    def count_logs(
+        self,
+        *,
+        action: str | None = None,
+        category: str | None = None,
+        task_id: str | None = None,
+        since: float | None = None,
+        ok: bool | None = None,
+        analyzed: bool | None = None,
+    ) -> int:
+        if self._degraded:
+            return 0
+        where, params = self._filter_clauses(
+            action=action,
+            category=category,
+            task_id=task_id,
+            since=since,
+            ok=ok,
+            analyzed=analyzed,
+        )
+        sql = f"SELECT COUNT(*) FROM system_logs {where}"
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(sql, params).fetchone()
+        return int(row[0] if row is not None else 0)
+
+    def list_logs(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        action: str | None = None,
+        category: str | None = None,
+        task_id: str | None = None,
+        since: float | None = None,
+        ok: bool | None = None,
+        analyzed: bool | None = None,
+    ) -> list[SystemLogEntry]:
+        if self._degraded:
+            return []
+        limit = max(1, min(int(limit or 100), 500))
+        offset = max(0, int(offset or 0))
+        where, params = self._filter_clauses(
+            action=action,
+            category=category,
+            task_id=task_id,
+            since=since,
+            ok=ok,
+            analyzed=analyzed,
+        )
         sql = (
             f"SELECT * FROM system_logs {where} "
-            "ORDER BY ts DESC, log_id DESC LIMIT ?"
+            "ORDER BY ts DESC, log_id DESC LIMIT ? OFFSET ?"
         )
-        params.append(limit)
+        params.extend([limit, offset])
         with self._lock:
             with self._connect() as conn:
                 rows = conn.execute(sql, params).fetchall()

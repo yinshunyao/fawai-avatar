@@ -132,7 +132,7 @@ RULE_REGISTRY: tuple[RuleEntry, ...] = (
         when=("自我进化", "升版", "进化", "versioning"),
         constraint=(
             "智能体禁止改最少核："
-            "fawai_avatar/versioning/、runtime/{releases,keeper,code_watch,port_guard}.py、"
+            "fawai_avatar/versioning/、runtime/{releases,keeper,code_watch,reload_gate,port_guard}.py、"
             "workspace/paths.py、已存在的 doc/版本/v*/ 归档；升版只新建评测目录。"
             "Cursor/人工改盘不受此限。"
         ),

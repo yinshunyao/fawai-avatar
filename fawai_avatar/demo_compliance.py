@@ -365,9 +365,19 @@ def main() -> None:
 
     print("== write effect / weak write ==")
     from fawai_avatar.brain.answer_effect import (
+        answer_coverage_reject_reason,
+        fail_message_for_answer_coverage,
         goal_needs_answer_coverage_gate,
         thought_is_meta_process_narration,
         thought_ok_for_answer_coverage,
+        unread_compressed_dumps,
+    )
+    from fawai_avatar.brain.reflect import (
+        SHELL_BYPASS_FS_REPLACEMENT,
+        Reflection,
+        ground_reflect_constraints,
+        is_shell_bypass_fs_constraint,
+        mock_reflect,
     )
     from fawai_avatar.brain.write_effect import (
         assess_patch_effect,
@@ -417,6 +427,8 @@ def main() -> None:
     assert "lesson_write_set_not_acceptance" in installed
     assert "lesson_verify_read_not_endless_explore" in installed
     assert "lesson_answer_must_cover_goal" in installed
+    assert "lesson_compressed_dump_must_read" in installed
+    assert "lesson_no_shell_bypass_fs" in installed
     stored = SkillStore(skills_tmp).get("lesson_write_set_not_acceptance")
     assert stored is not None
     assert "验收" in str(stored.get("title") or "")
@@ -434,6 +446,9 @@ def main() -> None:
     assert thought_is_meta_process_narration(
         "已获取日志，汇总配置与当前进度并结束。"
     )
+    assert thought_is_meta_process_narration(
+        "已成功获取4090服务器GPU及训练进程状态，汇总结果并完成任务。"
+    )
     assert not thought_ok_for_answer_coverage(
         "已获取日志，汇总配置与当前进度并结束。",
         goal="远端任务进度如何？",
@@ -445,6 +460,13 @@ def main() -> None:
     # 配置盘点：只报 GPU+CPU 过薄；须多维或结构化 + 来源路径
     thin_hw = "已找到4090服务器账号并获取配置：1张RTX 4090(24G显存)，CPU为224核的Xeon 8481C。"
     assert not thought_ok_for_answer_coverage(thin_hw, goal=hw_goal)
+    thin_hw_reason = answer_coverage_reject_reason(thin_hw, goal=hw_goal)
+    assert thin_hw_reason in {"inventory_thin", "meta_narration"}, thin_hw_reason
+    assert "盘点过薄" in fail_message_for_answer_coverage("inventory_thin")
+    thin_status = (
+        "凭据在`study/配置信息/云服务重要信息.md`。4090显存占24G，`train.py`自11/1运行中。"
+    )
+    assert answer_coverage_reject_reason(thin_status, goal=hw_goal) == "inventory_thin"
     rich_hw = (
         "账号在 `study/配置信息/云服务重要信息.md`（4090 AutoDL 节）。\n"
         "- GPU：RTX 4090 24GB\n"
@@ -454,11 +476,152 @@ def main() -> None:
         "- 系统：Ubuntu 22.04，驱动 580 / CUDA 13.0"
     )
     assert thought_ok_for_answer_coverage(rich_hw, goal=hw_goal)
+    assert unread_compressed_dumps(
+        ["/tmp/observe/tool_x_stdout.txt"], []
+    ) == ["/tmp/observe/tool_x_stdout.txt"]
+    assert (
+        unread_compressed_dumps(
+            ["/tmp/observe/tool_x_stdout.txt"],
+            ["/tmp/observe/tool_x_stdout.txt"],
+        )
+        == []
+    )
+    assert is_shell_bypass_fs_constraint(
+        "禁止使用 fs_read 读取绝对路径；改用 shell 工具执行 cat 命令直接读取目标文件内容"
+    )
+    assert not is_shell_bypass_fs_constraint("改用 explore_search 定位后 fs_patch")
+    esc = mock_reflect(
+        "查配置",
+        [Action(kind="fs_read", args={"path": "/outside/a.md"})],
+        [ExecResult(ok=False, message="path escapes work root: /outside/a.md")],
+        fingerprint="deadbeefdeadbeef",
+    )
+    grounded = ground_reflect_constraints(
+        esc,
+        actions=[Action(kind="fs_read", args={"path": "/outside/a.md"})],
+        results=[ExecResult(ok=False, message="path escapes work root: /outside/a.md")],
+    )
+    assert any("禁止用 shell cat" in c for c in grounded.constraints)
+    assert SHELL_BYPASS_FS_REPLACEMENT in grounded.constraints
+    bypass_reflected = ground_reflect_constraints(
+        Reflection(
+            cause="越权",
+            decision="alternate",
+            constraints=[
+                "禁止使用 fs_read 读取绝对路径",
+                "改用 shell 工具执行 cat 命令直接读取目标文件内容",
+            ],
+            thought="改 shell",
+            fingerprint="x",
+        ),
+        results=[ExecResult(ok=False, message="path escapes work root: /x")],
+    )
+    assert not any(is_shell_bypass_fs_constraint(c) for c in bypass_reflected.constraints)
+    assert any("禁止用 shell cat" in c for c in bypass_reflected.constraints)
+    from fawai_avatar.brain.reflect import (
+        abort_should_deliver_commands,
+        format_abort_delivery,
+    )
+    from fawai_avatar.control.shell_guard import shell_local_fs_bypass_error
+
+    blocked = shell_local_fs_bypass_error(
+        'cp "/Users/demo/study/配置信息/x.md" ./x.md && cat ./x.md',
+        work_root=".",
+        read_roots=["/"],
+    )
+    assert blocked and "fs_read" in blocked, blocked
+    assert (
+        shell_local_fs_bypass_error(
+            "ssh -p 22 user@host uptime",
+            work_root=".",
+            read_roots=["/"],
+        )
+        is None
+    )
+    abort_ref = Reflection(
+        cause="无 SSH 凭据",
+        decision="abort",
+        constraints=["读取部署脚本，输出完整本地执行命令供用户在宿主机终端运行"],
+        thought="止损并交命令",
+        fingerprint="ab",
+    )
+    assert abort_should_deliver_commands(abort_ref)
+    delivered = format_abort_delivery(abort_ref)
+    assert "建议下一步" in delivered and "输出完整本地" in delivered
+
+    from fawai_avatar.brain.method_recovery import (
+        CONSTRAINT_SSH_AUTH,
+        enrich_reflection_method_switch,
+        format_remote_away_veto,
+        looks_like_remote_away_text,
+        looks_like_remote_ops_goal,
+        remote_idle_gate_threshold,
+        update_remote_idle_streak,
+    )
+    from fawai_avatar.brain.reflect import mock_reflect
+
+    assert looks_like_remote_ops_goal("将法外分身升级到5080测试服务器")
+    assert looks_like_remote_away_text("你想办法读取一下，我没在电脑边")
+    assert "【远程操作约束】" in format_remote_away_veto(answer="没在电脑边")
+    ssh_fail = mock_reflect(
+        "升级到5080",
+        [Action(kind="shell", args={"cmd": "ssh -o BatchMode=yes -p 22 u@h true"})],
+        [
+            ExecResult(
+                ok=False,
+                message="u@h: Permission denied (publickey,password).",
+            )
+        ],
+        fingerprint="sshdeadbeef01",
+    )
+    assert ssh_fail.decision == "alternate", ssh_fail
+    assert any("BatchMode" in c or "shovel" in c or "ssh-run" in c for c in ssh_fail.constraints)
+    enriched = enrich_reflection_method_switch(
+        Reflection(
+            cause="缺私钥",
+            decision="abort",
+            constraints=[],
+            thought="止损",
+            fingerprint="x",
+        ),
+        actions=[Action(kind="shell", args={"cmd": "ssh -p 22 u@h true"})],
+        results=[
+            ExecResult(ok=False, message="Permission denied (publickey,password).")
+        ],
+        goal="部署到服务器",
+    )
+    assert enriched.decision == "alternate"
+    assert CONSTRAINT_SSH_AUTH in enriched.constraints
+    assert remote_idle_gate_threshold(goal="升级到5080") >= 1
+    streak = update_remote_idle_streak(
+        0,
+        goal="升级到5080",
+        actions=[Action(kind="fs_read", args={"path": "5080_deploy.md"})],
+        results=[ExecResult(ok=True, message="read ok")],
+    )
+    assert streak == 1
+    streak = update_remote_idle_streak(
+        streak,
+        goal="升级到5080",
+        actions=[
+            Action(
+                kind="shell",
+                args={"cmd": "bash fawai_shovels/shell/rsync-ssh-deploy.sh"},
+            )
+        ],
+        results=[ExecResult(ok=True, message="deployed")],
+    )
+    assert streak == 0
+
     from fawai_avatar.channel.redact import redact_secrets
 
     leaked = 'expect -c \'send "QSfDa/ENNvvQ\\r"\''
     assert "***" in redact_secrets(leaked)
     assert "QSfDa" not in redact_secrets(leaked)
+    ssh_block = "ssh -p 31057 root@example.com\nQSfDa/ENNvvQ\n"
+    redacted_ssh = redact_secrets(ssh_block)
+    assert "***" in redacted_ssh
+    assert "QSfDa" not in redacted_ssh
     long_steps = [
         {
             "plan": {

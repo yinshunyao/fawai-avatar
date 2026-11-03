@@ -38,6 +38,26 @@ def load_dotenv(path: str | Path | None = None) -> Path | None:
 load_dotenv()
 
 
+def _env_float(name: str) -> float | None:
+    raw = _env(name)
+    if raw is None or raw == "":
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def _env_int(name: str, *, default: int | None = None) -> int | None:
+    raw = _env(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 @dataclass(frozen=True)
 class LlmConfig:
     api_key: str | None
@@ -46,6 +66,12 @@ class LlmConfig:
     vlm_model: str
     asr_model: str
     force_model: str | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    max_tokens: int | None = None
+    presence_penalty: float | None = None
+    frequency_penalty: float | None = None
+    timeout_sec: float | None = None
 
     @property
     def model(self) -> str:
@@ -55,6 +81,8 @@ class LlmConfig:
     @classmethod
     def from_env(cls) -> "LlmConfig":
         load_dotenv()
+        timeout = _env_int("FAWAI_LLM_TIMEOUT", default=120)
+        max_tokens = _env_int("FAWAI_LLM_MAX_TOKENS", default=0)
         return cls(
             api_key=_env("FAWAI_LLM_API_KEY") or _env("OPENAI_API_KEY"),
             base_url=_env("FAWAI_LLM_BASE_URL") or _env("OPENAI_BASE_URL"),
@@ -62,7 +90,28 @@ class LlmConfig:
             vlm_model=_env("FAWAI_LLM_VLM_MODEL") or "qwen3-vl-plus",
             asr_model=_env("FAWAI_LLM_ASR_MODEL") or "qwen3-asr-flash",
             force_model=_env("FAWAI_LLM_MODEL") or _env("OPENAI_MODEL"),
+            temperature=_env_float("FAWAI_LLM_TEMPERATURE"),
+            top_p=_env_float("FAWAI_LLM_TOP_P"),
+            max_tokens=None if max_tokens is None or max_tokens <= 0 else max_tokens,
+            presence_penalty=_env_float("FAWAI_LLM_PRESENCE_PENALTY"),
+            frequency_penalty=_env_float("FAWAI_LLM_FREQUENCY_PENALTY"),
+            timeout_sec=None if timeout is None or timeout <= 0 else float(timeout),
         )
+
+    def chat_sampling_kwargs(self) -> dict[str, float | int]:
+        """OpenAI chat.completions 可选采样参数（空配置不传）。"""
+        out: dict[str, float | int] = {}
+        if self.temperature is not None:
+            out["temperature"] = self.temperature
+        if self.top_p is not None:
+            out["top_p"] = self.top_p
+        if self.max_tokens is not None:
+            out["max_tokens"] = self.max_tokens
+        if self.presence_penalty is not None:
+            out["presence_penalty"] = self.presence_penalty
+        if self.frequency_penalty is not None:
+            out["frequency_penalty"] = self.frequency_penalty
+        return out
 
 
 def max_steps_from_env(*, default: int = 0) -> int:
@@ -98,6 +147,18 @@ def lore_sidecar_enabled(*, default: bool = True) -> bool:
     """全程旁路长记忆：`FAWAI_LORE_SIDECAR`；默认开。"""
     load_dotenv()
     raw = _env("FAWAI_LORE_SIDECAR")
+    if raw is None or raw == "":
+        return bool(default)
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
+def lore_auto_p1_kv(*, default: bool = False) -> bool:
+    """
+    P1 键值是否自动入库：`FAWAI_LORE_AUTO_P1_KV`。
+    默认关 → 进缓冲待确认；P0 仍直写。开：1/true。
+    """
+    load_dotenv()
+    raw = _env("FAWAI_LORE_AUTO_P1_KV")
     if raw is None or raw == "":
         return bool(default)
     return raw.lower() in {"1", "true", "yes", "on"}
@@ -153,6 +214,7 @@ class RuntimeConfig:
     lore_llm_extract: bool
     lore_vector: bool
     work_root: str
+    read_roots: tuple[str, ...]
     auto_version: bool
     diff_mode: str
     native_tools: bool
@@ -164,11 +226,15 @@ class RuntimeConfig:
     def from_env(cls) -> "RuntimeConfig":
         load_dotenv()
         from fawai_avatar.platform_info import is_headless
+        from fawai_avatar.workspace.paths import parse_read_roots
 
         dry = (_env("FAWAI_DRY_RUN") or "0").lower() in {"1", "true", "yes", "on"}
         data_dir = _env("FAWAI_DATA_DIR") or "data"
         lore_dir = resolve_lore_dir(data_dir=data_dir)
         work_root = _env("FAWAI_WORK_ROOT") or "."
+        # 未设置时默认 `/`：启动即申请整盘只读；设 FAWAI_READ_ROOTS=work 可收回仅 work_root
+        read_root_paths = parse_read_roots(_env("FAWAI_READ_ROOTS"))
+        read_roots = tuple(str(p) for p in read_root_paths)
         auto_version = (_env("FAWAI_AUTO_VERSION") or "1").lower() in {"1", "true", "yes", "on"}
         diff_mode = (_env("FAWAI_DIFF_MODE") or "auto").strip().lower()
         if diff_mode not in {"auto", "confirm"}:
@@ -186,6 +252,7 @@ class RuntimeConfig:
             lore_llm_extract=lore_llm_extract_enabled(),
             lore_vector=lore_vector_enabled(default="auto"),
             work_root=work_root,
+            read_roots=read_roots,
             auto_version=auto_version,
             diff_mode=diff_mode,
             native_tools=native_tools,

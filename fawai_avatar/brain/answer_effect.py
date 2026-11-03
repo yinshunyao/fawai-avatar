@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import re
+from pathlib import Path
 
 from fawai_avatar.brain.prompt_profile import looks_like_fs_web_goal
 from fawai_avatar.brain.write_effect import (
@@ -13,6 +14,7 @@ from fawai_avatar.brain.write_effect import (
 )
 
 ANSWER_COVERAGE_MARKER = "【答复覆盖】"
+UNREAD_DUMP_MARKER = "【压缩未读】"
 
 # 过程元叙述：描述「做了什么」而非「答了什么」
 _META_PROCESS_PHRASES = (
@@ -41,6 +43,14 @@ _META_CLOSING = re.compile(
     r"已.{2,80}(并结束|到此结束|任务结束|可以结束|查询完毕|处理完毕)\s*[。.!！]?\s*$"
 )
 
+_META_WRAP_UP = (
+    "汇总结果并完成",
+    "汇总并完成",
+    "获取并汇总",
+    "并完成任务",
+    "已成功获取",
+)
+
 # 可验收事实线索（通用；不绑具体业务）
 _SUBSTANCE = re.compile(
     r"(?:"
@@ -52,6 +62,14 @@ _SUBSTANCE = re.compile(
     r"|没有|尚未|已经是|约为|大约"
     r"|epoch|loss|error|oom|cuda|gpu|cpu|mem(?:ory)?"
     r")",
+    re.I,
+)
+
+# 有过程套话时，仅有型号数字不算事实载荷
+_HARD_FACT = re.compile(
+    r"(?:运行中|未运行|空闲|忙碌|在线|离线|排队|中断|"
+    r"epoch|loss|\d+\s*%|\d+\s*MiB|\d+\s*GiB|"
+    r"显存占|利用率|自\s*\d|Nov\d|Oct\d)",
     re.I,
 )
 
@@ -114,6 +132,24 @@ _DIM_BUCKETS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
 )
 
+_DIM_LABELS = {
+    "gpu": "GPU/显存",
+    "cpu": "CPU",
+    "mem": "内存",
+    "disk": "磁盘",
+    "os": "系统/驱动",
+    "path": "来源路径",
+}
+
+_REJECT_FAIL_MSG = {
+    "placeholder": "最终回复为空或占位，拒绝假成功",
+    "too_short": "最终回复过短，未覆盖目标问点，拒绝假成功",
+    "meta_narration": "最终回复是过程元叙述，未直接回答目标问点，拒绝假成功",
+    "inventory_thin": "最终回复配置/状态盘点过薄，未覆盖证据维度，拒绝假成功",
+    "lookup_no_path": "最终回复未写明账号/配置来源路径，拒绝假成功",
+    "unread_dump": "压缩观察全文未读就收尾，拒绝假成功",
+}
+
 
 def answer_coverage_gate_enabled() -> bool:
     raw = (os.environ.get("FAWAI_ANSWER_COVERAGE_GATE") or "1").strip().lower()
@@ -154,12 +190,19 @@ def thought_is_meta_process_narration(thought: str) -> bool:
     t = (thought or "").strip()
     if not t:
         return True
-    if _SUBSTANCE.search(t):
-        return False
     if _META_CLOSING.search(t):
         return True
+    if any(p in t for p in _META_WRAP_UP):
+        return True
     hits = sum(1 for p in _META_PROCESS_PHRASES if p in t)
-    return hits >= 1
+    if hits >= 1:
+        if not _SUBSTANCE.search(t):
+            return True
+        # 有过程套话但缺少硬事实（仅型号数字等）→ 仍算元叙述
+        if not _HARD_FACT.search(t):
+            return True
+        return False
+    return False
 
 
 def _inventory_dim_hits(thought: str) -> set[str]:
@@ -199,34 +242,90 @@ def thought_covers_lookup_source(thought: str) -> bool:
     return "path" in _inventory_dim_hits(thought)
 
 
-def thought_ok_for_answer_coverage(thought: str, *, goal: str) -> bool:
-    """问询类 success 的 thought 是否足以交给用户。"""
+def missing_inventory_dims(thought: str) -> list[str]:
+    """返回尚未点到的盘点维度名（稳定短码）。"""
+    hits = _inventory_dim_hits(thought)
+    return [name for name, _ in _DIM_BUCKETS if name not in hits]
+
+
+def answer_coverage_reject_reason(thought: str, *, goal: str) -> str | None:
+    """None 表示可通过；否则返回稳定拒因短码。"""
     t = (thought or "").strip()
     if thought_is_placeholder(t):
-        return False
+        return "placeholder"
     if thought_is_meta_process_narration(t):
-        return False
+        return "meta_narration"
     if len(t) < 8:
-        return False
+        return "too_short"
     g = (goal or "").strip()
     if goal_is_inventory_report(g) and not thought_covers_inventory(t, goal=g):
-        return False
+        return "inventory_thin"
     if goal_is_lookup(g) and not thought_covers_lookup_source(t):
-        # 盘点已含 path 维则一并满足
         if "path" not in _inventory_dim_hits(t):
-            return False
-    return True
+            return "lookup_no_path"
+    return None
 
 
-def format_answer_coverage_prompt(*, goal: str) -> str:
+def thought_ok_for_answer_coverage(thought: str, *, goal: str) -> bool:
+    """问询类 success 的 thought 是否足以交给用户。"""
+    return answer_coverage_reject_reason(thought, goal=goal) is None
+
+
+def fail_message_for_answer_coverage(reason: str | None) -> str:
+    """面向任务终态的拒因文案（细分，不再一律「过程元叙述」）。"""
+    key = (reason or "").strip() or "meta_narration"
+    return _REJECT_FAIL_MSG.get(key, _REJECT_FAIL_MSG["meta_narration"])
+
+
+def format_unread_dump_prompt(*, paths: list[str]) -> str:
+    """压缩观察全文尚未 fs_read 时，强制先读再总结。"""
+    shown: list[str] = []
+    for raw in paths:
+        p = str(raw or "").strip()
+        if p and p not in shown:
+            shown.append(p)
+        if len(shown) >= 3:
+            break
+    joined = "、".join(f"`{p}`" for p in shown) or "（observe 落盘）"
+    return (
+        f"{UNREAD_DUMP_MARKER}工具结果已压缩，全文落盘于 {joined}。"
+        "本步必须先用 fs_read 读取上述 path（优先工作区内相对路径；"
+        "绝对路径若在 work_root 内亦可），读完后再写面向用户的分项结论；"
+        "禁止只凭截断预览 status=success；禁止用 shell cat 代替 fs_read。"
+        "若读后材料仍不足，status=failed 或 need_input 说明缺什么。"
+    )
+
+
+def format_answer_coverage_prompt(
+    *,
+    goal: str,
+    thought: str = "",
+    reason: str | None = None,
+    unread_dumps: list[str] | None = None,
+) -> str:
     g = (goal or "").strip()[:160] or "(目标)"
+    why = (reason or "").strip() or answer_coverage_reject_reason(thought, goal=goal)
     parts = [
         f"{ANSWER_COVERAGE_MARKER}目标偏问询/状态/查找或配置盘点（{g}）。",
-        "请给出面向用户的最终自然语言回答：直接写清关键事实"
-        "（状态、数字、是否完成、边界、来源路径），",
-        "禁止只写「已获取/已汇总/已找到并结束」这类过程元叙述。",
-        "禁止粘贴原始 stdout 全文；禁止在 thought 里写出明文口令/密码。",
     ]
+    if why == "meta_narration":
+        parts.append("上一轮 thought 是过程元叙述，未直接回答问点。")
+    elif why == "inventory_thin":
+        missing = missing_inventory_dims(thought)
+        labels = "、".join(_DIM_LABELS.get(m, m) for m in missing[:6]) or "多维字段"
+        parts.append(f"上一轮盘点过薄；请补齐证据里已有、但未写到的维度（缺：{labels}）。")
+    elif why == "lookup_no_path":
+        parts.append("上一轮未写明账号/配置来源路径；须点明文档或文件落点。")
+    elif why == "too_short" or why == "placeholder":
+        parts.append("上一轮终稿为空、占位或过短。")
+    parts.extend(
+        [
+            "请给出面向用户的最终自然语言回答：直接写清关键事实"
+            "（状态、数字、是否完成、边界、来源路径），",
+            "禁止只写「已获取/已汇总/已找到并结束」这类过程元叙述。",
+            "禁止粘贴原始 stdout 全文；禁止在 thought 里写出明文口令/密码。",
+        ]
+    )
     if goal_is_inventory_report(goal) or goal_is_lookup(goal):
         parts.append(
             "若目标是查机器/硬件/配置或账号落点：先用一两句结论，再用分项列表或 Markdown 表"
@@ -234,6 +333,8 @@ def format_answer_coverage_prompt(*, goal: str) -> str:
             "证据里有的维度不要省略；材料被压缩时须先用 fs_read 读 observe 落盘全文再总结，"
             "禁止只根据截断预览报一两项交差。"
         )
+    if unread_dumps:
+        parts.append(format_unread_dump_prompt(paths=list(unread_dumps)))
     parts.extend(
         [
             "本步必须 status=success、done=true、actions 为空数组；",
@@ -242,3 +343,59 @@ def format_answer_coverage_prompt(*, goal: str) -> str:
         ]
     )
     return "".join(parts)
+
+
+def normalize_path_key(path: str) -> str:
+    """路径比对键：解析失败则退回规范化斜杠串。"""
+    raw = str(path or "").strip()
+    if not raw:
+        return ""
+    try:
+        return str(Path(raw).expanduser().resolve())
+    except (OSError, RuntimeError, ValueError):
+        return raw.replace("\\", "/").rstrip("/")
+
+
+def prefer_fs_read_path(path: str, *, work_root: str | Path | None = None) -> str:
+    """优先给出 work_root 相对路径，便于 fs_read 通过沙箱。"""
+    raw = str(path or "").strip()
+    if not raw or work_root is None:
+        return raw
+    try:
+        root = Path(work_root).expanduser().resolve()
+        abs_p = Path(raw).expanduser().resolve()
+        return str(abs_p.relative_to(root))
+    except (OSError, RuntimeError, ValueError):
+        return raw
+
+
+def path_was_read(path: str, read_ok_paths: list[str] | set[str]) -> bool:
+    """判断 dump/文件是否已被成功 fs_read（绝对/相对等价）。"""
+    key = normalize_path_key(path)
+    if not key:
+        return False
+    keys = {normalize_path_key(p) for p in read_ok_paths if str(p).strip()}
+    if key in keys:
+        return True
+    # observe 落盘：同 basename 且两侧都带 observe 也算读过
+    name = Path(key).name
+    if name.startswith("tool_") and "observe" in key.replace("\\", "/"):
+        for other in keys:
+            if Path(other).name == name and "observe" in other.replace("\\", "/"):
+                return True
+    return False
+
+
+def unread_compressed_dumps(
+    dump_paths: list[str],
+    read_ok_paths: list[str] | set[str],
+) -> list[str]:
+    """返回尚未成功读取的压缩全文落盘路径（保序）。"""
+    out: list[str] = []
+    for raw in dump_paths:
+        p = str(raw or "").strip()
+        if not p or path_was_read(p, read_ok_paths):
+            continue
+        if p not in out:
+            out.append(p)
+    return out

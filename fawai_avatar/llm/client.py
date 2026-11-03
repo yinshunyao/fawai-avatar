@@ -41,11 +41,18 @@ class LlmClient:
             model=model,
             force_multimodal=force_multimodal,
         )
-        client = OpenAI(api_key=self.config.api_key, base_url=self.config.base_url or None)
+        client_kwargs: dict[str, Any] = {
+            "api_key": self.config.api_key,
+            "base_url": self.config.base_url or None,
+        }
+        if self.config.timeout_sec is not None:
+            client_kwargs["timeout"] = self.config.timeout_sec
+        client = OpenAI(**client_kwargs)
         kwargs: dict[str, Any] = {
             "model": chosen,
             "messages": messages,
         }
+        kwargs.update(self.config.chat_sampling_kwargs())
         if tools:
             kwargs["tools"] = tools
             if tool_choice is not None:
@@ -104,7 +111,13 @@ class LlmClient:
         from fawai_avatar.config import lore_embed_model
 
         chosen = (model or lore_embed_model()).strip()
-        client = OpenAI(api_key=self.config.api_key, base_url=self.config.base_url or None)
+        client_kwargs: dict[str, Any] = {
+            "api_key": self.config.api_key,
+            "base_url": self.config.base_url or None,
+        }
+        if self.config.timeout_sec is not None:
+            client_kwargs["timeout"] = self.config.timeout_sec
+        client = OpenAI(**client_kwargs)
         try:
             resp = client.embeddings.create(model=chosen, input=list(texts))
         except Exception as exc:  # noqa: BLE001

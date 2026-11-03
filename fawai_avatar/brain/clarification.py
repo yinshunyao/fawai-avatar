@@ -124,18 +124,29 @@ def format_answer_for_history(
     matched: dict[str, str] | None,
     question: str,
 ) -> str:
+    from fawai_avatar.brain.method_recovery import (
+        format_remote_away_veto,
+        looks_like_remote_away_text,
+    )
+
     q = (question or "").strip()
     if matched:
         oid = matched.get("id") or ""
         label = matched.get("label") or answer_text
-        return (
+        base = (
             f"【用户澄清答复】针对「{q}」选择了 [{oid}] {label}。"
             f"请按该选择继续执行，不要再问同一问题。"
         )
-    return (
-        f"【用户澄清答复】针对「{q}」：{answer_text}。"
-        f"请按该答复继续执行（未精确匹配选项时以本条原文为准）。"
-    )
+    else:
+        base = (
+            f"【用户澄清答复】针对「{q}」：{answer_text}。"
+            f"请按该答复继续执行（未精确匹配选项时以本条原文为准）。"
+        )
+    # 远程不在场：追加方法否决，禁止再要用户贴文件
+    probe = f"{answer_text} {matched.get('label') if matched else ''}"
+    if looks_like_remote_away_text(probe) or looks_like_remote_away_text(answer_text):
+        return f"{base}\n{format_remote_away_veto(answer=answer_text)}"
+    return base
 
 
 def normalize_need_input_plan(plan: Plan) -> Plan:
@@ -143,9 +154,17 @@ def normalize_need_input_plan(plan: Plan) -> Plan:
     if plan.status != "need_input":
         return plan
     options = options_from_plan(plan)
+    # 若问题本身在要「粘贴/拷进工作区」，去掉这类选项，避免远程场景误导
+    from fawai_avatar.brain.method_recovery import strip_paste_options
+
+    q = (plan.thought or "").strip()
+    if any(tok in q for tok in ("粘贴", "拷贝", "拷进", "复制到工作区", "贴给")):
+        options = strip_paste_options(options)
     raw = dict(plan.raw or {})
     if options:
         raw["options"] = options
+    elif "options" in raw:
+        raw.pop("options", None)
     return Plan(
         thought=plan.thought,
         actions=[],

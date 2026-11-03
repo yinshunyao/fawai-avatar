@@ -66,6 +66,8 @@ def dump_checkpoint(state: dict[str, Any]) -> dict[str, Any]:
         "saw_architecture_ok": bool(state.get("saw_architecture_ok")),
         "explore_only_streak": int(state.get("explore_only_streak") or 0),
         "explore_mutate_forced": bool(state.get("explore_mutate_forced")),
+        "remote_idle_streak": int(state.get("remote_idle_streak") or 0),
+        "remote_method_forced": bool(state.get("remote_method_forced")),
         "read_path_counts": {
             str(k): int(v)
             for k, v in dict(state.get("read_path_counts") or {}).items()
@@ -141,6 +143,8 @@ def restore_runtime_state(raw: dict[str, Any]) -> dict[str, Any]:
         "saw_architecture_ok": bool(raw.get("saw_architecture_ok")),
         "explore_only_streak": int(raw.get("explore_only_streak") or 0),
         "explore_mutate_forced": bool(raw.get("explore_mutate_forced")),
+        "remote_idle_streak": int(raw.get("remote_idle_streak") or 0),
+        "remote_method_forced": bool(raw.get("remote_method_forced")),
         "read_path_counts": {
             str(k): int(v)
             for k, v in dict(raw.get("read_path_counts") or {}).items()

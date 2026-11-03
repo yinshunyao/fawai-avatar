@@ -1072,6 +1072,85 @@ def _analyze_rule_based(
                     },
                 }
             )
+            items.append(
+                {
+                    "id": str(len(items) + 1),
+                    "kind": "lesson",
+                    "title": "教训：压缩观察须读全文再总结",
+                    "rationale": (
+                        "问询/盘点类若工具结果已压缩，须先 fs_read observe 落盘再分项作答；"
+                        "禁止只凭截断预览交差。"
+                        f"命中短码：{','.join(answer_misses)}"
+                    ),
+                    "selected_default": True,
+                    "payload": {
+                        "id": "lesson_compressed_dump_must_read",
+                        "title": "压缩观察须读全文再总结",
+                        "when_to_use": "工具结果已压缩落盘或盘点过薄时",
+                        "steps": (
+                            "1. fs_read 压缩落盘 path（优先相对路径）。\n"
+                            "2. 短结论 + 分项写证据已有维度。\n"
+                            "3. 禁止 shell cat 代替 fs_read。"
+                        ),
+                        "tags": ["review", "lesson", "answer_coverage", "observe"],
+                    },
+                }
+            )
+
+    # 失败文案/反省里出现 shell 绕过 fs → 默认勾选
+    shell_bypass_hits: list[str] = []
+    for t in tasks:
+        meta = t.meta or {}
+        blob = " ".join(
+            [
+                str(meta.get("error") or ""),
+                str((meta.get("reflection") or {}).get("thought") or "")
+                if isinstance(meta.get("reflection"), dict)
+                else "",
+                " ".join(
+                    str(c)
+                    for c in (
+                        (meta.get("reflection") or {}).get("constraints") or []
+                        if isinstance(meta.get("reflection"), dict)
+                        else []
+                    )
+                ),
+            ]
+        )
+        if any(
+            tok in blob
+            for tok in (
+                "改用 shell",
+                "执行 cat",
+                "escapes work root",
+                "绕过",
+            )
+        ) and any(tok in blob for tok in ("fs_read", "绝对路径", "沙箱", "cat")):
+            shell_bypass_hits.append(t.task_id[:8])
+    if shell_bypass_hits:
+        items.append(
+            {
+                "id": str(len(items) + 1),
+                "kind": "lesson",
+                "title": "教训：禁止 shell 绕过 fs 沙箱",
+                "rationale": (
+                    "fs 越界后不得教 shell cat 读本地文件；应相对路径 / observe 落盘 / need_input。"
+                    f"命中短码：{','.join(shell_bypass_hits)}"
+                ),
+                "selected_default": True,
+                "payload": {
+                    "id": "lesson_no_shell_bypass_fs",
+                    "title": "禁止 shell 绕过 fs 沙箱",
+                    "when_to_use": "fs_read 越界或反省出现 shell cat 绕过时",
+                    "steps": (
+                        "1. 改 work_root 相对路径或读 data/observe。\n"
+                        "2. 仓外文件 need_input/failed。\n"
+                        "3. 禁止 shell cat 绕过沙箱。"
+                    ),
+                    "tags": ["review", "lesson", "reflect", "sandbox"],
+                },
+            }
+        )
 
     if outcome == "failure" or (
         joint and any(_guess_outcome(t) == "failure" for t in tasks)
@@ -1205,7 +1284,7 @@ def _analyze_with_llm(
   - skill/lesson: {{id,title,when_to_use,steps,tags}}（steps 写清可执行步骤，非口号）
   - *_patch: {{path,content}} 或 {{path,old,new}} 或 {{patches:[...]}}（path 与 old/new 或 content 须齐全；old 须能对上仓库现文）
 
-禁改（仅智能体）：versioning/**、runtime/{{releases,keeper,code_watch,port_guard}}.py、workspace/paths.py、已存在的 doc/版本/v*/**。
+禁改（仅智能体）：versioning/**、runtime/{{releases,keeper,code_watch,reload_gate,port_guard}}.py、workspace/paths.py、已存在的 doc/版本/v*/**。
 
 只输出一个 JSON：
 {{

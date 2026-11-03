@@ -25,6 +25,7 @@ from fawai_avatar.runtime.port_guard import (
     port_reclaim_enabled,
     reclaim_gateway_port,
 )
+from fawai_avatar.runtime.reload_gate import has_active_executing_tasks
 from fawai_avatar.runtime.releases import (
     EXIT_ACTIVATE,
     EXIT_RESTART,
@@ -32,6 +33,10 @@ from fawai_avatar.runtime.releases import (
     package_root,
     releases_from_env,
 )
+
+# 热重载延后等候：忙时轮询间隔 / 节流日志间隔（秒）
+_RELOAD_DEFER_POLL_S = 1.0
+_RELOAD_DEFER_LOG_S = 15.0
 
 # 崩溃后退避（秒）；成功跑过后重置
 _MIN_BACKOFF = 1.0
@@ -130,7 +135,10 @@ def run_keeper(
     cprint(f"  后台日志: {data_root}/runtime/console.log")
     cprint("  子进程崩溃或主动重启后会自动拉起；Ctrl+C 停止外层。")
     if reload_on:
-        cprint(f"  代码热重载: 开（监视 {package_dir()} 下 .py/.html/.js/.css；关：FAWAI_CODE_RELOAD=0）")
+        cprint(
+            f"  代码热重载: 开（监视 {package_dir()} 下 .py/.html/.js/.css；"
+            "执行中任务延后；关：FAWAI_CODE_RELOAD=0）"
+        )
     else:
         cprint("  代码热重载: 关（FAWAI_CODE_RELOAD=0）")
     if reclaim_on:
@@ -195,15 +203,55 @@ def run_keeper(
             if child is proc:
                 child = None
 
+    defer_log_at = 0.0
+    reload_stop_sent = False
+
+    def _apply_code_reload_stop(*, reason: str) -> None:
+        """空闲时发 SIGTERM；有执行中任务则只记命中、不杀进程。"""
+        nonlocal defer_log_at, reload_stop_sent
+        if stopping:
+            return
+        code_reload_hit.set()
+        if has_active_executing_tasks(data_root):
+            reload_stop_sent = False
+            now = time.monotonic()
+            if now - defer_log_at >= _RELOAD_DEFER_LOG_S:
+                cprint(
+                    f"[keeper] {reason}；有执行中任务（running/blocked），"
+                    "热重载延后到任务完成或取消"
+                )
+                defer_log_at = now
+            return
+        if reload_stop_sent:
+            return
+        reload_stop_sent = True
+        cprint(f"[keeper] {reason} → 重启网关")
+        # 只发信号，不在监视/等候线程里 wait / child=None
+        _stop_child(wait=False)
+
     def _on_code_change(paths: list[str]) -> None:
         if stopping:
             return
         sample = paths[0] if paths else "?"
         more = f" 等 {len(paths)} 个文件" if len(paths) > 1 else ""
-        cprint(f"[keeper] 检测到代码变更: {sample}{more} → 重启网关")
-        code_reload_hit.set()
-        # 只发信号，不在监视线程里 wait / child=None
-        _stop_child(wait=False)
+        _apply_code_reload_stop(reason=f"检测到代码变更: {sample}{more}")
+
+    def _deferred_reload_loop() -> None:
+        """已记热重载命中且任务仍忙时轮询；空闲后再停子进程。"""
+        nonlocal reload_stop_sent
+        while not watch_stop.wait(_RELOAD_DEFER_POLL_S):
+            if stopping:
+                return
+            if not code_reload_hit.is_set():
+                reload_stop_sent = False
+                continue
+            _apply_code_reload_stop(
+                reason=(
+                    "热重载仍待生效"
+                    if has_active_executing_tasks(data_root)
+                    else "任务已空闲，应用延后的代码热重载"
+                )
+            )
 
     def _on_signal(signum: int, _frame: object) -> None:
         nonlocal stopping
@@ -217,6 +265,11 @@ def run_keeper(
 
     if reload_on:
         start_code_watch([package_dir()], _on_code_change, stop_event=watch_stop)
+        threading.Thread(
+            target=_deferred_reload_loop,
+            name="fawai-reload-defer",
+            daemon=True,
+        ).start()
 
     while not stopping:
         started = time.monotonic()

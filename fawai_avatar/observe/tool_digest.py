@@ -136,10 +136,22 @@ def digest_text(
                 if len(hits) >= hit_budget:
                     break
 
+    rel_hint = ""
+    try:
+        from pathlib import Path as _P
+
+        from fawai_avatar.config import RuntimeConfig
+
+        root = _P(RuntimeConfig.from_env().work_root).expanduser().resolve()
+        rel = str(_P(dump_path).resolve().relative_to(root))
+        rel_hint = f"；工作区内相对路径 `{rel}`（优先用此 path 做 fs_read）"
+    except Exception:  # noqa: BLE001 — 相对路径提示失败不影响压缩
+        rel_hint = ""
     parts: list[str] = [
         (
             f"（已压缩：原 {meta['chars']} 字符 / {meta['lines']} 行；"
-            f"全文落盘 {dump_path}；请用 fs_read path 读该绝对路径，"
+            f"全文落盘 {dump_path}{rel_hint}；"
+            "请用 fs_read 读该文件后再总结，禁止 shell cat 代替；"
             "禁止臆造 grep_result_*.txt）"
         ),
         f"--- 头 {len(head)} 行 ---",
@@ -206,6 +218,8 @@ def format_tool_observation(
     if not actions and not results:
         return "执行结果：本步无动作。", meta
 
+    from fawai_avatar.channel.redact import redact_secrets
+
     lines = ["执行结果（工具结果观察）："]
     for i, result in enumerate(results):
         action = actions[i] if i < len(actions) else None
@@ -213,15 +227,19 @@ def format_tool_observation(
         args = action.args if action else {}
         cmd = args.get("cmd") or args.get("command") or args.get("argv")
         path = args.get("path")
+        msg = redact_secrets(str(result.message or ""))
         head = f"- {kind}"
         if cmd:
-            head += f" cmd={cmd!r}"
+            head += f" cmd={redact_secrets(str(cmd))!r}"
         if path:
             head += f" path={path!r}"
-        head += f" → {'ok' if result.ok else 'FAIL'}: {result.message}"
+        # 头行只留短摘要，避免配置/口令全文直接进 history
+        msg_preview = msg if len(msg) <= 240 else (msg[:239] + "…")
+        head += f" → {'ok' if result.ok else 'FAIL'}: {msg_preview}"
         lines.append(head)
 
         data = result.data or {}
+        digested_keys = set()
         for key, label in (
             ("stdout", "stdout"),
             ("stderr", "stderr"),
@@ -232,11 +250,21 @@ def format_tool_observation(
             if val is None or not str(val).strip():
                 continue
             digested, part_meta = digest_text(
-                str(val), goal=goal, label=label, data_dir=data_dir
+                redact_secrets(str(val)), goal=goal, label=label, data_dir=data_dir
+            )
+            meta["parts"].append(part_meta)
+            digested_keys.add(key)
+            tag = "已压缩" if part_meta.get("compressed") else "全文"
+            lines.append(f"  {label}（{tag}）:\n{digested}")
+
+        # message 本体很长且未走 stdout 字段时，同样压缩落盘（常见于 shell 把全文塞进 message）
+        if len(msg) > soft_chars() and "stdout" not in digested_keys:
+            digested, part_meta = digest_text(
+                msg, goal=goal, label="stdout", data_dir=data_dir
             )
             meta["parts"].append(part_meta)
             tag = "已压缩" if part_meta.get("compressed") else "全文"
-            lines.append(f"  {label}（{tag}）:\n{digested}")
+            lines.append(f"  stdout（{tag}）:\n{digested}")
 
         file_lines = data.get("lines")
         if isinstance(file_lines, list) and file_lines:

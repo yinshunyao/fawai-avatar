@@ -9,6 +9,7 @@ from typing import Any
 
 from fawai_avatar.config import (
     RuntimeConfig,
+    lore_auto_p1_kv,
     lore_llm_extract_enabled,
     lore_sidecar_enabled,
     resolve_lore_dir,
@@ -46,6 +47,7 @@ def _safe_process(**kwargs: Any) -> None:
         root = resolve_lore_dir(data_dir=cfg.data_dir, lore_dir=cfg.lore_dir)
         kwargs = dict(kwargs)
         kwargs.setdefault("llm_propose", _llm_propose_factory())
+        kwargs.setdefault("auto_p1_kv", lore_auto_p1_kv(default=False))
         process_sidecar_event(root, **kwargs)
     except Exception as exc:  # noqa: BLE001 — sidecar must not affect tasks
         logger.warning("lore sidecar failed: %s", exc)

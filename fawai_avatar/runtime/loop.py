@@ -62,10 +62,29 @@ from fawai_avatar.brain.explore_progress import (
     update_read_windows,
     wide_grep_hit_threshold,
 )
+from fawai_avatar.brain.method_recovery import (
+    format_method_switch_history,
+    format_remote_away_veto,
+    format_remote_force_message,
+    format_remote_gate_message,
+    looks_like_remote_away_text,
+    looks_like_remote_ops_goal,
+    method_constraints_for_failure,
+    remote_gate_should_abort_after_force,
+    remote_gate_should_force,
+    remote_gate_should_inject,
+    remote_idle_abort_threshold,
+    remote_idle_gate_threshold,
+    update_remote_idle_streak,
+)
 from fawai_avatar.brain.answer_effect import (
+    answer_coverage_reject_reason,
+    fail_message_for_answer_coverage,
     format_answer_coverage_prompt,
+    format_unread_dump_prompt,
     goal_needs_answer_coverage_gate,
-    thought_ok_for_answer_coverage,
+    prefer_fs_read_path,
+    unread_compressed_dumps,
 )
 from fawai_avatar.brain.write_effect import (
     format_visible_effect_prompt,
@@ -77,8 +96,10 @@ from fawai_avatar.brain.write_effect import (
 )
 from fawai_avatar.brain.planner import Brain
 from fawai_avatar.brain.reflect import (
+    abort_should_deliver_commands,
     failed_action_fingerprints,
     failed_write_paths,
+    format_abort_delivery,
     format_reflection_for_history,
     format_stagnation_for_history,
     hard_abort_stagnation,
@@ -372,7 +393,10 @@ class WorkerLoop:
                 prefix = "【用户追加】"
             else:
                 prefix = "【追问】"
-            history.append({"role": "user", "content": f"{prefix}{text}"[:1200]})
+            content = f"{prefix}{text}"
+            if looks_like_remote_away_text(text):
+                content = f"{content}\n{format_remote_away_veto(answer=text)}"
+            history.append({"role": "user", "content": content[:1600]})
         return history
 
     def _drain_pending_appends(
@@ -398,7 +422,10 @@ class WorkerLoop:
                 parts.append(f"执行约束：{instruction}")
             if reason:
                 parts.append(f"（分析：{reason}）")
-            history.append({"role": "user", "content": "\n".join(parts)[:1200]})
+            blob = "\n".join(parts)
+            if looks_like_remote_away_text(text) or looks_like_remote_away_text(instruction):
+                blob = f"{blob}\n{format_remote_away_veto(answer=text or instruction)}"
+            history.append({"role": "user", "content": blob[:1600]})
         self.supervisor.merge_task_meta(task_id, {"pending_appends": []})
         # 刷新本地 task.meta，避免同一步再读到旧 pending
         refreshed = self.supervisor.get_task(task_id)
@@ -548,6 +575,8 @@ class WorkerLoop:
             saw_code_check_ok = bool(resumed.get("saw_code_check_ok"))
             saw_architecture_ok = bool(resumed.get("saw_architecture_ok"))
             explore_only_streak = int(resumed.get("explore_only_streak") or 0)
+            remote_idle_streak = int(resumed.get("remote_idle_streak") or 0)
+            remote_method_forced = bool(resumed.get("remote_method_forced"))
             explore_mutate_forced = bool(resumed.get("explore_mutate_forced"))
             raw_reads = resumed.get("read_path_counts") or {}
             read_path_counts = (
@@ -571,6 +600,17 @@ class WorkerLoop:
             answer_coverage_retries = int(
                 resumed.get("answer_coverage_retries") or 0
             )
+            unread_dump_forced = bool(resumed.get("unread_dump_forced"))
+            compressed_dump_paths = [
+                str(x)
+                for x in (resumed.get("compressed_dump_paths") or [])
+                if str(x).strip()
+            ]
+            read_ok_paths = [
+                str(x)
+                for x in (resumed.get("read_ok_paths") or [])
+                if str(x).strip()
+            ]
             pending_observe_kinds = resumed.get("pending_observe_kinds")
             format_abort_softened = bool(resumed.get("format_abort_softened"))
             start_step = int(resumed.get("next_step") or 0)
@@ -599,6 +639,8 @@ class WorkerLoop:
             saw_architecture_ok = False
             explore_only_streak = 0
             explore_mutate_forced = False
+            remote_idle_streak = 0
+            remote_method_forced = False
             read_path_counts = {}
             read_windows = {}
             locate_anchors = []
@@ -608,6 +650,9 @@ class WorkerLoop:
             weak_write_pending = False
             visible_effect_retries = 0
             answer_coverage_retries = 0
+            unread_dump_forced = False
+            compressed_dump_paths = []
+            read_ok_paths = []
             pending_observe_kinds = None
             format_abort_softened = False
             # 追问不再并入 goal：新 run 把 meta.followups 注入 history，大脑仍能看到增量
@@ -619,6 +664,8 @@ class WorkerLoop:
         step_repeat_n = step_repeat_threshold()
         explore_gate_n = explore_only_gate_threshold(goal=task.goal)
         explore_abort_n = explore_only_abort_threshold(goal=task.goal)
+        remote_gate_n = remote_idle_gate_threshold(goal=task.goal)
+        remote_abort_n = remote_idle_abort_threshold(goal=task.goal)
         locate_budget_n = locate_budget_threshold()
         wide_grep_n = wide_grep_hit_threshold()
 
@@ -639,6 +686,8 @@ class WorkerLoop:
                 saw_architecture_ok=saw_architecture_ok,
                 explore_only_streak=explore_only_streak,
                 explore_mutate_forced=explore_mutate_forced,
+                remote_idle_streak=remote_idle_streak,
+                remote_method_forced=remote_method_forced,
                 read_path_counts=read_path_counts,
                 read_windows=read_windows,
                 locate_anchors=locate_anchors,
@@ -648,6 +697,9 @@ class WorkerLoop:
                 weak_write_pending=weak_write_pending,
                 visible_effect_retries=visible_effect_retries,
                 answer_coverage_retries=answer_coverage_retries,
+                unread_dump_forced=unread_dump_forced,
+                compressed_dump_paths=compressed_dump_paths,
+                read_ok_paths=read_ok_paths,
                 pending_observe_kinds=pending_observe_kinds,
                 last_reflection=last_reflection,
                 format_abort_softened=format_abort_softened,
@@ -814,6 +866,14 @@ class WorkerLoop:
             )
             if reflection.decision == "abort" or not can_replan:
                 abort_msg = reflection.cause or err_msg
+                abort_thought = plan_for_reflect.thought
+                if reflection.decision == "abort" and abort_should_deliver_commands(
+                    reflection
+                ):
+                    abort_msg = format_abort_delivery(
+                        reflection, fallback=abort_msg
+                    )
+                    abort_thought = abort_msg
                 if self._task_control(task_id) == "cancelled":
                     return self._finish(
                         task_id,
@@ -823,7 +883,7 @@ class WorkerLoop:
                         replan_count=replan_count,
                         reflect_count=reflect_count,
                         verify_results=verify_results,
-                        final_thought=plan_for_reflect.thought,
+                        final_thought=abort_thought,
                         last_reflection=last_reflection,
                         write_set=write_set,
                     )
@@ -843,7 +903,7 @@ class WorkerLoop:
                     replan_count=replan_count,
                     reflect_count=reflect_count,
                     verify_results=verify_results,
-                    final_thought=plan_for_reflect.thought,
+                    final_thought=abort_thought,
                     last_reflection=last_reflection,
                     write_set=write_set,
                 )
@@ -1053,6 +1113,23 @@ class WorkerLoop:
                     actions=plan.actions,
                     results=results,
                 )
+                # 记录成功 fs_read 路径，供「压缩全文未读」闸比对
+                for i, action in enumerate(plan.actions):
+                    kind = (action.kind or "").strip().lower()
+                    if kind not in {"fs_read", "fs_read_many"}:
+                        continue
+                    ok = i < len(results) and bool(results[i].ok)
+                    if not ok:
+                        continue
+                    if kind == "fs_read":
+                        p = str((action.args or {}).get("path") or "").strip()
+                        if p and p not in read_ok_paths:
+                            read_ok_paths.append(p)
+                    else:
+                        for raw in (action.args or {}).get("paths") or []:
+                            p = str(raw or "").strip()
+                            if p and p not in read_ok_paths:
+                                read_ok_paths.append(p)
                 explore_only_streak = update_explore_only_streak(
                     explore_only_streak,
                     goal=task.goal,
@@ -1062,6 +1139,14 @@ class WorkerLoop:
                     read_windows=read_windows,
                     results=results,
                 )
+                remote_idle_streak = update_remote_idle_streak(
+                    remote_idle_streak,
+                    goal=task.goal,
+                    actions=plan.actions,
+                    results=results,
+                )
+                if remote_idle_streak == 0:
+                    remote_method_forced = False
                 read_windows = update_read_windows(
                     read_windows,
                     actions=plan.actions,
@@ -1199,6 +1284,17 @@ class WorkerLoop:
                         goal=task.goal,
                         data_dir=self.supervisor.data_dir,
                     )
+                    from fawai_avatar.channel.redact import redact_secrets
+
+                    tool_feedback = redact_secrets(tool_feedback or "")
+                    for part in tool_meta.get("parts") or []:
+                        if not isinstance(part, dict):
+                            continue
+                        dump = str(part.get("dump_path") or "").strip()
+                        if dump and dump not in compressed_dump_paths:
+                            compressed_dump_paths.append(dump)
+                        if part.get("compressed"):
+                            tool_meta["compressed"] = True
                     tool_obs_ms = int((time.perf_counter() - t_tool_obs) * 1000)
                     self._progress(
                         progress_tool_observe_text(
@@ -1364,6 +1460,20 @@ class WorkerLoop:
                             "content": format_reflection_for_history(reflection),
                         }
                     )
+                    method_cs = method_constraints_for_failure(
+                        plan.actions, results, goal=task.goal
+                    )
+                    if method_cs or (reflection.raw or {}).get("method_switch"):
+                        switch_msg = format_method_switch_history(
+                            method_cs or list(reflection.constraints or [])[:4]
+                        )
+                        history.append({"role": "user", "content": switch_msg})
+                        self._progress(
+                            switch_msg[:200],
+                            phase="method_switch",
+                            step=step,
+                            reflect_count=reflect_count,
+                        )
                     # patch miss / 缺 path / 截断锚点：临时放开定向只读，避免 mutate 面挡住补读后直接 failed
                     if reflection_needs_verify_read(reflection):
                         verify_msg = format_verify_read_message(
@@ -1405,8 +1515,14 @@ class WorkerLoop:
 
                     if reflection.decision == "abort" or not can_replan:
                         abort_msg = reflection.cause or err
-                        if reflection.decision == "abort":
-                            abort_msg = reflection.cause or err
+                        abort_thought = plan.thought
+                        if reflection.decision == "abort" and abort_should_deliver_commands(
+                            reflection
+                        ):
+                            abort_msg = format_abort_delivery(
+                                reflection, fallback=abort_msg
+                            )
+                            abort_thought = abort_msg
                         # 已取消则保持 cancelled，不覆盖为 failed
                         if self._task_control(task_id) == "cancelled":
                             return self._finish(
@@ -1417,7 +1533,7 @@ class WorkerLoop:
                                 replan_count=replan_count,
                                 reflect_count=reflect_count,
                                 verify_results=verify_results,
-                                final_thought=plan.thought,
+                                final_thought=abort_thought,
                                 last_reflection=last_reflection,
                                 write_set=write_set,
                             )
@@ -1430,7 +1546,7 @@ class WorkerLoop:
                             replan_count=replan_count,
                             reflect_count=reflect_count,
                             verify_results=verify_results,
-                            final_thought=plan.thought,
+                            final_thought=abort_thought,
                             last_reflection=last_reflection,
                             write_set=write_set,
                         )
@@ -1576,6 +1692,126 @@ class WorkerLoop:
                     )
                     persist(next_step=step + 1)
                     continue
+
+                # 远端/部署类：连续只读无远端副作用 → 注入 / 强制换方法族 / 止损
+                if looks_like_remote_ops_goal(task.goal) and remote_gate_n > 0:
+                    if remote_gate_should_abort_after_force(
+                        streak=remote_idle_streak,
+                        abort_at=remote_abort_n,
+                        forced=remote_method_forced,
+                        actions=plan.actions,
+                        results=results,
+                    ):
+                        abort_msg = format_remote_force_message(
+                            streak=remote_idle_streak,
+                            gate=remote_gate_n,
+                            abort_at=remote_abort_n,
+                        )
+                        abort_msg = (
+                            abort_msg
+                            + " 已给过远端方法强制轮仍无远端成功副作用，止损。"
+                        )
+                        history.append({"role": "user", "content": abort_msg})
+                        self.supervisor.report(
+                            task_id,
+                            "remote_gate: abort",
+                            {
+                                "remote_idle_streak": remote_idle_streak,
+                                "gate": remote_gate_n,
+                                "abort_at": remote_abort_n,
+                            },
+                        )
+                        self._progress(
+                            abort_msg[:200],
+                            phase="remote_gate",
+                            step=step,
+                            remote_idle_streak=remote_idle_streak,
+                            decision="abort",
+                        )
+                        if self._task_control(task_id) == "cancelled":
+                            return self._finish(
+                                task_id,
+                                ok=False,
+                                error="cancelled",
+                                traces=traces,
+                                replan_count=replan_count,
+                                reflect_count=reflect_count,
+                                verify_results=verify_results,
+                                final_thought=plan.thought,
+                                last_reflection=last_reflection,
+                                write_set=write_set,
+                                stagnation_count=stagnation_count,
+                            )
+                        self.supervisor.fail(task_id, message=abort_msg)
+                        return self._finish(
+                            task_id,
+                            ok=False,
+                            error=abort_msg,
+                            traces=traces,
+                            replan_count=replan_count,
+                            reflect_count=reflect_count,
+                            verify_results=verify_results,
+                            final_thought=abort_msg,
+                            last_reflection=last_reflection,
+                            write_set=write_set,
+                            stagnation_count=stagnation_count,
+                        )
+                    if remote_gate_should_force(
+                        streak=remote_idle_streak,
+                        abort_at=remote_abort_n,
+                        forced=remote_method_forced,
+                    ):
+                        force_msg = format_remote_force_message(
+                            streak=remote_idle_streak,
+                            gate=remote_gate_n,
+                            abort_at=remote_abort_n,
+                        )
+                        history.append({"role": "user", "content": force_msg})
+                        remote_method_forced = True
+                        self.supervisor.report(
+                            task_id,
+                            "remote_gate: force_method",
+                            {
+                                "remote_idle_streak": remote_idle_streak,
+                                "gate": remote_gate_n,
+                                "abort_at": remote_abort_n,
+                            },
+                        )
+                        self._progress(
+                            force_msg[:200],
+                            phase="remote_gate",
+                            step=step,
+                            remote_idle_streak=remote_idle_streak,
+                            decision="force_method",
+                        )
+                        persist(next_step=step + 1)
+                        continue
+                    if remote_gate_should_inject(
+                        streak=remote_idle_streak, gate=remote_gate_n
+                    ):
+                        gate_msg = format_remote_gate_message(
+                            streak=remote_idle_streak,
+                            gate=remote_gate_n,
+                            abort_at=remote_abort_n,
+                        )
+                        history.append({"role": "user", "content": gate_msg})
+                        self.supervisor.report(
+                            task_id,
+                            "remote_gate: inject",
+                            {
+                                "remote_idle_streak": remote_idle_streak,
+                                "gate": remote_gate_n,
+                                "abort_at": remote_abort_n,
+                            },
+                        )
+                        self._progress(
+                            gate_msg[:200],
+                            phase="remote_gate",
+                            step=step,
+                            remote_idle_streak=remote_idle_streak,
+                            decision="inject",
+                        )
+
                 if locate_budget_should_inject(
                     streak=post_locate_streak, budget=locate_budget_n
                 ):
@@ -1917,82 +2153,91 @@ class WorkerLoop:
                                 last_reflection=last_reflection,
                                 write_set=write_set,
                             )
-                    # 问询/状态类：空 actions success 也须过答复覆盖闸（禁过程元叙述）
+                    # 问询/状态类：空 actions success 也须过答复覆盖闸
                     if (
                         plan.status == "success"
                         and not plan.actions
-                        and not awaiting_user_answer
                         and goal_needs_answer_coverage_gate(task.goal)
                         and not (
                             goal_needs_visible_effect_gate(task.goal) and write_set
                         )
                         and self._can_continue(step)
                     ):
-                        if not thought_ok_for_answer_coverage(
-                            plan.thought or "", goal=task.goal
-                        ):
+                        thought = plan.thought or ""
+                        work_root = None
+                        try:
+                            bg = getattr(self, "background", None) or getattr(
+                                self.supervisor, "background", None
+                            )
+                            if bg is not None and getattr(bg, "fs", None) is not None:
+                                work_root = bg.fs.work_root
+                            else:
+                                from fawai_avatar.config import RuntimeConfig
+
+                                work_root = RuntimeConfig.from_env().work_root
+                        except Exception:  # noqa: BLE001
+                            work_root = None
+                        unread = unread_compressed_dumps(
+                            compressed_dump_paths, read_ok_paths
+                        )
+                        if unread and not unread_dump_forced:
+                            unread_dump_forced = True
+                            awaiting_user_answer = True
+                            rel_paths = [
+                                prefer_fs_read_path(p, work_root=work_root)
+                                for p in unread[:3]
+                            ]
+                            history.append(
+                                {
+                                    "role": "user",
+                                    "content": format_unread_dump_prompt(
+                                        paths=rel_paths
+                                    ),
+                                }
+                            )
+                            self.supervisor.report(
+                                task_id,
+                                "answer_coverage: unread_dump",
+                                {"paths": rel_paths[:3]},
+                            )
+                            persist(next_step=step + 1)
+                            continue
+                        reason = answer_coverage_reject_reason(
+                            thought, goal=task.goal
+                        )
+                        if reason is not None:
+                            # 过薄且仍有未读 dump：优先逼读（若上一轮已 forced 仍未读则计入拒因）
+                            if unread and reason in {
+                                "inventory_thin",
+                                "meta_narration",
+                                "too_short",
+                                "placeholder",
+                            }:
+                                reason_for_fail = "unread_dump"
+                            else:
+                                reason_for_fail = reason
                             if answer_coverage_retries < 1:
                                 answer_coverage_retries += 1
                                 awaiting_user_answer = True
+                                rel_unread = [
+                                    prefer_fs_read_path(p, work_root=work_root)
+                                    for p in unread[:3]
+                                ]
                                 history.append(
                                     {
                                         "role": "user",
                                         "content": format_answer_coverage_prompt(
-                                            goal=task.goal
+                                            goal=task.goal,
+                                            thought=thought,
+                                            reason=reason,
+                                            unread_dumps=rel_unread or None,
                                         ),
                                     }
                                 )
                                 persist(next_step=step + 1)
                                 continue
-                            fail_msg = (
-                                "最终回复未直接回答目标问点（过程元叙述），拒绝假成功"
-                            )
-                            self.supervisor.fail(task_id, message=fail_msg)
-                            return self._finish(
-                                task_id,
-                                ok=False,
-                                error=fail_msg,
-                                traces=traces,
-                                replan_count=replan_count,
-                                reflect_count=reflect_count,
-                                verify_results=verify_results,
-                                final_thought=plan.thought or "",
-                                last_reflection=last_reflection,
-                                write_set=write_set,
-                            )
-                    if (
-                        plan.status == "success"
-                        and awaiting_user_answer
-                        and not plan.actions
-                        and goal_needs_answer_coverage_gate(task.goal)
-                        and not (
-                            goal_needs_visible_effect_gate(task.goal) and write_set
-                        )
-                    ):
-                        thought = plan.thought or ""
-                        if not thought_ok_for_answer_coverage(
-                            thought, goal=task.goal
-                        ):
-                            if (
-                                answer_coverage_retries < 1
-                                and self._can_continue(step)
-                            ):
-                                answer_coverage_retries += 1
-                                history.append(
-                                    {
-                                        "role": "user",
-                                        "content": (
-                                            format_answer_coverage_prompt(
-                                                goal=task.goal
-                                            )
-                                            + "上一轮 thought 仍是过程元叙述或太空，请重写事实答复。"
-                                        ),
-                                    }
-                                )
-                                persist(next_step=step + 1)
-                                continue
-                            fail_msg = (
-                                "最终回复未直接回答目标问点（过程元叙述），拒绝假成功"
+                            fail_msg = fail_message_for_answer_coverage(
+                                reason_for_fail
                             )
                             self.supervisor.fail(task_id, message=fail_msg)
                             return self._finish(
@@ -2019,7 +2264,13 @@ class WorkerLoop:
                                 goal=task.goal, write_set=write_set
                             )
                         elif goal_needs_answer_coverage_gate(task.goal):
-                            content = format_answer_coverage_prompt(goal=task.goal)
+                            content = format_answer_coverage_prompt(
+                                goal=task.goal,
+                                unread_dumps=unread_compressed_dumps(
+                                    compressed_dump_paths, read_ok_paths
+                                )
+                                or None,
+                            )
                         else:
                             content = (
                                 "请根据以上执行结果，给出面向用户的最终自然语言回答："

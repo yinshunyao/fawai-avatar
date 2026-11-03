@@ -1,5 +1,5 @@
-# term:系统配置  doc:doc/功能/会话网关/说明.md
-"""Web 系统配置：产品 FAWAI_* 读写仓库根 .env，并热更新进程环境。"""
+# term:系统配置  term:模型配置  doc:doc/功能/会话网关/说明.md
+"""Web 系统/模型配置：产品 FAWAI_* 读写仓库根 .env，并热更新进程环境。"""
 from __future__ import annotations
 
 import os
@@ -19,16 +19,22 @@ class SettingField:
     key: str
     group: str
     label: str
-    kind: str  # str | bool | int
+    kind: str  # str | bool | int | float
     default: str = ""
     secret: bool = False
     needs_restart: bool = False
     hint: str = ""
     options: tuple[str, ...] = ()
+    step: str = ""  # float 输入步进（前端提示）
 
+
+# 模型配置页（导航「模型配置」）；其余属系统配置页
+MODEL_GROUP_IDS: frozenset[str] = frozenset({"llm_provider", "llm_models", "llm_params"})
 
 GROUPS: tuple[tuple[str, str], ...] = (
-    ("llm", "LLM"),
+    ("llm_provider", "接入凭证"),
+    ("llm_models", "模型路由"),
+    ("llm_params", "生成参数"),
     ("runtime", "运行与大脑"),
     ("gateway", "网关与保活"),
     ("frp", "frp 穿透"),
@@ -40,52 +46,119 @@ GROUPS: tuple[tuple[str, str], ...] = (
 FIELDS: tuple[SettingField, ...] = (
     SettingField(
         "FAWAI_LLM_BASE_URL",
-        "llm",
+        "llm_provider",
         "API Base URL",
         "str",
         default="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        hint="OpenAI 兼容接口根路径",
+        hint="OpenAI 兼容接口根路径（如 DashScope / OpenAI / 自建网关）",
     ),
     SettingField(
         "FAWAI_LLM_API_KEY",
-        "llm",
+        "llm_provider",
         "API Key",
         "str",
         secret=True,
         hint="留空保存表示不改；可点清空",
     ),
     SettingField(
+        "FAWAI_LLM_TIMEOUT",
+        "llm_provider",
+        "请求超时（秒）",
+        "int",
+        default="120",
+        hint="单次 chat / embed / ASR 请求超时；0=SDK 默认",
+    ),
+    SettingField(
         "FAWAI_LLM_TEXT_MODEL",
-        "llm",
+        "llm_models",
         "文本模型",
         "str",
         default="qwen3.7-plus",
+        hint="无图消息走此模型",
     ),
     SettingField(
         "FAWAI_LLM_VLM_MODEL",
-        "llm",
+        "llm_models",
         "多模态模型",
         "str",
         default="qwen3-vl-plus",
+        hint="消息含图像时走此模型",
     ),
     SettingField(
         "FAWAI_LLM_ASR_MODEL",
-        "llm",
+        "llm_models",
         "语音转写模型",
         "str",
         default="qwen3-asr-flash",
         hint="对话框语音输入；OpenAI 兼容 input_audio",
     ),
     SettingField(
+        "FAWAI_LORE_EMBED_MODEL",
+        "llm_models",
+        "嵌入模型",
+        "str",
+        default="text-embedding-v3",
+        hint="个人知识库向量索引；OpenAI 兼容 embeddings",
+    ),
+    SettingField(
         "FAWAI_LLM_MODEL",
-        "llm",
+        "llm_models",
         "强制模型（可选）",
         "str",
-        hint="有值时覆盖智能路由",
+        hint="有值时覆盖文本/多模态智能路由；不覆盖 ASR",
+    ),
+    SettingField(
+        "FAWAI_LLM_TEMPERATURE",
+        "llm_params",
+        "Temperature",
+        "float",
+        hint="空=接口默认；越高越随机（常见 0～2）",
+        step="0.1",
+    ),
+    SettingField(
+        "FAWAI_LLM_TOP_P",
+        "llm_params",
+        "Top P",
+        "float",
+        hint="空=接口默认；核采样阈值（常见 0～1）",
+        step="0.05",
+    ),
+    SettingField(
+        "FAWAI_LLM_MAX_TOKENS",
+        "llm_params",
+        "Max Tokens",
+        "int",
+        default="0",
+        hint="单次补全上限；0=不限制（由服务商默认）",
+    ),
+    SettingField(
+        "FAWAI_LLM_PRESENCE_PENALTY",
+        "llm_params",
+        "Presence Penalty",
+        "float",
+        hint="空=不传；降低重复话题倾向（常见 -2～2）",
+        step="0.1",
+    ),
+    SettingField(
+        "FAWAI_LLM_FREQUENCY_PENALTY",
+        "llm_params",
+        "Frequency Penalty",
+        "float",
+        hint="空=不传；降低重复用词倾向（常见 -2～2）",
+        step="0.1",
     ),
     SettingField("FAWAI_DRY_RUN", "runtime", "干跑", "bool", default="0", hint="1=不真点键鼠/shell"),
     SettingField("FAWAI_DATA_DIR", "runtime", "数据目录", "str", default="data"),
     SettingField("FAWAI_WORK_ROOT", "runtime", "工作区根", "str", default="."),
+    SettingField(
+        "FAWAI_READ_ROOTS",
+        "runtime",
+        "只读根",
+        "str",
+        default="/",
+        hint="冒号分隔；默认 / 可读整盘；写仍限工作区；work=仅工作区",
+        needs_restart=True,
+    ),
     SettingField("FAWAI_AUTO_VERSION", "runtime", "写入前自动快照", "bool", default="1"),
     SettingField(
         "FAWAI_HEADLESS",
@@ -353,10 +426,20 @@ def _normalize_value(field: SettingField, raw: str) -> str:
         s = (raw or "").strip()
         if s == "" and field.default != "":
             return field.default
+        if s == "":
+            return ""
         try:
             return str(int(s))
         except ValueError as exc:
             raise ValueError(f"{field.key} must be int") from exc
+    if field.kind == "float":
+        s = (raw or "").strip()
+        if s == "":
+            return ""
+        try:
+            return str(float(s))
+        except ValueError as exc:
+            raise ValueError(f"{field.key} must be float") from exc
     if field.options and raw.strip() not in field.options and raw.strip() != "":
         # allow empty when empty is in options
         if "" in field.options and raw.strip() == "":
@@ -366,12 +449,34 @@ def _normalize_value(field: SettingField, raw: str) -> str:
     return raw if isinstance(raw, str) else str(raw)
 
 
-def get_settings_payload() -> dict[str, Any]:
+def normalize_scope(scope: str | None) -> str:
+    """``system`` | ``model`` | ``all``。"""
+    s = (scope or "all").strip().lower()
+    if s in {"system", "model", "all"}:
+        return s
+    raise ValueError(f"invalid scope: {scope!r}")
+
+
+def _group_in_scope(group_id: str, scope: str) -> bool:
+    if scope == "all":
+        return True
+    is_model = group_id in MODEL_GROUP_IDS
+    return is_model if scope == "model" else not is_model
+
+
+def get_settings_payload(*, scope: str = "all") -> dict[str, Any]:
+    scope_n = normalize_scope(scope)
     disk = read_dotenv_map()
-    groups = [{"id": gid, "label": label} for gid, label in GROUPS]
+    groups = [
+        {"id": gid, "label": label}
+        for gid, label in GROUPS
+        if _group_in_scope(gid, scope_n)
+    ]
     values: dict[str, Any] = {}
     fields_out: list[dict[str, Any]] = []
     for field in FIELDS:
+        if not _group_in_scope(field.group, scope_n):
+            continue
         eff = effective_value(field.key, disk=disk)
         set_flag = bool(str(eff).strip()) if field.secret else True
         item: dict[str, Any] = {
@@ -384,6 +489,7 @@ def get_settings_payload() -> dict[str, Any]:
             "needs_restart": field.needs_restart,
             "hint": field.hint,
             "options": list(field.options),
+            "step": field.step,
         }
         fields_out.append(item)
         if field.secret:
@@ -400,6 +506,7 @@ def get_settings_payload() -> dict[str, Any]:
             }
     return {
         "ok": True,
+        "scope": scope_n,
         "env_path": str(env_file_path()),
         "groups": groups,
         "fields": fields_out,
@@ -410,13 +517,21 @@ def get_settings_payload() -> dict[str, Any]:
 def update_settings(
     values: dict[str, Any] | None = None,
     clear: list[str] | None = None,
+    *,
+    scope: str = "all",
 ) -> dict[str, Any]:
     """
     写入 .env 并热更进程环境。
 
     - ``values``：键 → 字符串；secret 键仅在提供非空串时更新
     - ``clear``：显式清空的键（从 .env 删除并 pop 进程环境）
+    - ``scope``：只允许改对应页的字段（``system`` / ``model`` / ``all``）
     """
+    try:
+        scope_n = normalize_scope(scope)
+    except ValueError as exc:
+        return {"ok": False, "errors": [str(exc)], "needs_restart": False}
+
     values = values or {}
     clear_set = {str(k).strip() for k in (clear or []) if str(k).strip()}
     updates: dict[str, str | None] = {}
@@ -428,10 +543,16 @@ def update_settings(
     def _current(key: str) -> str:
         return effective_value(key, disk=disk)
 
+    def _allow(field: SettingField) -> bool:
+        return _group_in_scope(field.group, scope_n)
+
     for key in clear_set:
         field = _FIELD_BY_KEY.get(key)
         if field is None:
             errors.append(f"unknown key: {key}")
+            continue
+        if not _allow(field):
+            errors.append(f"key not in scope {scope_n}: {key}")
             continue
         if _current(key) == "" and key not in os.environ and key not in disk:
             continue
@@ -446,6 +567,9 @@ def update_settings(
         field = _FIELD_BY_KEY.get(key)
         if field is None:
             errors.append(f"unknown key: {key}")
+            continue
+        if not _allow(field):
+            errors.append(f"key not in scope {scope_n}: {key}")
             continue
         if not _KEY_RE.match(key):
             errors.append(f"invalid key: {key}")
@@ -467,8 +591,11 @@ def update_settings(
             errors.append(str(exc))
             continue
         # HEADLESS / FRP_ENABLE：空串表示删除强制项，回自动
+        # float 空串：删除键，回接口默认
         if field.key in {"FAWAI_HEADLESS", "FAWAI_FRP_ENABLE"} and norm == "":
             new_val: str | None = None
+        elif field.kind == "float" and norm == "":
+            new_val = None
         else:
             new_val = norm
         cur = _current(key)
@@ -486,7 +613,7 @@ def update_settings(
         return {"ok": False, "errors": errors, "needs_restart": False}
 
     if not updates:
-        payload = get_settings_payload()
+        payload = get_settings_payload(scope=scope_n)
         payload["needs_restart"] = False
         payload["updated"] = []
         return payload
@@ -503,7 +630,7 @@ def update_settings(
         except Exception:
             pass
 
-    payload = get_settings_payload()
+    payload = get_settings_payload(scope=scope_n)
     payload["needs_restart"] = changed_restart
     payload["updated"] = sorted(updates.keys())
     return payload

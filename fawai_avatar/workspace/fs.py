@@ -12,14 +12,21 @@ from typing import Any
 from fawai_avatar.workspace.paths import (
     WorkspacePathError,
     assert_writable_rel,
+    display_path,
     is_skipped_rel,
     normalize_work_root,
+    parse_read_roots,
+    path_under_any,
     rel_posix,
+    resolve_for_read,
     resolve_under_root,
     should_prune_dir,
 )
 
 _BRACE_RE = re.compile(r"\{([^{}]+)\}")
+SKIP_DIR_NAMES_OUTSIDE: frozenset[str] = frozenset(
+    {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache"}
+)
 
 
 def expand_glob_braces(pattern: str) -> list[str]:
@@ -108,12 +115,19 @@ def resolve_read_range(
     """解析 fs_read 行范围：正式名 offset/limit，兼容 start_line/end_line/line。
 
     行号均为 1-based；end_line 含该行。
+    模型常见 0-based 习惯：offset/start_line/line=0 视为文件头，收成 1。
     """
     raw = args or {}
     offset = _first_int(raw.get("offset"), raw.get("start_line"), raw.get("line"), default=1)
     assert offset is not None
-    if offset < 1:
-        raise ValueError("offset/start_line must be >= 1")
+    if offset == 0:
+        # 与「从第 0 行起」的 0-based 习惯对齐，避免反复 FAIL 烧轮次
+        offset = 1
+    elif offset < 1:
+        raise ValueError(
+            "offset/start_line must be >= 1（1-based 起始行；"
+            "文件头请省略 offset 或写 1，勿写负数）"
+        )
 
     limit = _first_int(raw.get("limit"), default=None)
     if limit is None:
@@ -219,14 +233,34 @@ def resolve_patch_ops(
 
 
 class WorkspaceFs:
-    """Background file tools scoped to a work root (no GUI)."""
+    """Background file tools：写限 work_root；读可扩 FAWAI_READ_ROOTS（默认 `/`）。"""
 
-    def __init__(self, work_root: str | Path) -> None:
+    def __init__(
+        self,
+        work_root: str | Path,
+        *,
+        read_roots: list[str | Path] | None = None,
+    ) -> None:
         self._root = normalize_work_root(work_root)
+        if read_roots is None:
+            self._read_roots = parse_read_roots(None)
+        else:
+            self._read_roots = []
+            for item in read_roots:
+                try:
+                    p = Path(item).expanduser().resolve()
+                except OSError:
+                    continue
+                if p not in self._read_roots:
+                    self._read_roots.append(p)
 
     @property
     def work_root(self) -> Path:
         return self._root
+
+    @property
+    def read_roots(self) -> list[Path]:
+        return list(self._read_roots)
 
     def glob(self, pattern: str, *, head_limit: int = 100) -> list[str]:
         pattern = (pattern or "*").strip()
@@ -262,7 +296,7 @@ class WorkspaceFs:
         context_before: int = 0,
         context_after: int = 0,
     ) -> list[dict[str, Any]]:
-        base = resolve_under_root(self._root, path)
+        base = resolve_for_read(self._root, path, read_roots=self._read_roots)
         before = max(0, int(context_before))
         after = max(0, int(context_after))
         if shutil.which("rg"):
@@ -314,19 +348,20 @@ class WorkspaceFs:
             raise ValueError("offset must be >= 1")
         if limit < 1:
             raise ValueError("limit must be >= 1")
-        file_path = resolve_under_root(self._root, path)
-        rel = rel_posix(file_path, self._root)
-        if is_skipped_rel(rel):
-            raise WorkspacePathError(f"path is skipped: {rel}")
+        file_path = resolve_for_read(self._root, path, read_roots=self._read_roots)
+        shown = display_path(file_path, self._root)
+        in_work = path_under_any(file_path, [self._root])
+        if in_work and is_skipped_rel(shown):
+            raise WorkspacePathError(f"path is skipped: {shown}")
         if not file_path.is_file():
-            raise FileNotFoundError(rel)
+            raise FileNotFoundError(shown)
         text = file_path.read_text(encoding="utf-8", errors="replace")
         all_lines = text.splitlines()
         start = offset - 1
         chunk = all_lines[start : start + limit]
         truncated = start + len(chunk) < len(all_lines)
         lines = [{"n": offset + i, "text": line} for i, line in enumerate(chunk)]
-        return {"path": rel, "lines": lines, "truncated": truncated}
+        return {"path": shown, "lines": lines, "truncated": truncated}
 
     def write(
         self,
@@ -481,12 +516,19 @@ class WorkspaceFs:
         if glob and glob != "*":
             cmd.extend(["--glob", glob])
         cmd.append(pattern)
-        rel_base = rel_posix(base, self._root)
-        cmd.append("." if rel_base == "." else rel_base)
+        in_work = path_under_any(base, [self._root])
+        if in_work:
+            rel_base = rel_posix(base, self._root)
+            cmd.append("." if rel_base == "." else rel_base)
+            cwd: str | None = str(self._root)
+        else:
+            # 只读根外目录：对绝对路径直接 rg，cwd 用该目录
+            cmd.append(str(base))
+            cwd = str(base if base.is_dir() else base.parent)
         try:
             proc = subprocess.run(
                 cmd,
-                cwd=self._root,
+                cwd=cwd,
                 capture_output=True,
                 text=True,
                 check=False,
@@ -511,9 +553,19 @@ class WorkspaceFs:
                 context_before=context_before,
                 context_after=context_after,
             )
-        return self._parse_rg_json(proc.stdout or "", head_limit=head_limit)
+        return self._parse_rg_json(
+            proc.stdout or "",
+            head_limit=head_limit,
+            path_base=base if not in_work else None,
+        )
 
-    def _parse_rg_json(self, stdout: str, *, head_limit: int) -> list[dict[str, Any]]:
+    def _parse_rg_json(
+        self,
+        stdout: str,
+        *,
+        head_limit: int,
+        path_base: Path | None = None,
+    ) -> list[dict[str, Any]]:
         hits: list[dict[str, Any]] = []
         pending: dict[str, Any] | None = None
         for raw in stdout.splitlines():
@@ -532,7 +584,10 @@ class WorkspaceFs:
                 path = path.replace("\\", "/")
                 if path.startswith("./"):
                     path = path[2:]
-                if is_skipped_rel(path):
+                if path_base is not None:
+                    abs_hit = Path(path) if Path(path).is_absolute() else (path_base / path)
+                    path = display_path(abs_hit, self._root)
+                elif is_skipped_rel(path):
                     pending = None
                     continue
                 line_no = int((data.get("line_number") or 0))
@@ -572,11 +627,12 @@ class WorkspaceFs:
         except re.error as exc:
             raise ValueError(f"invalid grep pattern: {pattern}") from exc
         hits: list[dict[str, Any]] = []
+        in_work = path_under_any(base, [self._root])
         for file_path in self._iter_files(base):
             if glob and glob != "*" and not Path(file_path.name).match(glob):
                 continue
-            rel = rel_posix(file_path, self._root)
-            if is_skipped_rel(rel):
+            shown = display_path(file_path, self._root)
+            if in_work and is_skipped_rel(shown):
                 continue
             try:
                 content = file_path.read_text(encoding="utf-8", errors="replace")
@@ -595,7 +651,7 @@ class WorkspaceFs:
                     ]
                     hits.append(
                         {
-                            "path": rel,
+                            "path": shown,
                             "line": i,
                             "text": line,
                             "before": before,
@@ -610,16 +666,23 @@ class WorkspaceFs:
         if base.is_file():
             return [base]
         files: list[Path] = []
+        in_work = path_under_any(base, [self._root])
         for dirpath, dirnames, filenames in os.walk(base, topdown=True):
-            rel_dir = rel_posix(Path(dirpath), self._root)
-            if rel_dir != "." and is_skipped_rel(rel_dir):
-                dirnames.clear()
-                continue
-            dirnames[:] = [
-                d
-                for d in sorted(dirnames)
-                if not should_prune_dir("" if rel_dir == "." else rel_dir, d)
-            ]
+            if in_work:
+                rel_dir = rel_posix(Path(dirpath), self._root)
+                if rel_dir != "." and is_skipped_rel(rel_dir):
+                    dirnames.clear()
+                    continue
+                dirnames[:] = [
+                    d
+                    for d in sorted(dirnames)
+                    if not should_prune_dir("" if rel_dir == "." else rel_dir, d)
+                ]
+            else:
+                # 仓外只读：仍跳过常见噪声目录名
+                dirnames[:] = [
+                    d for d in sorted(dirnames) if d not in SKIP_DIR_NAMES_OUTSIDE
+                ]
             for name in sorted(filenames):
                 files.append(Path(dirpath) / name)
         return files

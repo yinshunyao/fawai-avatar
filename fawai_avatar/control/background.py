@@ -88,7 +88,7 @@ class BackgroundTools:
         self.diff_mode = (diff_mode or cfg.diff_mode or "auto").strip().lower()
         self.task_id = task_id
         self.full_write_line_limit = cfg.full_write_line_limit
-        self.fs = WorkspaceFs(root)
+        self.fs = WorkspaceFs(root, read_roots=list(cfg.read_roots))
         self.code = CodeIndex(root, data_dir=data)
         self.versions = VersionStore(data / "versions", root)
         self.skills = SkillStore(data / "skills")

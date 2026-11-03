@@ -81,6 +81,7 @@ def _case_e2_forbid_and_allow(work: Path, data: Path) -> None:
         work / "fawai_avatar" / "runtime" / "releases.py",
         work / "fawai_avatar" / "runtime" / "keeper.py",
         work / "fawai_avatar" / "runtime" / "code_watch.py",
+        work / "fawai_avatar" / "runtime" / "reload_gate.py",
         work / "fawai_avatar" / "runtime" / "port_guard.py",
         work / "fawai_avatar" / "workspace" / "paths.py",
     ]
@@ -100,6 +101,7 @@ def _case_e2_forbid_and_allow(work: Path, data: Path) -> None:
         "fawai_avatar/runtime/releases.py",
         "fawai_avatar/runtime/keeper.py",
         "fawai_avatar/runtime/code_watch.py",
+        "fawai_avatar/runtime/reload_gate.py",
         "fawai_avatar/runtime/port_guard.py",
         "fawai_avatar/workspace/paths.py",
     ]

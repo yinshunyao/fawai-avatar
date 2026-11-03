@@ -1,0 +1,9 @@
+{
+  "id": "lesson_no_shell_bypass_fs",
+  "title": "禁止 shell 绕过 fs 沙箱",
+  "when_to_use": "fs_read 报 path escapes work root，或反省/规划出现「改用 shell cat 读绝对路径」时",
+  "steps": "1. 先改 work_root 相对路径，或读 data/observe 落盘全文。\n2. 目标文件确在仓外：status=need_input/failed 说明边界，或请用户扩大 FAWAI_WORK_ROOT。\n3. 禁止用 shell cat/type 读本地文件来绕过沙箱；远端 ssh 巡检不在此禁。\n4. 复盘若见 alternate 教绕过，升为机制根因并清洗该类 constraints。",
+  "tags": ["lesson", "review", "reflect", "sandbox", "fs_read"],
+  "source": "builtin:shell-bypass-fs-guard",
+  "created_at": "2026-11-03T00:00:00+00:00"
+}

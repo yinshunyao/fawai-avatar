@@ -343,9 +343,15 @@ def create_app(
         )
 
     @app.get("/api/settings")
-    async def settings_get(x_fawai_token: str | None = Header(default=None)) -> JSONResponse:
+    async def settings_get(
+        scope: str = "all",
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
         _check_token(x_fawai_token)
-        return JSONResponse(get_settings_payload())
+        try:
+            return JSONResponse(get_settings_payload(scope=scope))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.put("/api/settings")
     async def settings_put(
@@ -357,7 +363,8 @@ def create_app(
         values = body.get("values") if isinstance(body.get("values"), dict) else {}
         clear_raw = body.get("clear") or []
         clear_list = [str(x) for x in clear_raw] if isinstance(clear_raw, list) else []
-        result = update_settings(values=values, clear=clear_list)
+        scope = str(body.get("scope") or "all")
+        result = update_settings(values=values, clear=clear_list, scope=scope)
         if not result.get("ok", True) and result.get("errors"):
             raise HTTPException(status_code=400, detail={"errors": result["errors"]})
         return JSONResponse(result)
@@ -407,11 +414,22 @@ def create_app(
         x_fawai_token: str | None = Header(default=None),
         limit: int = 80,
     ) -> JSONResponse:
-        """待确认缓冲列表（非 P0 候选）。"""
+        """待确认缓冲列表（默认 P1/P2；P0 直写不进此表）。"""
         _check_token(x_fawai_token)
         from fawai_avatar.lore_api import lore_buffer_list
 
         return JSONResponse(lore_buffer_list(limit=limit))
+
+    @app.get("/api/lore/recent")
+    async def lore_recent_api(
+        x_fawai_token: str | None = Header(default=None),
+        limit: int = 40,
+    ) -> JSONResponse:
+        """最近已入库（sidecar 直写 / 缓冲入库）。"""
+        _check_token(x_fawai_token)
+        from fawai_avatar.lore_api import lore_recent_commits
+
+        return JSONResponse(lore_recent_commits(limit=limit))
 
     @app.post("/api/lore/buffer/clear")
     async def lore_buffer_clear_api(
@@ -454,6 +472,58 @@ def create_app(
             raise HTTPException(status_code=404, detail="row not found")
         return JSONResponse(result)
 
+    @app.get("/api/lore/entries")
+    async def lore_entries_list_api(
+        x_fawai_token: str | None = Header(default=None),
+        limit: int = 200,
+    ) -> JSONResponse:
+        """已入库知识条目（KV + 笔记），供 Web 使能/删除。"""
+        _check_token(x_fawai_token)
+        from fawai_avatar.lore_api import lore_entries_list
+
+        return JSONResponse(lore_entries_list(limit=limit))
+
+    @app.post("/api/lore/entries/enable")
+    async def lore_entry_enable_api(
+        payload: dict[str, Any] | None = Body(default=None),
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        """软开关：关闭后不参与检索/规划注入，仍保留在盘上。"""
+        _check_token(x_fawai_token)
+        from fawai_avatar.lore_api import lore_entry_set_enabled
+
+        body = payload or {}
+        result = lore_entry_set_enabled(
+            kind=str(body.get("kind") or ""),
+            id=str(body.get("id") or body.get("key") or ""),
+            enabled=bool(body.get("enabled", True)),
+        )
+        if not result.get("ok"):
+            err = str(result.get("error") or "enable failed")
+            code = 404 if "not found" in err else 400
+            raise HTTPException(status_code=code, detail=err)
+        return JSONResponse(result)
+
+    @app.post("/api/lore/entries/delete")
+    async def lore_entry_delete_api(
+        payload: dict[str, Any] | None = Body(default=None),
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        """硬删除已入库 KV 或笔记。"""
+        _check_token(x_fawai_token)
+        from fawai_avatar.lore_api import lore_entry_delete
+
+        body = payload or {}
+        result = lore_entry_delete(
+            kind=str(body.get("kind") or ""),
+            id=str(body.get("id") or body.get("key") or ""),
+        )
+        if not result.get("ok"):
+            err = str(result.get("error") or "delete failed")
+            code = 404 if "not found" in err else 400
+            raise HTTPException(status_code=code, detail=err)
+        return JSONResponse(result)
+
     @app.post("/api/lore/vector/reindex")
     async def lore_vector_reindex_http(
         x_fawai_token: str | None = Header(default=None),
@@ -470,14 +540,15 @@ def create_app(
     @app.get("/api/system-logs")
     async def list_system_logs_api(
         x_fawai_token: str | None = Header(default=None),
-        limit: int = 100,
+        limit: int = 50,
+        offset: int = 0,
         action: str | None = None,
         category: str | None = None,
         task_id: str | None = None,
         since: float | None = None,
         ok: str | None = None,
     ) -> JSONResponse:
-        """系统日志查询；按订阅落盘，不进会话。"""
+        """系统日志查询；按订阅落盘，不进会话。支持 limit/offset 分页。"""
         _check_token(x_fawai_token)
         slog = hub.system_log
         if not getattr(slog, "available", True):
@@ -485,6 +556,9 @@ def create_app(
                 {
                     "ok": True,
                     "logs": [],
+                    "total": 0,
+                    "limit": max(1, min(int(limit or 50), 500)),
+                    "offset": max(0, int(offset or 0)),
                     "degraded": True,
                     "init_error": getattr(slog, "init_error", None),
                     "message": "系统日志库降级；请到系统配置查看后台日志或一键修复启动错误",
@@ -496,16 +570,29 @@ def create_app(
             ok_flag = True
         elif raw_ok in {"0", "false", "no", "fail", "failed"}:
             ok_flag = False
-        entries = slog.list_logs(
-            limit=limit,
+        page_limit = max(1, min(int(limit or 50), 500))
+        page_offset = max(0, int(offset or 0))
+        filters = dict(
             action=(action or None),
             category=(category or None),
             task_id=(task_id or None),
             since=since,
             ok=ok_flag,
         )
+        total = slog.count_logs(**filters)
+        entries = slog.list_logs(
+            limit=page_limit,
+            offset=page_offset,
+            **filters,
+        )
         return JSONResponse(
-            {"ok": True, "logs": [e.to_dict() for e in entries]}
+            {
+                "ok": True,
+                "logs": [e.to_dict() for e in entries],
+                "total": total,
+                "limit": page_limit,
+                "offset": page_offset,
+            }
         )
 
     @app.get("/api/system-log-subscriptions")
@@ -1098,6 +1185,7 @@ def run_lan_gateway(
             perm_report = ensure_startup_permissions(
                 accessibility=True,
                 screen_recording=True,
+                full_disk_access=True,
             )
     except Exception:  # noqa: BLE001
         perm_report = None
@@ -1279,16 +1367,22 @@ def main() -> None:
     if is_macos():
         from fawai_avatar.runtime.console_log import cprint
 
-        cprint("正在检查 / 请求 macOS 权限（辅助功能、屏幕录制）…")
+        cprint("正在检查 / 请求 macOS 权限（辅助功能、屏幕录制、完全磁盘访问）…")
         report = ensure_startup_permissions(
             accessibility=True,
             screen_recording=True,
+            full_disk_access=True,
         )
         cprint(f"  → {report.summary_line()}")
         if not report.accessibility or not report.screen_recording:
             cprint(
                 "  → 若刚勾选授权，请重启本进程后再用实操/截屏；"
                 "未授权时任务内不会反复弹窗。"
+            )
+        if report.read_roots and not report.full_disk_access:
+            cprint(
+                "  → 只读根已含整盘路径，但「完全磁盘访问」可能未开；"
+                "仓外配置目录可能仍读失败，请在系统设置勾选后重启。"
             )
 
     cfg = RuntimeConfig.from_env()

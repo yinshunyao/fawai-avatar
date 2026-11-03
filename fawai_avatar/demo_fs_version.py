@@ -45,6 +45,15 @@ def main(work_root: str, data_dir: str) -> None:
     )
     assert r.ok and [row["n"] for row in r.data["lines"]] == [10, 11, 12], r.data
     assert [row["text"] for row in r.data["lines"]] == ["L10", "L11", "L12"], r.data
+    # 0-based 习惯：offset=0 须收成文件头，不得 FAIL 空转
+    r = tools.execute(
+        Action(kind="fs_read", args={"path": "notes/lines.txt", "offset": 0, "limit": 2})
+    )
+    assert r.ok and [row["text"] for row in r.data["lines"]] == ["L1", "L2"], r.message
+    r = tools.execute(
+        Action(kind="fs_read", args={"path": "notes/lines.txt", "start_line": 0, "limit": 1})
+    )
+    assert r.ok and [row["n"] for row in r.data["lines"]] == [1], r.message
 
     r = tools.execute(Action(kind="fs_glob", args={"pattern": "**/*.txt"}))
     print("glob", r.data)
@@ -85,6 +94,23 @@ def main(work_root: str, data_dir: str) -> None:
     r = tools.execute(Action(kind="version_get", args={"version_id": vid}))
     assert not r.data.get("exists")
     print("delete ok")
+
+    # 只读根：仓外绝对路径可读；写仍不可逃逸
+    from fawai_avatar.workspace.fs import WorkspaceFs
+    from fawai_avatar.workspace.paths import WorkspacePathError
+
+    outside = Path(tempfile.mkdtemp(prefix="fawai-read-root-")) / "secret_cfg.md"
+    outside.write_text("# cfg\nport=37443\n", encoding="utf-8")
+    fs_ro = WorkspaceFs(work_root, read_roots=["/"])
+    got = fs_ro.read(str(outside), offset=1, limit=10)
+    assert any("37443" in row["text"] for row in got["lines"]), got
+    try:
+        fs_ro.write(str(outside), "nope")
+        raise AssertionError("write outside work_root should fail")
+    except WorkspacePathError as exc:
+        assert "escapes work root" in str(exc), str(exc)
+    print("read_roots ok", outside)
+
     print(json.dumps({"work_root": work_root, "status": "smoke ok"}, ensure_ascii=False))
 
 

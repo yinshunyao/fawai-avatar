@@ -293,9 +293,14 @@
     header.appbar .theme-seg { margin-left: 4px; }
     .brand-text h1 {
       margin: 0;
-      font-size: 1rem;
-      font-weight: 600;
-      letter-spacing: 0.01em;
+      font-size: 1.15rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      color: var(--text);
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     #status {
       margin: 2px 0 0;
@@ -1507,7 +1512,8 @@
     #logsPage,
     #lorePage,
     #opsPage,
-    #settingsPage {
+    #settingsPage,
+    #modelPage {
       display: none;
       flex: 1;
       flex-direction: column;
@@ -1519,61 +1525,307 @@
     #logsPage.open,
     #lorePage.open,
     #opsPage.open,
-    #settingsPage.open { display: flex; }
+    #settingsPage.open,
+    #modelPage.open { display: flex; }
     .lore-status {
       display: flex;
       flex-wrap: wrap;
-      gap: 8px 12px;
-      font-size: 0.78rem;
+      gap: 6px 10px;
+      font-size: 0.72rem;
       color: var(--muted);
-      margin: 0 0 10px;
-      line-height: 1.4;
+      margin: 0 0 12px;
+      line-height: 1.35;
     }
-    .lore-status .on { color: var(--ok, #2a7a4b); }
+    .lore-status .on { color: var(--phase-act-ink); }
     .lore-status .off { color: var(--muted); }
-    .lore-row {
+    #lorePage .admin-head {
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px 14px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
+    #lorePage .lore-head-main {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      min-width: 0;
+      flex: 1;
+    }
+    #lorePage .lore-head-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-left: auto;
+      flex-shrink: 0;
+    }
+    #lorePage .lore-head-actions button {
+      padding: 4px 9px;
+      min-height: 28px;
+      font-size: 0.72rem;
+      font-weight: 500;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--line);
+      box-shadow: none;
+    }
+    #lorePage .lore-head-actions button:hover {
+      background: var(--fill-hover);
+      color: var(--text);
+      border-color: var(--line);
+    }
+    #lorePage .lore-shell {
+      flex: 1;
+      min-height: 0;
       display: flex;
       flex-direction: column;
-      gap: 6px;
-      padding: 12px 10px;
-      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: hidden;
     }
-    .lore-row:last-child { border-bottom: 0; }
-    .lore-row .lore-top {
+    #lorePage .lore-tabs {
+      display: flex;
+      flex-wrap: nowrap;
+      align-items: stretch;
+      gap: 2px;
+      flex-shrink: 0;
+      margin: 0;
+      padding: 0 10px;
+      border-bottom: 1px solid var(--line);
+      background: var(--fill);
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+    }
+    #lorePage .lore-tabs::-webkit-scrollbar { display: none; }
+    #lorePage .lore-tab {
+      position: relative;
+      flex: 0 0 auto;
+      height: 38px;
+      margin: 0;
+      padding: 0 14px;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      color: var(--muted);
+      font-weight: 500;
+      font-size: 0.82rem;
+      line-height: 1;
+      box-shadow: none;
+      white-space: nowrap;
+    }
+    #lorePage .lore-tab:hover {
+      color: var(--text);
+      background: transparent;
+      filter: none;
+    }
+    #lorePage .lore-tab.on {
+      color: var(--accent-deep);
+      background: transparent;
+      font-weight: 600;
+      box-shadow: none;
+    }
+    #lorePage .lore-tab.on:hover {
+      color: var(--accent-deep);
+      background: transparent;
+    }
+    #lorePage .lore-tab.on::after {
+      content: "";
+      position: absolute;
+      left: 10px;
+      right: 10px;
+      bottom: -1px;
+      height: 2px;
+      background: var(--accent);
+      border-radius: 2px 2px 0 0;
+    }
+    #lorePage .lore-panels {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #lorePage .lore-panel {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      background: transparent;
+      border: 0;
+      border-radius: 0;
+      overflow: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    #lorePage .lore-panel[hidden] {
+      display: none !important;
+    }
+    .lore-row,
+    .lore-entry {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 6px 12px;
+      align-items: start;
+      padding: 11px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    .lore-row:last-child,
+    .lore-entry:last-child { border-bottom: 0; }
+    .lore-row:hover,
+    .lore-entry:hover { background: var(--list-hover); }
+    .lore-row.disabled-entry,
+    .lore-entry.disabled-entry {
+      opacity: 0.7;
+      background: var(--fill-muted);
+    }
+    .lore-row .lore-main,
+    .lore-entry .lore-main { min-width: 0; }
+    .lore-row .lore-top,
+    .lore-entry .lore-meta {
       display: flex;
       flex-wrap: wrap;
       align-items: center;
-      gap: 8px;
-      font-size: 0.82rem;
+      gap: 6px 8px;
+      margin-bottom: 3px;
+      font-size: 0.78rem;
     }
-    .lore-row .lore-kind {
-      font-size: 0.72rem;
-      padding: 2px 6px;
-      border-radius: 4px;
-      background: var(--list-hover);
-      color: var(--fg);
-    }
-    .lore-row .lore-key {
+    .lore-pill {
+      display: inline-flex;
+      align-items: center;
+      font-size: 0.66rem;
       font-weight: 600;
-      word-break: break-word;
-    }
-    .lore-row .lore-body {
-      font-size: 0.8rem;
+      padding: 1px 7px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: var(--fill);
       color: var(--muted);
-      line-height: 1.45;
-      white-space: pre-wrap;
-      word-break: break-word;
+      line-height: 1.35;
+      flex-shrink: 0;
     }
-    .lore-row .lore-actions {
+    .lore-pill.kind {
+      color: var(--text);
+      background: var(--fill-soft);
+    }
+    .lore-pill.on {
+      color: var(--phase-act-ink);
+      background: var(--phase-act-bg);
+      border-color: transparent;
+    }
+    .lore-pill.off {
+      color: var(--muted);
+      background: transparent;
+    }
+    .lore-row .lore-key,
+    .lore-entry .lore-key {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text);
+      word-break: break-word;
+      min-width: 0;
+    }
+    .lore-row.committed {
+      grid-template-columns: 1fr;
+    }
+    .lore-row.committed .lore-key { font-weight: 500; }
+    .lore-row .lore-time,
+    .lore-entry .lore-time {
+      font-size: 0.7rem;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .lore-row .lore-body,
+    .lore-entry .lore-body {
+      font-size: 0.78rem;
+      color: var(--muted);
+      line-height: 1.4;
+      word-break: break-word;
+      white-space: pre-wrap;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .lore-row .lore-actions,
+    .lore-entry .lore-actions {
       display: flex;
       flex-wrap: wrap;
-      gap: 8px;
-      margin-top: 2px;
+      gap: 4px;
+      justify-content: flex-end;
+      align-self: center;
     }
-    .lore-row .lore-actions button {
+    .lore-row .lore-actions button,
+    .lore-entry .lore-actions button {
+      padding: 4px 8px;
+      min-height: 28px;
+      font-size: 0.7rem;
+      font-weight: 500;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid transparent;
+      box-shadow: none;
+    }
+    .lore-row .lore-actions button:hover,
+    .lore-entry .lore-actions button:hover {
+      background: var(--fill-hover);
+      color: var(--text);
+      border-color: var(--line);
+    }
+    .lore-row .lore-actions button.primary,
+    .lore-entry .lore-actions button.primary {
+      color: var(--phase-act-ink);
+      background: var(--phase-act-bg);
+      border-color: transparent;
+    }
+    .lore-row .lore-actions button.primary:hover,
+    .lore-entry .lore-actions button.primary:hover {
+      background: var(--accent-soft);
+      color: var(--phase-act-ink);
+      border-color: transparent;
+    }
+    .lore-row .lore-actions button.danger,
+    .lore-entry .lore-actions button.danger {
+      color: var(--err);
+      background: transparent;
+    }
+    .lore-row .lore-actions button.danger:hover,
+    .lore-entry .lore-actions button.danger:hover {
+      background: var(--err-bg);
+      color: var(--err);
+      border-color: transparent;
+    }
+    #lorePage .task-empty {
+      padding: 18px 14px;
       font-size: 0.78rem;
-      padding: 6px 10px;
-      min-height: 32px;
+      text-align: left;
+    }
+    @media (max-width: 859px) {
+      #lorePage .lore-head-actions {
+        width: 100%;
+        margin-left: 0;
+        justify-content: flex-end;
+      }
+      #lorePage .lore-tabs {
+        padding: 0 6px;
+      }
+      #lorePage .lore-tab {
+        height: 36px;
+        padding: 0 12px;
+        font-size: 0.78rem;
+      }
+      .lore-row,
+      .lore-entry {
+        grid-template-columns: 1fr;
+        gap: 8px;
+      }
+      .lore-row .lore-actions,
+      .lore-entry .lore-actions {
+        justify-content: flex-start;
+      }
     }
     .admin-page {
       flex: 1;
@@ -1601,46 +1853,99 @@
       font-size: 0.78rem;
       color: var(--muted);
     }
-    .admin-card {
-      background: var(--surface);
-      border: 1px solid var(--line);
-      border-radius: 12px;
+    #logsPage .logs-chrome-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px 14px;
+      flex-wrap: wrap;
       margin-bottom: 12px;
       flex-shrink: 0;
     }
-    .admin-card > summary {
-      list-style: none;
+    #logsPage .logs-chrome-row .admin-head {
+      margin-bottom: 0;
+      min-width: 0;
+      flex: 1;
+    }
+    #logsPage .logs-head-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-left: auto;
+      flex-shrink: 0;
+    }
+    #logsPage .logs-head-actions button {
+      padding: 4px 9px;
+      min-height: 28px;
+      font-size: 0.72rem;
+      font-weight: 500;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--line);
+      box-shadow: none;
       cursor: pointer;
-      padding: 12px 14px;
-      font-size: 0.88rem;
-      font-weight: 600;
+    }
+    #logsPage .logs-head-actions button:hover {
+      background: var(--fill-hover);
+      color: var(--text);
+      border-color: var(--line);
+    }
+    #logSubsModal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+    }
+    #logSubsModal.open { display: block; }
+    #logSubsModal .mask {
+      position: absolute;
+      inset: 0;
+      background: var(--modal-scrim);
+    }
+    #logSubsModal .panel {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      width: min(520px, calc(100vw - 24px));
+      max-height: min(80vh, 640px);
+      overflow: auto;
+      background: var(--surface);
+      border-radius: 16px;
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.18);
+      padding: 16px 18px 18px;
+      -webkit-overflow-scrolling: touch;
+    }
+    #logSubsModal .panel-head {
       display: flex;
       align-items: center;
-      gap: 8px;
-      user-select: none;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 8px;
     }
-    .admin-card > summary::-webkit-details-marker { display: none; }
-    .admin-card > summary::before {
-      content: "";
-      width: 0;
-      height: 0;
-      border-left: 5px solid var(--muted);
-      border-top: 4px solid transparent;
-      border-bottom: 4px solid transparent;
-      transition: transform 0.15s;
+    #logSubsModal .panel-head h2 {
+      margin: 0;
+      font-size: 1rem;
+      font-weight: 700;
     }
-    .admin-card[open] > summary::before { transform: rotate(90deg); }
-    .admin-card .subs-body {
-      padding: 0 14px 14px;
-      border-top: 1px solid var(--line);
+    #logSubsModal .panel-head button {
+      border: none;
+      background: var(--fill-hover);
+      border-radius: 8px;
+      width: 32px;
+      height: 32px;
+      cursor: pointer;
+      font-size: 1rem;
+      flex-shrink: 0;
     }
-    #logSubs .subs-hint {
-      margin: 10px 0 8px;
+    #logSubsModal .subs-hint {
+      margin: 0 0 10px;
       font-size: 0.72rem;
       color: var(--muted);
     }
-    #logSubs .sub-cat { margin-bottom: 10px; }
-    #logSubs .sub-cat-title {
+    #logSubsModal .sub-cat { margin-bottom: 10px; }
+    #logSubsModal .sub-cat-title {
       font-size: 0.78rem;
       font-weight: 600;
       margin-bottom: 4px;
@@ -1648,13 +1953,13 @@
       align-items: center;
       gap: 8px;
     }
-    #logSubs .sub-ops {
+    #logSubsModal .sub-ops {
       display: flex;
       flex-wrap: wrap;
       gap: 6px 12px;
       padding-left: 2px;
     }
-    #logSubs label.sub-op {
+    #logSubsModal label.sub-op {
       display: inline-flex;
       align-items: center;
       gap: 4px;
@@ -1662,18 +1967,24 @@
       color: var(--text);
       cursor: pointer;
       user-select: none;
+      min-height: 28px;
     }
-    #logSubs label.sub-op input { margin: 0; }
-    #logSubs .subs-actions {
+    #logSubsModal label.sub-op input { margin: 0; }
+    #logSubsModal .subs-actions {
       display: flex;
       gap: 8px;
-      margin-top: 4px;
+      margin-top: 8px;
       flex-wrap: wrap;
+      position: sticky;
+      bottom: 0;
+      padding-top: 8px;
+      background: linear-gradient(to top, var(--surface) 70%, transparent);
     }
-    #logSubs .subs-actions button {
+    #logSubsModal .subs-actions button {
       font: inherit;
       font-size: 0.76rem;
       padding: 6px 10px;
+      min-height: 32px;
       border-radius: 8px;
       border: 1px solid var(--line);
       background: var(--fill);
@@ -1681,7 +1992,7 @@
       color: var(--text);
       font-weight: 500;
     }
-    #logSubs .subs-actions button.primary {
+    #logSubsModal .subs-actions button.primary {
       background: var(--accent-deep);
       color: var(--on-accent);
       border-color: transparent;
@@ -1691,6 +2002,43 @@
       color: var(--muted);
       min-height: 1em;
       margin-left: auto;
+      align-self: center;
+    }
+    .admin-pager {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+      flex-shrink: 0;
+    }
+    .admin-pager .pager-meta {
+      font-size: 0.74rem;
+      color: var(--muted);
+    }
+    .admin-pager .pager-actions {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .admin-pager .pager-actions button {
+      font: inherit;
+      font-size: 0.74rem;
+      padding: 5px 10px;
+      min-height: 30px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: var(--fill);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .admin-pager .pager-actions button:disabled {
+      opacity: 0.45;
+      cursor: default;
+    }
+    .admin-pager .pager-actions button:not(:disabled):hover {
+      background: var(--fill-hover);
     }
     .admin-toolbar {
       display: flex;
@@ -1904,7 +2252,7 @@
     }
     .task-table-head {
       display: none;
-      grid-template-columns: 36px minmax(0, 1.6fr) 72px 148px 120px 148px;
+      grid-template-columns: 36px minmax(0, 1.6fr) 72px 148px 120px 220px;
       gap: 10px;
       padding: 10px 14px;
       border-bottom: 1px solid var(--line);
@@ -2097,7 +2445,7 @@
       .task-table-head { display: grid; }
       .task-row {
         display: grid;
-        grid-template-columns: 36px minmax(0, 1.6fr) 72px 148px 120px 148px;
+        grid-template-columns: 36px minmax(0, 1.6fr) 72px 148px 120px 220px;
         grid-template-areas: none;
         gap: 10px;
         align-items: center;
@@ -2136,27 +2484,53 @@
         display: inline-flex;
         grid-template-columns: none;
         width: auto;
-        gap: 2px;
+        gap: 6px;
         padding-top: 0;
         border-top: 0;
         margin-top: 0;
         justify-self: end;
       }
       .task-actions button {
-        width: 28px;
-        min-height: 28px;
+        width: 36px;
+        min-width: 36px;
+        min-height: 36px;
         padding: 0;
-        border: 0;
-        border-radius: 6px;
-        background: transparent;
-        color: var(--muted);
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        background: var(--fill);
+        color: var(--text);
         flex-direction: row;
+        transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
       }
-      .task-actions button.danger { color: var(--muted); }
-      .task-actions button:hover { background: var(--fill-hover); color: var(--text); }
-      .task-actions button.danger:hover { background: var(--err-bg); color: var(--err); }
-      .task-actions button:disabled:hover { background: transparent; color: var(--muted); }
-      .task-actions svg { width: 14px; height: 14px; }
+      .task-actions button.danger {
+        color: var(--err);
+        border-color: color-mix(in srgb, var(--err) 28%, var(--line));
+        background: color-mix(in srgb, var(--err-bg) 55%, var(--fill));
+      }
+      .task-actions button:hover {
+        background: var(--fill-hover);
+        color: var(--text);
+        border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+      }
+      .task-actions button.danger:hover {
+        background: var(--err-bg);
+        color: var(--err);
+        border-color: color-mix(in srgb, var(--err) 45%, var(--line));
+      }
+      .task-actions button:disabled {
+        opacity: 0.4;
+      }
+      .task-actions button:disabled:hover {
+        background: var(--fill);
+        color: var(--text);
+        border-color: var(--line);
+      }
+      .task-actions button.danger:disabled:hover {
+        color: var(--err);
+        background: color-mix(in srgb, var(--err-bg) 55%, var(--fill));
+        border-color: color-mix(in srgb, var(--err) 28%, var(--line));
+      }
+      .task-actions svg { width: 18px; height: 18px; }
       .task-actions .act-label { display: none; }
     }
     .review-bar {
@@ -2203,42 +2577,116 @@
       padding: 14px 16px;
       border-bottom: 1px solid var(--line);
     }
-    #opsPage .admin-page,
-    #settingsPage .admin-page { max-width: 720px; overflow-y: auto; }
-    #settingsPage .settings-toolbar {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 10px;
-      margin-bottom: 12px;
-      flex-shrink: 0;
+    #opsPage .admin-page { max-width: 720px; overflow-y: auto; }
+    /* 模型/系统配置：顶栏（含保存）固定，仅列表滚动，避免滚到底丢按钮 */
+    #settingsPage .admin-page,
+    #modelPage .admin-page {
+      max-width: 720px;
+      overflow: hidden;
+      padding-top: 12px;
+      padding-bottom: 0;
     }
-    #settingsPage .settings-path {
-      font-size: 0.72rem;
-      color: var(--muted);
-      word-break: break-all;
+    @media (min-width: 860px) {
+      #settingsPage .admin-page,
+      #modelPage .admin-page {
+        padding-top: 10px;
+        padding-left: 16px;
+        padding-right: 16px;
+      }
+      #settingsPage .settings-chrome .admin-head h2,
+      #modelPage .settings-chrome .admin-head h2 {
+        font-size: 1.05rem;
+      }
+      #settingsPage .settings-chrome-row > .primary,
+      #modelPage .settings-chrome-row > .primary {
+        min-height: 30px;
+        padding: 4px 12px;
+        font-size: 0.86rem;
+      }
+    }
+    #settingsPage .settings-chrome,
+    #modelPage .settings-chrome {
+      flex-shrink: 0;
+      padding-bottom: 8px;
+      margin-bottom: 2px;
+      border-bottom: 1px solid var(--line);
+      background: var(--bg-chat);
+    }
+    #settingsPage .settings-chrome-row,
+    #modelPage .settings-chrome-row {
+      display: flex;
+      align-items: center;
+      gap: 10px 12px;
+      min-width: 0;
+    }
+    #settingsPage .settings-chrome .admin-head,
+    #modelPage .settings-chrome .admin-head {
+      margin-bottom: 0;
       flex: 1;
       min-width: 0;
     }
+    #settingsPage .settings-chrome-row > .primary,
+    #modelPage .settings-chrome-row > .primary {
+      flex-shrink: 0;
+      min-height: 34px;
+      padding: 6px 14px;
+    }
+    #settingsPage .settings-path,
+    #modelPage .settings-path {
+      display: block;
+      margin-top: 4px;
+      font-size: 0.68rem;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+    }
+    #settingsPage .settings-status:empty,
+    #modelPage .settings-status:empty {
+      display: none;
+    }
+    #settingsPage .settings-scroll,
+    #modelPage .settings-scroll {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      padding-bottom: calc(20px + var(--safe-b));
+    }
     #opsPage .settings-status,
-    #settingsPage .settings-status {
+    #settingsPage .settings-status,
+    #modelPage .settings-status {
       font-size: 0.78rem;
       color: var(--muted);
-      min-height: 1.2em;
+      margin: 4px 0 0;
+      min-height: 0;
     }
     #opsPage .settings-status.warn,
-    #settingsPage .settings-status.warn { color: var(--warn-ink); }
+    #settingsPage .settings-status.warn,
+    #modelPage .settings-status.warn { color: var(--warn-ink); }
     #opsPage .settings-status.ok,
-    #settingsPage .settings-status.ok { color: var(--accent-deep); }
+    #settingsPage .settings-status.ok,
+    #modelPage .settings-status.ok { color: var(--accent-deep); }
     #opsPage .settings-status.err,
-    #settingsPage .settings-status.err { color: var(--err); }
-    #settingsPage .settings-groups { display: flex; flex-direction: column; gap: 10px; padding-bottom: 24px; }
-    #settingsPage details.settings-group {
+    #settingsPage .settings-status.err,
+    #modelPage .settings-status.err { color: var(--err); }
+    #settingsPage .settings-scroll > .settings-group { margin-bottom: 10px; }
+    #settingsPage .settings-groups,
+    #modelPage .settings-groups {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding-bottom: 8px;
+    }
+    #settingsPage details.settings-group,
+    #modelPage details.settings-group {
       background: var(--surface);
       border: 1px solid var(--line);
       border-radius: 12px;
     }
-    #settingsPage details.settings-group > summary {
+    #settingsPage details.settings-group > summary,
+    #modelPage details.settings-group > summary {
       list-style: none;
       cursor: pointer;
       padding: 12px 14px;
@@ -2249,8 +2697,10 @@
       gap: 8px;
       user-select: none;
     }
-    #settingsPage details.settings-group > summary::-webkit-details-marker { display: none; }
-    #settingsPage details.settings-group > summary::before {
+    #settingsPage details.settings-group > summary::-webkit-details-marker,
+    #modelPage details.settings-group > summary::-webkit-details-marker { display: none; }
+    #settingsPage details.settings-group > summary::before,
+    #modelPage details.settings-group > summary::before {
       content: "";
       width: 0;
       height: 0;
@@ -2259,15 +2709,18 @@
       border-bottom: 4px solid transparent;
       transition: transform 0.15s;
     }
-    #settingsPage details.settings-group[open] > summary::before { transform: rotate(90deg); }
-    #settingsPage .settings-body {
+    #settingsPage details.settings-group[open] > summary::before,
+    #modelPage details.settings-group[open] > summary::before { transform: rotate(90deg); }
+    #settingsPage .settings-body,
+    #modelPage .settings-body {
       padding: 4px 14px 14px;
       border-top: 1px solid var(--line);
       display: flex;
       flex-direction: column;
       gap: 12px;
     }
-    #settingsPage .settings-field label.field-label {
+    #settingsPage .settings-field label.field-label,
+    #modelPage .settings-field label.field-label {
       display: flex;
       align-items: baseline;
       gap: 8px;
@@ -2276,7 +2729,8 @@
       color: var(--text);
       margin-bottom: 6px;
     }
-    #settingsPage .settings-field .badge {
+    #settingsPage .settings-field .badge,
+    #modelPage .settings-field .badge {
       font-size: 0.68rem;
       font-weight: 500;
       color: var(--warn-ink);
@@ -2284,7 +2738,8 @@
       border-radius: 999px;
       padding: 1px 7px;
     }
-    #settingsPage .settings-field .hint {
+    #settingsPage .settings-field .hint,
+    #modelPage .settings-field .hint {
       margin: 4px 0 0;
       font-size: 0.72rem;
       color: var(--muted);
@@ -2293,7 +2748,11 @@
     #settingsPage .settings-field input[type="text"],
     #settingsPage .settings-field input[type="password"],
     #settingsPage .settings-field input[type="number"],
-    #settingsPage .settings-field select {
+    #settingsPage .settings-field select,
+    #modelPage .settings-field input[type="text"],
+    #modelPage .settings-field input[type="password"],
+    #modelPage .settings-field input[type="number"],
+    #modelPage .settings-field select {
       width: 100%;
       border: 1px solid var(--line);
       border-radius: 10px;
@@ -2304,25 +2763,31 @@
       color: var(--text);
     }
     #settingsPage .settings-field input:focus,
-    #settingsPage .settings-field select:focus {
+    #settingsPage .settings-field select:focus,
+    #modelPage .settings-field input:focus,
+    #modelPage .settings-field select:focus {
       outline: none;
       border-color: var(--accent);
       box-shadow: 0 0 0 3px var(--accent-ring);
       background: var(--surface);
     }
-    #settingsPage .bool-row {
+    #settingsPage .bool-row,
+    #modelPage .bool-row {
       display: flex;
       align-items: center;
       gap: 8px;
       font-size: 0.88rem;
     }
-    #settingsPage .secret-row {
+    #settingsPage .secret-row,
+    #modelPage .secret-row {
       display: flex;
       gap: 8px;
       align-items: center;
     }
-    #settingsPage .secret-row input { flex: 1; min-width: 0; }
-    #settingsPage .secret-row button {
+    #settingsPage .secret-row input,
+    #modelPage .secret-row input { flex: 1; min-width: 0; }
+    #settingsPage .secret-row button,
+    #modelPage .secret-row button {
       padding: 8px 10px;
       font-size: 0.76rem;
       border-radius: 8px;
@@ -2469,7 +2934,8 @@
       #logsPage.open,
       #lorePage.open,
       #opsPage.open,
-      #settingsPage.open {
+      #settingsPage.open,
+      #modelPage.open {
         display: flex !important;
         flex: 1;
       }
@@ -2493,7 +2959,8 @@
       #logsPage.open,
       #lorePage.open,
       #opsPage.open,
-      #settingsPage.open { display: flex; width: 100%; }
+      #settingsPage.open,
+      #modelPage.open { display: flex; width: 100%; }
       .side-nav { padding: 8px 12px 10px; }
       #taskNavPanel {
         margin-left: 6px;
@@ -2669,6 +3136,7 @@
       button { transition: none; }
     }
   </style>
+<style>.appbar, header, .navbar, .top-bar { box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); padding: 1rem 1.5rem; background: #ffffff; border-bottom: 1px solid #e5e7eb; transition: all 0.3s ease; }</style>
 </head>
 <body>
   <header class="appbar" id="appbar">
@@ -2746,7 +3214,7 @@
           <path d="M5 7.5h14v11H5z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
           <path d="M8 5.5h8M9 11h6M9 14.5h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
         </svg>
-        <span data-i18n="nav.lore">长记忆缓冲</span>
+        <span data-i18n="nav.lore">记忆缓冲</span>
       </button>
       <button type="button" class="side-nav-item" id="navOps" data-nav="ops">
         <svg class="nav-ico" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -2755,6 +3223,13 @@
           <circle cx="7" cy="15.5" r="1" fill="currentColor"/>
         </svg>
         <span data-i18n="nav.ops">服务与版本</span>
+      </button>
+      <button type="button" class="side-nav-item" id="navModel" data-nav="model">
+        <svg class="nav-ico" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M4.5 8.5 12 4l7.5 4.5v7L12 20l-7.5-4.5v-7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+          <path d="M12 12v8M12 12 4.5 8.5M12 12l7.5-3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+        <span data-i18n="nav.model">模型配置</span>
       </button>
       <button type="button" class="side-nav-item" id="navSettings" data-nav="settings">
         <svg class="nav-ico" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -2861,45 +3336,52 @@
     </div>
   </section>
 
-  <section id="lorePage" data-i18n-aria="title.lore" aria-label="长记忆缓冲">
+  <section id="lorePage" data-i18n-aria="title.lore" aria-label="记忆缓冲">
     <div class="admin-page">
       <div class="admin-head">
-        <h2 data-i18n="title.lore">长记忆缓冲</h2>
-        <span class="admin-meta" id="loreCountMeta"></span>
+        <div class="lore-head-main">
+          <h2 data-i18n="title.lore">记忆缓冲</h2>
+          <span class="admin-meta" id="loreCountMeta"></span>
+        </div>
+        <div class="lore-head-actions" role="group">
+          <button type="button" id="btnLoreRefresh" data-i18n="lore.refresh">刷新</button>
+          <button type="button" id="btnLoreReindex" data-i18n="lore.reindex">重建向量</button>
+          <button type="button" id="btnLoreClear" data-i18n="lore.clear" hidden>清空缓冲</button>
+        </div>
       </div>
       <p class="lore-status" id="loreStatusLine" aria-live="polite"></p>
-      <div class="admin-toolbar" role="group">
-        <button type="button" id="btnLoreRefresh" data-i18n="lore.refresh">刷新</button>
-        <button type="button" id="btnLoreReindex" data-i18n="lore.reindex">重建向量</button>
-        <button type="button" id="btnLoreClear" data-i18n="lore.clear">清空缓冲</button>
-      </div>
-      <div class="admin-list-wrap">
-        <div id="loreList"></div>
+      <div class="lore-shell">
+        <div class="lore-tabs" role="tablist" data-i18n-aria="lore.tabs" aria-label="记忆分区">
+          <button type="button" class="lore-tab" id="tabLorePending" role="tab" aria-selected="false" aria-controls="lorePanelPending" data-lore-tab="pending" data-i18n="lore.tab.pending">待确认</button>
+          <button type="button" class="lore-tab on" id="tabLoreEntries" role="tab" aria-selected="true" aria-controls="lorePanelEntries" data-lore-tab="entries" data-i18n="lore.tab.entries">已入库</button>
+          <button type="button" class="lore-tab" id="tabLoreRecent" role="tab" aria-selected="false" aria-controls="lorePanelRecent" data-lore-tab="recent" data-i18n="lore.tab.recent">最近</button>
+        </div>
+        <div class="lore-panels">
+          <div class="lore-panel" id="lorePanelPending" role="tabpanel" aria-labelledby="tabLorePending" data-lore-panel="pending" hidden>
+            <div id="loreList"></div>
+          </div>
+          <div class="lore-panel" id="lorePanelEntries" role="tabpanel" aria-labelledby="tabLoreEntries" data-lore-panel="entries">
+            <div id="loreEntriesList"></div>
+          </div>
+          <div class="lore-panel" id="lorePanelRecent" role="tabpanel" aria-labelledby="tabLoreRecent" data-lore-panel="recent" hidden>
+            <div id="loreRecentList"></div>
+          </div>
+        </div>
       </div>
     </div>
   </section>
 
   <section id="logsPage" data-i18n-aria="title.logs" aria-label="系统日志">
     <div class="admin-page">
-      <div class="admin-head">
-        <h2 data-i18n="title.logs">系统日志</h2>
-        <span class="admin-meta" id="logCountMeta"></span>
-      </div>
-      <details class="admin-card" id="logSubs">
-        <summary>
-          <span data-i18n="logs.subs">订阅记录</span>
-          <span id="logSubsStatus"></span>
-        </summary>
-        <div class="subs-body">
-          <p class="subs-hint" data-i18n="logs.subs.hint">勾选决定是否写入；改后仅影响新动作。</p>
-          <div id="logSubsBody"></div>
-          <div class="subs-actions">
-            <button type="button" id="logSubsAllOn" data-i18n="logs.subs.allOn">全开</button>
-            <button type="button" id="logSubsAllOff" data-i18n="logs.subs.allOff">全关</button>
-            <button type="button" class="primary" id="logSubsSave" data-i18n="logs.subs.save">保存订阅</button>
-          </div>
+      <div class="logs-chrome-row">
+        <div class="admin-head">
+          <h2 data-i18n="title.logs">系统日志</h2>
+          <span class="admin-meta" id="logCountMeta"></span>
         </div>
-      </details>
+        <div class="logs-head-actions">
+          <button type="button" id="btnLogSubs" data-i18n="logs.subs" data-i18n-aria="logs.subs" aria-label="订阅记录">订阅记录</button>
+        </div>
+      </div>
       <div class="admin-toolbar" role="group" data-i18n-aria="logs.filter" aria-label="筛选">
         <select id="logCategory" data-i18n-aria="logs.category" aria-label="大类">
           <option value="" data-i18n="logs.categoryAll">全部大类</option>
@@ -2926,43 +3408,74 @@
         </div>
         <div id="logList"></div>
       </div>
+      <div class="admin-pager" id="logPager" hidden>
+        <span class="pager-meta" id="logPagerMeta"></span>
+        <div class="pager-actions">
+          <button type="button" id="logPagerPrev" data-i18n="logs.page.prev">上一页</button>
+          <button type="button" id="logPagerNext" data-i18n="logs.page.next">下一页</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="modelPage" data-i18n-aria="title.model" aria-label="模型配置">
+    <div class="admin-page">
+      <div class="settings-chrome">
+        <div class="settings-chrome-row">
+          <div class="admin-head">
+            <h2 data-i18n="title.model">模型配置</h2>
+            <span class="admin-meta" id="modelMeta"></span>
+          </div>
+          <button type="button" class="primary" id="btnModelSave" data-i18n="settings.save">保存配置</button>
+        </div>
+        <span class="settings-path" id="modelPath" title=""></span>
+        <p class="settings-status" id="modelStatus"></p>
+      </div>
+      <div class="settings-scroll">
+        <p class="hint" style="margin:0 0 10px" data-i18n="model.intro">OpenAI 兼容接入；按消息是否含图路由文本 / 多模态模型。生成参数留空则走服务商默认。</p>
+        <div class="settings-groups" id="modelGroups"></div>
+      </div>
     </div>
   </section>
 
   <section id="settingsPage" data-i18n-aria="title.settings" aria-label="系统配置">
     <div class="admin-page">
-      <div class="admin-head">
-        <h2 data-i18n="title.settings">系统配置</h2>
-        <span class="admin-meta" id="settingsMeta"></span>
-      </div>
-      <div class="settings-toolbar">
-        <span class="settings-path" id="settingsPath"></span>
-        <button type="button" class="primary" id="btnSettingsSave" data-i18n="settings.save">保存配置</button>
-      </div>
-      <p class="settings-status" id="settingsStatus"></p>
-      <details class="settings-group" id="settingsAppearanceGroup" open>
-        <summary data-i18n="settings.appearance">外观</summary>
-        <div class="settings-body">
-          <div class="theme-field">
-            <span class="field-label" data-i18n="settings.colorMode">颜色模式</span>
-            <div class="theme-seg" id="themeSegSettings" role="group" data-i18n-aria="settings.colorMode" aria-label="颜色模式">
-              <button type="button" data-theme-pref="system" aria-pressed="true" data-i18n="header.theme.system">跟随系统</button>
-              <button type="button" data-theme-pref="light" aria-pressed="false" data-i18n="header.theme.light">浅色</button>
-              <button type="button" data-theme-pref="dark" aria-pressed="false" data-i18n="header.theme.dark">暗色</button>
-            </div>
-            <p class="hint" data-i18n="settings.themeHint">仅保存在本机浏览器，不写入服务端配置。</p>
+      <div class="settings-chrome">
+        <div class="settings-chrome-row">
+          <div class="admin-head">
+            <h2 data-i18n="title.settings">系统配置</h2>
+            <span class="admin-meta" id="settingsMeta"></span>
           </div>
-          <div class="lang-field">
-            <span class="field-label" data-i18n="settings.language">界面语言</span>
-            <div class="lang-seg" id="langSegSettings" role="group" data-i18n-aria="settings.language" aria-label="界面语言">
-              <button type="button" data-locale-pref="zh-CN" aria-pressed="true" data-i18n="header.lang.zh">中文</button>
-              <button type="button" data-locale-pref="en" aria-pressed="false" data-i18n="header.lang.en">English</button>
-            </div>
-            <p class="hint" data-i18n="settings.langHint">随时可切换；偏好保存在本机。</p>
-          </div>
+          <button type="button" class="primary" id="btnSettingsSave" data-i18n="settings.save">保存配置</button>
         </div>
-      </details>
-      <div class="settings-groups" id="settingsGroups"></div>
+        <span class="settings-path" id="settingsPath" title=""></span>
+        <p class="settings-status" id="settingsStatus"></p>
+      </div>
+      <div class="settings-scroll">
+        <details class="settings-group" id="settingsAppearanceGroup" open>
+          <summary data-i18n="settings.appearance">外观</summary>
+          <div class="settings-body">
+            <div class="theme-field">
+              <span class="field-label" data-i18n="settings.colorMode">颜色模式</span>
+              <div class="theme-seg" id="themeSegSettings" role="group" data-i18n-aria="settings.colorMode" aria-label="颜色模式">
+                <button type="button" data-theme-pref="system" aria-pressed="true" data-i18n="header.theme.system">跟随系统</button>
+                <button type="button" data-theme-pref="light" aria-pressed="false" data-i18n="header.theme.light">浅色</button>
+                <button type="button" data-theme-pref="dark" aria-pressed="false" data-i18n="header.theme.dark">暗色</button>
+              </div>
+              <p class="hint" data-i18n="settings.themeHint">仅保存在本机浏览器，不写入服务端配置。</p>
+            </div>
+            <div class="lang-field">
+              <span class="field-label" data-i18n="settings.language">界面语言</span>
+              <div class="lang-seg" id="langSegSettings" role="group" data-i18n-aria="settings.language" aria-label="界面语言">
+                <button type="button" data-locale-pref="zh-CN" aria-pressed="true" data-i18n="header.lang.zh">中文</button>
+                <button type="button" data-locale-pref="en" aria-pressed="false" data-i18n="header.lang.en">English</button>
+              </div>
+              <p class="hint" data-i18n="settings.langHint">随时可切换；偏好保存在本机。</p>
+            </div>
+          </div>
+        </details>
+        <div class="settings-groups" id="settingsGroups"></div>
+      </div>
     </div>
   </section>
 
@@ -3023,6 +3536,23 @@
       </div>
       <div class="stats-id" id="statsId"></div>
       <dl id="statsBody"></dl>
+    </div>
+  </div>
+  <div id="logSubsModal" role="dialog" aria-modal="true" data-i18n-aria="logs.subs" aria-label="订阅记录">
+    <div class="mask" id="logSubsMask"></div>
+    <div class="panel">
+      <div class="panel-head">
+        <h2 data-i18n="logs.subs">订阅记录</h2>
+        <button type="button" id="logSubsClose" data-i18n-aria="logs.subs.close" aria-label="关闭">✕</button>
+      </div>
+      <p class="subs-hint" data-i18n="logs.subs.hint">勾选决定是否写入；改后仅影响新动作。</p>
+      <div id="logSubsBody"></div>
+      <div class="subs-actions">
+        <button type="button" id="logSubsAllOn" data-i18n="logs.subs.allOn">全开</button>
+        <button type="button" id="logSubsAllOff" data-i18n="logs.subs.allOff">全关</button>
+        <button type="button" class="primary" id="logSubsSave" data-i18n="logs.subs.save">保存订阅</button>
+        <span id="logSubsStatus"></span>
+      </div>
     </div>
   </div>
   <div id="copyToast" role="status" aria-live="polite"></div>
@@ -3115,13 +3645,21 @@
     const lorePage = document.getElementById("lorePage");
     const opsPage = document.getElementById("opsPage");
     const settingsPage = document.getElementById("settingsPage");
+    const modelPage = document.getElementById("modelPage");
     const loreList = document.getElementById("loreList");
+    const loreEntriesList = document.getElementById("loreEntriesList");
+    const loreRecentList = document.getElementById("loreRecentList");
     const loreCountMeta = document.getElementById("loreCountMeta");
     const loreStatusLine = document.getElementById("loreStatusLine");
     const btnLoreRefresh = document.getElementById("btnLoreRefresh");
     const btnLoreClear = document.getElementById("btnLoreClear");
     const btnLoreReindex = document.getElementById("btnLoreReindex");
+    const loreTabButtons = Array.from(document.querySelectorAll("#lorePage [data-lore-tab]"));
+    const lorePanels = Array.from(document.querySelectorAll("#lorePage [data-lore-panel]"));
     let loreRowsCache = [];
+    let loreEntriesCache = [];
+    let loreActiveTab = "entries";
+    let loreTabUserPicked = false;
     const opsMeta = document.getElementById("opsMeta");
     const opsCountMeta = document.getElementById("opsCountMeta");
     const releaseList = document.getElementById("releaseList");
@@ -3130,6 +3668,17 @@
     const taskCountMeta = document.getElementById("taskCountMeta");
     const logList = document.getElementById("logList");
     const logCountMeta = document.getElementById("logCountMeta");
+    const logPager = document.getElementById("logPager");
+    const logPagerMeta = document.getElementById("logPagerMeta");
+    const logPagerPrev = document.getElementById("logPagerPrev");
+    const logPagerNext = document.getElementById("logPagerNext");
+    const btnLogSubs = document.getElementById("btnLogSubs");
+    const logSubsModal = document.getElementById("logSubsModal");
+    const logSubsMask = document.getElementById("logSubsMask");
+    const logSubsClose = document.getElementById("logSubsClose");
+    const LOG_PAGE_SIZE = 50;
+    let logPageOffset = 0;
+    let logPageTotal = 0;
     const taskNavPanel = document.getElementById("taskNavPanel");
     const navTasksGroup = document.getElementById("navTasksGroup");
     const navTasks = document.getElementById("navTasks");
@@ -3137,14 +3686,31 @@
     const navLogs = document.getElementById("navLogs");
     const navLore = document.getElementById("navLore");
     const navOps = document.getElementById("navOps");
+    const navModel = document.getElementById("navModel");
     const navSettings = document.getElementById("navSettings");
-    const settingsGroups = document.getElementById("settingsGroups");
-    const settingsPath = document.getElementById("settingsPath");
-    const settingsStatus = document.getElementById("settingsStatus");
-    const settingsMeta = document.getElementById("settingsMeta");
     const btnSettingsSave = document.getElementById("btnSettingsSave");
-    let settingsClear = new Set();
-    let settingsSnapshot = null;
+    const btnModelSave = document.getElementById("btnModelSave");
+    /** @type {Record<string, { scope: string, groups: HTMLElement|null, path: HTMLElement|null, status: HTMLElement|null, meta: HTMLElement|null, clear: Set<string>, snapshot: any }>} */
+    const settingsForms = {
+      system: {
+        scope: "system",
+        groups: document.getElementById("settingsGroups"),
+        path: document.getElementById("settingsPath"),
+        status: document.getElementById("settingsStatus"),
+        meta: document.getElementById("settingsMeta"),
+        clear: new Set(),
+        snapshot: null,
+      },
+      model: {
+        scope: "model",
+        groups: document.getElementById("modelGroups"),
+        path: document.getElementById("modelPath"),
+        status: document.getElementById("modelStatus"),
+        meta: document.getElementById("modelMeta"),
+        clear: new Set(),
+        snapshot: null,
+      },
+    };
     const taskQ = document.getElementById("taskQ");
     const taskStatus = document.getElementById("taskStatus");
     const taskArchived = document.getElementById("taskArchived");
@@ -3281,7 +3847,10 @@
           refreshOps().catch(() => {});
         } else if (view === "settings") {
           titleText.textContent = tr("title.settings");
-          if (settingsSnapshot) renderSettingsForm(settingsSnapshot);
+          if (settingsForms.system.snapshot) renderSettingsForm("system", settingsForms.system.snapshot);
+        } else if (view === "model") {
+          titleText.textContent = tr("title.model");
+          if (settingsForms.model.snapshot) renderSettingsForm("model", settingsForms.model.snapshot);
         } else if (view === "compose") {
           titleText.textContent = tr("title.newTask");
           if (textInput) textInput.placeholder = tr("chat.placeholder.new");
@@ -3326,7 +3895,7 @@
     /** @type {Set<string>} */
     const reviewSelected = new Set();
 
-    /** @type {"home"|"thread"|"compose"|"manage"|"logs"|"settings"} */
+    /** @type {"home"|"thread"|"compose"|"manage"|"logs"|"lore"|"ops"|"model"|"settings"} */
     let view = "home";
     /** @type {string|null} */
     let activeTaskId = null;
@@ -3749,6 +4318,7 @@
       if (navLogs) navLogs.classList.toggle("on", sideNav === "logs");
       if (navLore) navLore.classList.toggle("on", sideNav === "lore");
       if (navOps) navOps.classList.toggle("on", sideNav === "ops");
+      if (navModel) navModel.classList.toggle("on", sideNav === "model");
       if (navSettings) navSettings.classList.toggle("on", sideNav === "settings");
       if (navTasksGroup) navTasksGroup.classList.toggle("expanded", onTasks);
       if (taskNavPanel) taskNavPanel.hidden = !onTasks;
@@ -3759,6 +4329,7 @@
       if (logsPage) logsPage.classList.remove("open");
       if (lorePage) lorePage.classList.remove("open");
       if (opsPage) opsPage.classList.remove("open");
+      if (modelPage) modelPage.classList.remove("open");
       if (settingsPage) settingsPage.classList.remove("open");
       if (chat) chat.classList.remove("hidden-by-logs");
     }
@@ -5153,6 +5724,11 @@
         cancelVoiceRecording().catch(() => {});
         return;
       }
+      if (logSubsModal && logSubsModal.classList.contains("open")) {
+        e.preventDefault();
+        closeLogSubsModal();
+        return;
+      }
       if (statsModal && statsModal.classList.contains("open")) {
         e.preventDefault();
         closeStatsDetail();
@@ -5163,7 +5739,7 @@
         closeLightbox();
         return;
       }
-      if (view === "manage" || view === "logs" || view === "lore" || view === "ops" || view === "settings" || view === "thread" || view === "compose") {
+      if (view === "manage" || view === "logs" || view === "lore" || view === "ops" || view === "model" || view === "settings" || view === "thread" || view === "compose") {
         e.preventDefault();
         showHome();
       }
@@ -5558,6 +6134,7 @@
       if (which === "logs" && logsPage) logsPage.classList.add("open");
       if (which === "lore" && lorePage) lorePage.classList.add("open");
       if (which === "ops" && opsPage) opsPage.classList.add("open");
+      if (which === "model" && modelPage) modelPage.classList.add("open");
       if (which === "settings" && settingsPage) settingsPage.classList.add("open");
     }
 
@@ -5583,10 +6160,27 @@
       activeTaskStatus = "";
       showAdminMain("logs");
       titleText.textContent = tr("title.logs");
-      Promise.all([loadLogSubscriptions(), refreshLogs()]).catch((e) => {
+      Promise.all([loadLogSubscriptions(), refreshLogs({ reset: true })]).catch((e) => {
         if (logList) logList.innerHTML = `<div class="task-empty">${String(e.message || e)}</div>`;
         if (logCountMeta) logCountMeta.textContent = "";
+        if (logPager) logPager.hidden = true;
       });
+    }
+
+    function setLoreTab(which, { user = false } = {}) {
+      const tab = ["pending", "entries", "recent"].includes(which) ? which : "entries";
+      loreActiveTab = tab;
+      if (user) loreTabUserPicked = true;
+      loreTabButtons.forEach((btn) => {
+        const on = btn.getAttribute("data-lore-tab") === tab;
+        btn.classList.toggle("on", on);
+        btn.setAttribute("aria-selected", on ? "true" : "false");
+      });
+      lorePanels.forEach((panel) => {
+        const on = panel.getAttribute("data-lore-panel") === tab;
+        panel.hidden = !on;
+      });
+      if (btnLoreClear) btnLoreClear.hidden = tab !== "pending";
     }
 
     function showLorePage() {
@@ -5595,6 +6189,7 @@
       activeTaskId = null;
       activeTaskGoal = "";
       activeTaskStatus = "";
+      loreTabUserPicked = false;
       showAdminMain("lore");
       titleText.textContent = tr("title.lore");
       refreshLore().catch((e) => {
@@ -5619,87 +6214,247 @@
       return [row.body, row.evidence].filter(Boolean).join("\n");
     }
 
+    function loreEntryBody(row) {
+      if (row.kind === "kv") {
+        const v = row.value;
+        return typeof v === "string" ? v : JSON.stringify(v);
+      }
+      return String(row.body || "");
+    }
+
+    function loreFmtTime(raw) {
+      const s = String(raw || "").trim();
+      if (!s) return "";
+      return s.replace("T", " ").replace(/Z$/, "").slice(0, 16);
+    }
+
+    function renderLoreEntries(rows) {
+      if (!loreEntriesList) return;
+      loreEntriesCache = rows || [];
+      if (!loreEntriesCache.length) {
+        loreEntriesList.innerHTML = `<div class="task-empty">${escapeHtml(tr("lore.entriesEmpty"))}</div>`;
+        return;
+      }
+      loreEntriesList.innerHTML = "";
+      loreEntriesCache.forEach((row, idx) => {
+        const el = document.createElement("div");
+        const on = row.enabled !== false;
+        el.className = "lore-entry" + (on ? "" : " disabled-entry");
+        const kindLabel = row.kind === "note" ? tr("lore.kind.note") : tr("lore.kind.kv");
+        const label =
+          row.kind === "note"
+            ? row.title || row.id || "—"
+            : row.key || row.id || "—";
+        const main = document.createElement("div");
+        main.className = "lore-main";
+        const meta = document.createElement("div");
+        meta.className = "lore-meta";
+        meta.innerHTML =
+          `<span class="lore-pill kind">${escapeHtml(kindLabel)}</span>` +
+          `<span class="lore-key">${escapeHtml(String(label))}</span>` +
+          `<span class="lore-pill ${on ? "on" : "off"}">${escapeHtml(on ? tr("lore.enabled") : tr("lore.disabled"))}</span>` +
+          (row.updated_at
+            ? `<span class="lore-time">${escapeHtml(loreFmtTime(row.updated_at))}</span>`
+            : "");
+        const body = document.createElement("div");
+        body.className = "lore-body";
+        const bodyText = loreEntryBody(row) || "";
+        body.textContent = bodyText;
+        if (bodyText) body.title = bodyText;
+        main.appendChild(meta);
+        main.appendChild(body);
+        const actions = document.createElement("div");
+        actions.className = "lore-actions";
+        const btnToggle = document.createElement("button");
+        btnToggle.type = "button";
+        btnToggle.className = on ? "" : "primary";
+        btnToggle.textContent = on ? tr("lore.disable") : tr("lore.enable");
+        btnToggle.setAttribute("aria-label", btnToggle.textContent);
+        btnToggle.title = btnToggle.textContent;
+        btnToggle.onclick = async () => {
+          try {
+            await taskApi("/api/lore/entries/enable", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                kind: loreEntriesCache[idx].kind,
+                id: loreEntriesCache[idx].id,
+                enabled: !on,
+              }),
+            });
+            await refreshLore();
+          } catch (e) {
+            alert(String(e.message || e));
+          }
+        };
+        const btnDel = document.createElement("button");
+        btnDel.type = "button";
+        btnDel.className = "danger";
+        btnDel.textContent = tr("lore.delete");
+        btnDel.setAttribute("aria-label", tr("lore.delete"));
+        btnDel.title = tr("lore.delete");
+        btnDel.onclick = async () => {
+          if (!confirm(tr("lore.deleteConfirm"))) return;
+          try {
+            await taskApi("/api/lore/entries/delete", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                kind: loreEntriesCache[idx].kind,
+                id: loreEntriesCache[idx].id,
+              }),
+            });
+            await refreshLore();
+          } catch (e) {
+            alert(String(e.message || e));
+          }
+        };
+        actions.appendChild(btnToggle);
+        actions.appendChild(btnDel);
+        el.appendChild(main);
+        el.appendChild(actions);
+        loreEntriesList.appendChild(el);
+      });
+    }
+
     async function refreshLore() {
-      const [st, buf] = await Promise.all([
+      const [st, buf, entries, recent] = await Promise.all([
         taskApi("/api/lore/status"),
         taskApi("/api/lore/buffer?limit=120"),
+        taskApi("/api/lore/entries?limit=200"),
+        taskApi("/api/lore/recent?limit=40"),
       ]);
       loreRowsCache = buf.rows || [];
       const n = loreRowsCache.length;
+      const entryN = (entries.rows || []).length;
+      if (!loreTabUserPicked) {
+        setLoreTab(n > 0 ? "pending" : "entries");
+      } else {
+        setLoreTab(loreActiveTab);
+      }
       if (loreCountMeta) {
-        loreCountMeta.textContent = n
-          ? tr("lore.meta.count").replace("{n}", String(n))
-          : tr("lore.meta.empty");
+        loreCountMeta.textContent = tr("lore.meta.summary")
+          .replace("{pending}", String(n))
+          .replace("{entries}", String(entryN));
       }
       if (loreStatusLine) {
         const vecOn = !!st.vector_enabled;
         const pkg = !!st.sqlite_vec_available;
+        const autoP1 = !!st.auto_p1_kv;
         loreStatusLine.innerHTML =
           `<span class="${vecOn ? "on" : "off"}">${escapeHtml(vecOn ? tr("lore.status.vectorOn") : tr("lore.status.vectorOff"))}</span>` +
+          `<span class="${autoP1 ? "off" : "on"}">${escapeHtml(autoP1 ? tr("lore.status.autoP1") : tr("lore.status.bufferP1"))}</span>` +
           `<span>${escapeHtml(pkg ? tr("lore.status.vecPkg") : tr("lore.status.vecMissing"))}</span>` +
           (st.embed_model ? `<span>${escapeHtml(String(st.embed_model))}</span>` : "");
       }
-      if (!loreList) return;
-      if (!n) {
-        loreList.innerHTML = `<div class="task-empty">${escapeHtml(tr("lore.empty"))}</div>`;
-        return;
+      if (loreList) {
+        if (!n) {
+          loreList.innerHTML = `<div class="task-empty">${escapeHtml(tr("lore.empty"))}</div>`;
+        } else {
+          loreList.innerHTML = "";
+          loreRowsCache.slice().reverse().forEach((row, revIdx) => {
+            const idx = loreRowsCache.length - 1 - revIdx;
+            const el = document.createElement("div");
+            el.className = "lore-row";
+            const kindLabel = row.kind === "note" ? tr("lore.kind.note") : tr("lore.kind.kv");
+            const main = document.createElement("div");
+            main.className = "lore-main";
+            const top = document.createElement("div");
+            top.className = "lore-top";
+            top.innerHTML =
+              `<span class="lore-pill kind">${escapeHtml(kindLabel)}</span>` +
+              `<span class="lore-key">${escapeHtml(loreRowLabel(row))}</span>` +
+              (row.importance ? `<span class="lore-pill">${escapeHtml(String(row.importance))}</span>` : "") +
+              (row.ts ? `<span class="lore-time">${escapeHtml(loreFmtTime(row.ts))}</span>` : "");
+            const body = document.createElement("div");
+            body.className = "lore-body";
+            const pendingBody = loreRowBody(row) || "";
+            body.textContent = pendingBody;
+            if (pendingBody) body.title = pendingBody;
+            main.appendChild(top);
+            main.appendChild(body);
+            const actions = document.createElement("div");
+            actions.className = "lore-actions";
+            const btnPromote = document.createElement("button");
+            btnPromote.type = "button";
+            btnPromote.className = "primary";
+            btnPromote.textContent = tr("lore.promote");
+            btnPromote.onclick = async () => {
+              try {
+                await taskApi("/api/lore/buffer/promote", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ row: loreRowsCache[idx] }),
+                });
+                await refreshLore();
+              } catch (e) {
+                alert(String(e.message || e));
+              }
+            };
+            const btnDrop = document.createElement("button");
+            btnDrop.type = "button";
+            btnDrop.textContent = tr("lore.drop");
+            btnDrop.onclick = async () => {
+              try {
+                await taskApi("/api/lore/buffer/drop", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ row: loreRowsCache[idx] }),
+                });
+                await refreshLore();
+              } catch (e) {
+                alert(String(e.message || e));
+              }
+            };
+            actions.appendChild(btnPromote);
+            actions.appendChild(btnDrop);
+            el.appendChild(main);
+            el.appendChild(actions);
+            loreList.appendChild(el);
+          });
+        }
       }
-      loreList.innerHTML = "";
-      loreRowsCache.slice().reverse().forEach((row, revIdx) => {
-        const idx = loreRowsCache.length - 1 - revIdx;
-        const el = document.createElement("div");
-        el.className = "lore-row";
-        const kindLabel = row.kind === "note" ? tr("lore.kind.note") : tr("lore.kind.kv");
-        const top = document.createElement("div");
-        top.className = "lore-top";
-        top.innerHTML =
-          `<span class="lore-kind">${escapeHtml(kindLabel)}</span>` +
-          `<span class="lore-key">${escapeHtml(loreRowLabel(row))}</span>` +
-          (row.importance ? `<span class="lore-kind">${escapeHtml(String(row.importance))}</span>` : "") +
-          (row.ts ? `<span>${escapeHtml(String(row.ts).slice(0, 19))}</span>` : "");
-        const body = document.createElement("div");
-        body.className = "lore-body";
-        body.textContent = loreRowBody(row) || "";
-        const actions = document.createElement("div");
-        actions.className = "lore-actions";
-        const btnPromote = document.createElement("button");
-        btnPromote.type = "button";
-        btnPromote.className = "primary";
-        btnPromote.textContent = tr("lore.promote");
-        btnPromote.onclick = async () => {
-          try {
-            await taskApi("/api/lore/buffer/promote", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ row: loreRowsCache[idx] }),
-            });
-            await refreshLore();
-          } catch (e) {
-            alert(String(e.message || e));
-          }
-        };
-        const btnDrop = document.createElement("button");
-        btnDrop.type = "button";
-        btnDrop.textContent = tr("lore.drop");
-        btnDrop.onclick = async () => {
-          try {
-            await taskApi("/api/lore/buffer/drop", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ row: loreRowsCache[idx] }),
-            });
-            await refreshLore();
-          } catch (e) {
-            alert(String(e.message || e));
-          }
-        };
-        actions.appendChild(btnPromote);
-        actions.appendChild(btnDrop);
-        el.appendChild(top);
-        el.appendChild(body);
-        el.appendChild(actions);
-        loreList.appendChild(el);
-      });
+      renderLoreEntries(entries.rows || []);
+      if (loreRecentList) {
+        const commits = recent.rows || [];
+        if (!commits.length) {
+          loreRecentList.innerHTML = `<div class="task-empty">${escapeHtml(tr("lore.recentEmpty"))}</div>`;
+        } else {
+          loreRecentList.innerHTML = "";
+          commits.forEach((row) => {
+            const el = document.createElement("div");
+            el.className = "lore-row committed";
+            const kindLabel = row.note || row.kind === "note" ? tr("lore.kind.note") : tr("lore.kind.kv");
+            const label = row.key || (row.note && (row.note.title || row.note.id)) || loreRowLabel(row);
+            const main = document.createElement("div");
+            main.className = "lore-main";
+            const top = document.createElement("div");
+            top.className = "lore-top";
+            top.innerHTML =
+              `<span class="lore-pill kind">${escapeHtml(kindLabel)}</span>` +
+              `<span class="lore-key">${escapeHtml(String(label || "—"))}</span>` +
+              (row.importance ? `<span class="lore-pill">${escapeHtml(String(row.importance))}</span>` : "") +
+              (row.ts ? `<span class="lore-time">${escapeHtml(loreFmtTime(row.ts))}</span>` : "");
+            const body = document.createElement("div");
+            body.className = "lore-body";
+            let bodyText = "";
+            if (row.value != null) {
+              bodyText = typeof row.value === "string" ? row.value : JSON.stringify(row.value);
+            } else if (row.note) {
+              bodyText = String(row.note.body || row.note.title || "");
+            } else {
+              bodyText = loreRowBody(row) || "";
+            }
+            if (row.evidence) bodyText = (bodyText ? bodyText + "\n" : "") + String(row.evidence);
+            body.textContent = bodyText;
+            if (bodyText) body.title = bodyText;
+            main.appendChild(top);
+            main.appendChild(body);
+            el.appendChild(main);
+            loreRecentList.appendChild(el);
+          });
+        }
+      }
     }
 
     function showOpsPage() {
@@ -5724,23 +6479,45 @@
       activeTaskStatus = "";
       showAdminMain("settings");
       titleText.textContent = tr("title.settings");
-      loadSettings().catch((e) => {
-        setSettingsStatus(String(e.message || e), "err");
+      loadSettings("system").catch((e) => {
+        setSettingsStatus("system", String(e.message || e), "err");
       });
     }
 
-    function setSettingsStatus(msg, kind) {
-      if (!settingsStatus) return;
-      settingsStatus.textContent = msg || "";
-      settingsStatus.classList.remove("ok", "warn", "err");
-      if (kind) settingsStatus.classList.add(kind);
+    function showModelPage() {
+      view = "model";
+      sideNav = "model";
+      activeTaskId = null;
+      activeTaskGoal = "";
+      activeTaskStatus = "";
+      showAdminMain("model");
+      titleText.textContent = tr("title.model");
+      loadSettings("model").catch((e) => {
+        setSettingsStatus("model", String(e.message || e), "err");
+      });
     }
 
-    function renderSettingsForm(data) {
-      settingsSnapshot = data;
-      settingsClear = new Set();
-      if (settingsPath) settingsPath.textContent = data.env_path || "";
-      if (settingsMeta) settingsMeta.textContent = tr("settings.fieldsCount", { n: (data.fields || []).length });
+    function setSettingsStatus(formKey, msg, kind) {
+      const form = settingsForms[formKey];
+      if (!form || !form.status) return;
+      form.status.textContent = msg || "";
+      form.status.classList.remove("ok", "warn", "err");
+      if (kind) form.status.classList.add(kind);
+    }
+
+    function renderSettingsForm(formKey, data) {
+      const form = settingsForms[formKey];
+      if (!form) return;
+      form.snapshot = data;
+      form.clear = new Set();
+      if (form.path) {
+        const envPath = data.env_path || "";
+        form.path.textContent = envPath;
+        form.path.title = envPath;
+        form.path.hidden = !envPath;
+      }
+      if (form.meta) form.meta.textContent = tr("settings.fieldsCount", { n: (data.fields || []).length });
+      const settingsGroups = form.groups;
       if (!settingsGroups) return;
       const openIds = new Set(
         [...settingsGroups.querySelectorAll("details.settings-group[open]")].map((d) => d.dataset.group)
@@ -5821,20 +6598,28 @@
             clearBtn.textContent = tr("settings.clear");
             clearBtn.onclick = () => {
               inp.value = "";
-              settingsClear.add(f.key);
+              form.clear.add(f.key);
               inp.placeholder = tr("settings.secret.willClear");
-              setSettingsStatus(tr("settings.markedClear", { key: f.key }), "warn");
+              setSettingsStatus(formKey, tr("settings.markedClear", { key: f.key }), "warn");
             };
             row.appendChild(inp);
             row.appendChild(clearBtn);
             wrap.appendChild(row);
           } else {
             const inp = document.createElement("input");
-            inp.type = f.kind === "int" ? "number" : "text";
+            inp.type = (f.kind === "int" || f.kind === "float") ? "number" : "text";
             inp.id = "sf-" + f.key;
             inp.dataset.key = f.key;
             inp.dataset.kind = f.kind || "str";
+            if (f.kind === "float") {
+              inp.step = f.step || "any";
+            } else if (f.kind === "int") {
+              inp.step = "1";
+            }
             inp.value = cur.value != null ? String(cur.value) : "";
+            if (f.kind === "float") {
+              inp.placeholder = tr("settings.floatEmpty");
+            }
             wrap.appendChild(inp);
           }
           if (f.hint) {
@@ -5850,17 +6635,20 @@
       });
     }
 
-    async function loadSettings() {
-      const data = await taskApi("/api/settings");
-      renderSettingsForm(data);
-      setSettingsStatus("", null);
+    async function loadSettings(formKey) {
+      const form = settingsForms[formKey];
+      if (!form) return null;
+      const data = await taskApi("/api/settings?scope=" + encodeURIComponent(form.scope));
+      renderSettingsForm(formKey, data);
+      setSettingsStatus(formKey, "", null);
       return data;
     }
 
-    function collectSettingsPayload() {
+    function collectSettingsPayload(formKey) {
+      const form = settingsForms[formKey];
       const values = {};
-      if (!settingsGroups) return { values, clear: [...settingsClear] };
-      settingsGroups.querySelectorAll("[data-key]").forEach((el) => {
+      if (!form || !form.groups) return { scope: form ? form.scope : "all", values, clear: [] };
+      form.groups.querySelectorAll("[data-key]").forEach((el) => {
         if (!el.dataset || !el.dataset.key) return;
         if (el.tagName !== "INPUT" && el.tagName !== "SELECT") return;
         const key = el.dataset.key;
@@ -5873,32 +6661,32 @@
           const v = el.value.trim();
           if (v) {
             values[key] = v;
-            settingsClear.delete(key);
+            form.clear.delete(key);
           }
           return;
         }
         values[key] = el.value;
       });
-      return { values, clear: [...settingsClear] };
+      return { scope: form.scope, values, clear: [...form.clear] };
     }
 
-    async function saveSettings() {
-      setSettingsStatus(tr("settings.saving"), null);
-      const payload = collectSettingsPayload();
+    async function saveSettings(formKey) {
+      setSettingsStatus(formKey, tr("settings.saving"), null);
+      const payload = collectSettingsPayload(formKey);
       try {
         const data = await taskApi("/api/settings", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-        renderSettingsForm(data);
+        renderSettingsForm(formKey, data);
         if (data.needs_restart) {
-          setSettingsStatus(tr("settings.savedRestart"), "warn");
+          setSettingsStatus(formKey, tr("settings.savedRestart"), "warn");
         } else {
-          setSettingsStatus(tr("settings.savedHot"), "ok");
+          setSettingsStatus(formKey, tr("settings.savedHot"), "ok");
         }
       } catch (e) {
-        setSettingsStatus(String(e.message || e), "err");
+        setSettingsStatus(formKey, String(e.message || e), "err");
       }
     }
 
@@ -6160,6 +6948,17 @@
       });
     }
 
+    function openLogSubsModal() {
+      if (!logSubsModal) return;
+      renderLogSubscriptions();
+      if (logSubsStatus) logSubsStatus.textContent = "";
+      logSubsModal.classList.add("open");
+    }
+
+    function closeLogSubsModal() {
+      if (logSubsModal) logSubsModal.classList.remove("open");
+    }
+
     async function loadLogSubscriptions() {
       const data = await taskApi("/api/system-log-subscriptions");
       logCatalog = data.catalog || [];
@@ -6195,20 +6994,61 @@
       renderLogSubscriptions();
     }
 
-    async function refreshLogs() {
+    function syncLogPager() {
+      if (!logPager) return;
+      const total = Math.max(0, Number(logPageTotal) || 0);
+      const limit = LOG_PAGE_SIZE;
+      const offset = Math.max(0, Number(logPageOffset) || 0);
+      if (total <= 0) {
+        logPager.hidden = true;
+        if (logPagerMeta) logPagerMeta.textContent = "";
+        return;
+      }
+      logPager.hidden = false;
+      const from = total === 0 ? 0 : offset + 1;
+      const to = Math.min(offset + limit, total);
+      const page = Math.floor(offset / limit) + 1;
+      const pages = Math.max(1, Math.ceil(total / limit));
+      if (logPagerMeta) {
+        logPagerMeta.textContent = tr("logs.page.meta", {
+          from,
+          to,
+          total,
+          page,
+          pages,
+        });
+      }
+      if (logPagerPrev) logPagerPrev.disabled = offset <= 0;
+      if (logPagerNext) logPagerNext.disabled = offset + limit >= total;
+    }
+
+    async function refreshLogs(opts) {
       if (!logList) return;
+      const reset = !!(opts && opts.reset);
+      if (reset) logPageOffset = 0;
       const params = new URLSearchParams();
-      params.set("limit", "100");
+      params.set("limit", String(LOG_PAGE_SIZE));
+      params.set("offset", String(Math.max(0, logPageOffset)));
       if (logCategory && logCategory.value) params.set("category", logCategory.value);
       if (logAction && logAction.value) params.set("action", logAction.value);
       if (logOk && logOk.value) params.set("ok", logOk.value);
       const data = await taskApi(`/api/system-logs?${params.toString()}`);
       const items = data.logs || [];
-      if (logCountMeta) {
-        logCountMeta.textContent = items.length ? tr("logs.recent", { n: items.length }) : "";
+      const total = Number(data.total);
+      logPageTotal = Number.isFinite(total) ? total : items.length;
+      if (logPageOffset > 0 && logPageOffset >= logPageTotal && logPageTotal > 0) {
+        logPageOffset = Math.max(0, (Math.ceil(logPageTotal / LOG_PAGE_SIZE) - 1) * LOG_PAGE_SIZE);
+        return refreshLogs();
       }
+      if (logCountMeta) {
+        logCountMeta.textContent = logPageTotal
+          ? tr("logs.total", { n: logPageTotal })
+          : "";
+      }
+      syncLogPager();
       if (data.degraded) {
         logList.innerHTML = `<div class="task-empty">${tr("logs.degraded", { msg: escapeHtml(data.init_error || data.message || tr("logs.unavailable")) })}</div>`;
+        if (logPager) logPager.hidden = true;
         return;
       }
       if (!items.length) {
@@ -6706,7 +7546,7 @@
     if (backBtn) backBtn.onclick = () => showHome();
     if (navTasks) {
       navTasks.onclick = () => {
-        if (view === "manage" || view === "logs" || view === "lore" || view === "ops" || view === "settings") showHome();
+        if (view === "manage" || view === "logs" || view === "lore" || view === "ops" || view === "model" || view === "settings") showHome();
         else {
           sideNav = "tasks";
           syncSideNav();
@@ -6717,7 +7557,12 @@
     if (navLogs) navLogs.onclick = () => showLogsPage();
     if (navLore) navLore.onclick = () => showLorePage();
     if (navOps) navOps.onclick = () => showOpsPage();
+    if (navModel) navModel.onclick = () => showModelPage();
     if (navSettings) navSettings.onclick = () => showSettingsPage();
+    loreTabButtons.forEach((btn) => {
+      btn.onclick = () => setLoreTab(btn.getAttribute("data-lore-tab") || "entries", { user: true });
+    });
+    setLoreTab(loreActiveTab);
     if (btnLoreRefresh) btnLoreRefresh.onclick = () => refreshLore().catch((e) => alert(String(e.message || e)));
     if (btnLoreClear) {
       btnLoreClear.onclick = async () => {
@@ -6741,7 +7586,8 @@
         }
       };
     }
-    if (btnSettingsSave) btnSettingsSave.onclick = () => saveSettings();
+    if (btnSettingsSave) btnSettingsSave.onclick = () => saveSettings("system");
+    if (btnModelSave) btnModelSave.onclick = () => saveSettings("model");
     const btnRestart = document.getElementById("btnRestart");
     const btnSnapshot = document.getElementById("btnSnapshot");
     const btnRefreshConsoleLog = document.getElementById("btnRefreshConsoleLog");
@@ -6874,11 +7720,26 @@
     if (logCategory) {
       logCategory.addEventListener("change", () => {
         fillLogActionFilter();
-        refreshLogs().catch(() => {});
+        refreshLogs({ reset: true }).catch(() => {});
       });
     }
-    if (logAction) logAction.addEventListener("change", () => refreshLogs().catch(() => {}));
-    if (logOk) logOk.addEventListener("change", () => refreshLogs().catch(() => {}));
+    if (logAction) logAction.addEventListener("change", () => refreshLogs({ reset: true }).catch(() => {}));
+    if (logOk) logOk.addEventListener("change", () => refreshLogs({ reset: true }).catch(() => {}));
+    if (logPagerPrev) {
+      logPagerPrev.onclick = () => {
+        logPageOffset = Math.max(0, logPageOffset - LOG_PAGE_SIZE);
+        refreshLogs().catch(() => {});
+      };
+    }
+    if (logPagerNext) {
+      logPagerNext.onclick = () => {
+        logPageOffset = logPageOffset + LOG_PAGE_SIZE;
+        refreshLogs().catch(() => {});
+      };
+    }
+    if (btnLogSubs) btnLogSubs.onclick = () => openLogSubsModal();
+    if (logSubsClose) logSubsClose.onclick = () => closeLogSubsModal();
+    if (logSubsMask) logSubsMask.onclick = () => closeLogSubsModal();
     if (logSubsSave) {
       logSubsSave.onclick = () => saveLogSubscriptions().catch((e) => {
         if (logSubsStatus) logSubsStatus.textContent = String(e.message || e);
@@ -6943,6 +7804,10 @@
       }
       if (view === "ops") {
         showOpsPage();
+        return;
+      }
+      if (view === "model") {
+        showModelPage();
         return;
       }
       if (view === "settings") {

@@ -74,7 +74,13 @@ def transcribe_audio(
     except ImportError:
         return {"ok": False, "error": "未安装 openai 包", "text": ""}
 
-    client = OpenAI(api_key=cfg.api_key, base_url=cfg.base_url or None)
+    client_kwargs: dict[str, Any] = {
+        "api_key": cfg.api_key,
+        "base_url": cfg.base_url or None,
+    }
+    if cfg.timeout_sec is not None:
+        client_kwargs["timeout"] = cfg.timeout_sec
+    client = OpenAI(**client_kwargs)
     kwargs: dict[str, Any] = {"model": model, "messages": messages}
     lang = (language or "").strip()
     if lang:

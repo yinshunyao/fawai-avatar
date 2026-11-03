@@ -14,6 +14,12 @@ from fawai_avatar.types import Action, ExecResult
 _VALID_DECISIONS = frozenset({"retry", "alternate", "abort"})
 _STAGNATION_DECISIONS = frozenset({"continue", "alternate", "abort"})
 
+SHELL_BYPASS_FS_REPLACEMENT = (
+    "本地文件优先 fs_read（绝对路径须在 FAWAI_READ_ROOTS 内，默认 `/`）；"
+    "禁止用 shell cat/cp/type/Get-Content 偷渡仓外文件；"
+    "读 observe 落盘用相对 path；写仍限 work_root"
+)
+
 _FINGERPRINT_KEYS = (
     "cmd",
     "command",
@@ -291,6 +297,23 @@ def mock_reflect(
             thought=f"换方案继续：{err}",
             fingerprint=fingerprint,
         )
+    # SSH 口令/公钥认证失败：换方法族，勿当成租约/GUI 权限 abort
+    from fawai_avatar.brain.method_recovery import (
+        CONSTRAINT_SSH_AUTH,
+        is_ssh_auth_failure,
+    )
+
+    if is_ssh_auth_failure(actions, results):
+        return Reflection(
+            cause=f"SSH 认证失败，须换带密部署方法：{err}",
+            decision="alternate",
+            constraints=[
+                f"不要再执行相同的 {kind}（指纹 {fingerprint}）",
+                CONSTRAINT_SSH_AUTH,
+            ],
+            thought="改用 ssh-run-with-pass / rsync-ssh-deploy，禁止 BatchMode 空探针",
+            fingerprint=fingerprint,
+        )
     if any(
         x in low
         for x in (
@@ -308,6 +331,17 @@ def mock_reflect(
             decision="abort",
             constraints=["缺权限/租约无解时勿反复重试同一写操作"],
             thought=f"止损：{err}",
+            fingerprint=fingerprint,
+        )
+    if "escapes work root" in low or "path escapes" in low or "read roots" in low:
+        return Reflection(
+            cause=f"路径越出工作区沙箱：{err}",
+            decision="alternate",
+            constraints=[
+                f"不要再执行相同的 {kind}（指纹 {fingerprint}）",
+                SHELL_BYPASS_FS_REPLACEMENT,
+            ],
+            thought="改用 FAWAI_READ_ROOTS 绝对路径 fs_read，禁止 shell 绕过",
             fingerprint=fingerprint,
         )
     if any(
@@ -408,7 +442,12 @@ def reflect_system_prompt() -> str:
 - retry：瞬态或参数可微调，允许同工具族再试，但禁止与失败动作完全相同
 - alternate：选型/命令族错误，必须换工具或换命令结构
 - abort：缺权限、租约无解、超能力边界、或重复无效——应止损
-禁止假装已成功；禁止建议原样重复同一命令。"""
+禁止假装已成功；禁止建议原样重复同一命令。
+constraints 必须 grounded：只依据失败结果与已观察路径。
+若失败是 fs_read 路径越界：改用 FAWAI_READ_ROOTS 下绝对路径 fs_read，或 work_root 相对路径 / data/observe；
+禁止写「用 shell cat/cp 绕过沙箱读绝对路径」。
+若 abort 且需用户本机执行：constraints 须含可复制命令要点，供终稿交付。"""
+
 
 
 def format_reflect_user_message(
@@ -555,11 +594,17 @@ def run_reflect(
                 base.raw = raw
 
     counts = {fingerprint: fail_count}
-    return apply_fingerprint_guard(
+    guarded = apply_fingerprint_guard(
         base,
         fingerprint=fingerprint,
         fail_counts=counts,
         prior_alternate_fps=prior_alternate_fps,
+    )
+    grounded = ground_reflect_constraints(guarded, actions=actions, results=results)
+    from fawai_avatar.brain.method_recovery import enrich_reflection_method_switch
+
+    return enrich_reflection_method_switch(
+        grounded, actions=actions, results=results, goal=goal
     )
 
 
@@ -785,6 +830,87 @@ def run_stagnation(
     )
 
 
+def is_shell_bypass_fs_constraint(text: str) -> bool:
+    """是否在教「用 shell 读本地文件」绕过 fs 沙箱。"""
+    c = str(text or "").strip()
+    if not c:
+        return False
+    # 正道替换文案本身含「禁止用 shell cat」，勿误判为教唆
+    if c == SHELL_BYPASS_FS_REPLACEMENT or c.startswith("fs_read 越界时"):
+        return False
+    low = c.lower()
+    if "禁止用 shell" in low or "禁止 shell cat" in low:
+        return False
+    teaches_shell = any(
+        tok in low
+        for tok in (
+            "改用 shell",
+            "使用 shell",
+            "用 shell 工具",
+            "shell 工具执行",
+            "执行 cat",
+            "用 cat",
+            "改用 cat",
+            "get-content",
+        )
+    )
+    if not teaches_shell:
+        return False
+    sandboxish = any(
+        tok in c
+        for tok in (
+            "fs_read",
+            "绝对路径",
+            "越权",
+            "沙箱",
+            "work root",
+            "work_root",
+            "越界",
+            "绕过",
+        )
+    )
+    readish = any(tok in c for tok in ("读", "读取", "cat", "查看文件", "打开文件"))
+    return bool(sandboxish or readish)
+
+
+def ground_reflect_constraints(
+    reflection: Reflection,
+    *,
+    actions: list[Action] | None = None,
+    results: list[ExecResult] | None = None,
+) -> Reflection:
+    """清洗执行反省约束：禁止「shell 绕过 fs 沙箱」；越界失败补正道约束。"""
+    del actions  # 预留：后续可按失败 path 注入更具体相对路径提示
+    cleaned: list[str] = []
+    dropped_bypass = False
+    for raw in reflection.constraints or []:
+        c = str(raw or "").strip()
+        if not c:
+            continue
+        if is_shell_bypass_fs_constraint(c):
+            dropped_bypass = True
+            continue
+        if c not in cleaned:
+            cleaned.append(c)
+    err_blob = " ".join(str(r.message or "") for r in (results or []) if not r.ok)
+    escaped = "escapes work root" in err_blob.lower() or "path escapes" in err_blob.lower()
+    if dropped_bypass or escaped:
+        if SHELL_BYPASS_FS_REPLACEMENT not in cleaned:
+            cleaned.insert(0, SHELL_BYPASS_FS_REPLACEMENT)
+    return Reflection(
+        cause=reflection.cause,
+        decision=reflection.decision,
+        constraints=cleaned[:8],
+        thought=reflection.thought,
+        fingerprint=reflection.fingerprint,
+        forced=reflection.forced,
+        raw={
+            **dict(reflection.raw or {}),
+            **({"shell_bypass_fs_stripped": True} if dropped_bypass else {}),
+        },
+    )
+
+
 def _constraint_mentions_mutate(text: str) -> bool:
     return any(
         token in text
@@ -917,6 +1043,35 @@ def _ground_stagnation_constraints(
         )
         cleaned.insert(0, prefer)
     return cleaned
+
+
+def abort_should_deliver_commands(reflection: Reflection | None) -> bool:
+    """abort 约束若要求「输出命令/本地执行」→ 终稿须带上可交付要点。"""
+    if reflection is None:
+        return False
+    blob = " ".join(
+        [str(reflection.cause or ""), str(reflection.thought or ""), *(reflection.constraints or [])]
+    )
+    keys = ("输出", "命令", "本地", "终端", "供用户", "宿主机", "请在", "复制")
+    return any(k in blob for k in keys)
+
+
+def format_abort_delivery(reflection: Reflection, *, fallback: str = "") -> str:
+    """把 abort 的 cause + 可执行约束拼成用户可见终稿。"""
+    parts: list[str] = []
+    cause = (reflection.cause or "").strip()
+    if cause:
+        parts.append(cause)
+    thought = (reflection.thought or "").strip()
+    if thought and thought not in parts:
+        parts.append(thought)
+    cmds = [c.strip() for c in (reflection.constraints or []) if str(c).strip()]
+    if cmds:
+        parts.append("建议下一步：")
+        parts.extend(f"- {c}" for c in cmds[:6])
+    if not parts and fallback:
+        return fallback
+    return "\n".join(parts)
 
 
 def hard_abort_stagnation(fingerprint: str, *, hit_count: int) -> Reflection:
