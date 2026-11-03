@@ -119,13 +119,24 @@ def lore_llm_extract_enabled() -> bool:
     return bool(key)
 
 
-def lore_vector_enabled(*, default: bool = False) -> bool:
-    """笔记向量检索（sqlite-vec）：`FAWAI_LORE_VECTOR`；默认关（需可选依赖）。"""
+def lore_vector_enabled(*, default: str = "auto") -> bool:
+    """
+    笔记向量检索（sqlite-vec）：`FAWAI_LORE_VECTOR`。
+    默认 auto：已安装 sqlite-vec 则开；0/1 强制关/开。
+    """
     load_dotenv()
-    raw = _env("FAWAI_LORE_VECTOR")
-    if raw is None or raw == "":
-        return bool(default)
-    return raw.lower() in {"1", "true", "yes", "on"}
+    raw = (_env("FAWAI_LORE_VECTOR") or str(default)).strip().lower()
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    # auto
+    try:
+        from fawai_lore.vector import sqlite_vec_available
+
+        return bool(sqlite_vec_available())
+    except Exception:
+        return False
 
 
 def lore_embed_model() -> str:
@@ -173,7 +184,7 @@ class RuntimeConfig:
             lore_dir=lore_dir,
             lore_sidecar=lore_sidecar_enabled(default=True),
             lore_llm_extract=lore_llm_extract_enabled(),
-            lore_vector=lore_vector_enabled(default=False),
+            lore_vector=lore_vector_enabled(default="auto"),
             work_root=work_root,
             auto_version=auto_version,
             diff_mode=diff_mode,

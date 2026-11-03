@@ -354,7 +354,7 @@ CAPABILITIES: tuple[Capability, ...] = (
         id="lore_vector_reindex",
         name="个人知识库·向量重建",
         modality="background",
-        when_to_use="重建笔记 sqlite-vec 索引（需 FAWAI_LORE_VECTOR=1）",
+        when_to_use="重建笔记 sqlite-vec 索引（FAWAI_LORE_VECTOR=auto/1 且已装 sqlite-vec）",
         action_kind="lore_vector_reindex",
     ),
     Capability(

@@ -10,7 +10,7 @@ PC / phone operation avatar. Readable docs live in `doc/`; implementation in `fa
 cd fawai-avatar
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ./fawai_lore          # personal lore KV + notes library
-pip install -e "./fawai_lore[vector]"  # optional: sqlite-vec note search (or pip install sqlite-vec -i https://pypi.org/simple/)
+pip install -e "./fawai_lore[vector]"  # optional: sqlite-vec (then FAWAI_LORE_VECTOR defaults to auto/on)
 pip install -e .                 # headless / coding·files·shell / gateway
 # pip install -e ".[gui]"        # optional: desktop capture & input (macOS or Linux with DISPLAY)
 cp .env.example .env   # set FAWAI_LLM_API_KEY; .env is gitignored

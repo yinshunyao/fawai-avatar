@@ -1505,6 +1505,7 @@
 
     #tasksPage,
     #logsPage,
+    #lorePage,
     #opsPage,
     #settingsPage {
       display: none;
@@ -1516,8 +1517,64 @@
     }
     #tasksPage.open,
     #logsPage.open,
+    #lorePage.open,
     #opsPage.open,
     #settingsPage.open { display: flex; }
+    .lore-status {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 12px;
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin: 0 0 10px;
+      line-height: 1.4;
+    }
+    .lore-status .on { color: var(--ok, #2a7a4b); }
+    .lore-status .off { color: var(--muted); }
+    .lore-row {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 12px 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    .lore-row:last-child { border-bottom: 0; }
+    .lore-row .lore-top {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.82rem;
+    }
+    .lore-row .lore-kind {
+      font-size: 0.72rem;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: var(--list-hover);
+      color: var(--fg);
+    }
+    .lore-row .lore-key {
+      font-weight: 600;
+      word-break: break-word;
+    }
+    .lore-row .lore-body {
+      font-size: 0.8rem;
+      color: var(--muted);
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .lore-row .lore-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 2px;
+    }
+    .lore-row .lore-actions button {
+      font-size: 0.78rem;
+      padding: 6px 10px;
+      min-height: 32px;
+    }
     .admin-page {
       flex: 1;
       min-height: 0;
@@ -2410,6 +2467,7 @@
       }
       #tasksPage.open,
       #logsPage.open,
+      #lorePage.open,
       #opsPage.open,
       #settingsPage.open {
         display: flex !important;
@@ -2433,6 +2491,7 @@
       #chatEmpty { display: none !important; }
       #tasksPage.open,
       #logsPage.open,
+      #lorePage.open,
       #opsPage.open,
       #settingsPage.open { display: flex; width: 100%; }
       .side-nav { padding: 8px 12px 10px; }
@@ -2682,6 +2741,13 @@
         </svg>
         <span data-i18n="nav.logs">系统日志</span>
       </button>
+      <button type="button" class="side-nav-item" id="navLore" data-nav="lore">
+        <svg class="nav-ico" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M5 7.5h14v11H5z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+          <path d="M8 5.5h8M9 11h6M9 14.5h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+        <span data-i18n="nav.lore">长记忆缓冲</span>
+      </button>
       <button type="button" class="side-nav-item" id="navOps" data-nav="ops">
         <svg class="nav-ico" viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <path d="M4 6.5h16v4H4zM4 13.5h16v4H4z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
@@ -2791,6 +2857,24 @@
           <span data-i18n="manage.col.actions">操作</span>
         </div>
         <div id="taskList"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="lorePage" data-i18n-aria="title.lore" aria-label="长记忆缓冲">
+    <div class="admin-page">
+      <div class="admin-head">
+        <h2 data-i18n="title.lore">长记忆缓冲</h2>
+        <span class="admin-meta" id="loreCountMeta"></span>
+      </div>
+      <p class="lore-status" id="loreStatusLine" aria-live="polite"></p>
+      <div class="admin-toolbar" role="group">
+        <button type="button" id="btnLoreRefresh" data-i18n="lore.refresh">刷新</button>
+        <button type="button" id="btnLoreReindex" data-i18n="lore.reindex">重建向量</button>
+        <button type="button" id="btnLoreClear" data-i18n="lore.clear">清空缓冲</button>
+      </div>
+      <div class="admin-list-wrap">
+        <div id="loreList"></div>
       </div>
     </div>
   </section>
@@ -3028,8 +3112,16 @@
     const newChatBtn = document.getElementById("newChatBtn");
     const tasksPage = document.getElementById("tasksPage");
     const logsPage = document.getElementById("logsPage");
+    const lorePage = document.getElementById("lorePage");
     const opsPage = document.getElementById("opsPage");
     const settingsPage = document.getElementById("settingsPage");
+    const loreList = document.getElementById("loreList");
+    const loreCountMeta = document.getElementById("loreCountMeta");
+    const loreStatusLine = document.getElementById("loreStatusLine");
+    const btnLoreRefresh = document.getElementById("btnLoreRefresh");
+    const btnLoreClear = document.getElementById("btnLoreClear");
+    const btnLoreReindex = document.getElementById("btnLoreReindex");
+    let loreRowsCache = [];
     const opsMeta = document.getElementById("opsMeta");
     const opsCountMeta = document.getElementById("opsCountMeta");
     const releaseList = document.getElementById("releaseList");
@@ -3043,6 +3135,7 @@
     const navTasks = document.getElementById("navTasks");
     const navManage = document.getElementById("navManage");
     const navLogs = document.getElementById("navLogs");
+    const navLore = document.getElementById("navLore");
     const navOps = document.getElementById("navOps");
     const navSettings = document.getElementById("navSettings");
     const settingsGroups = document.getElementById("settingsGroups");
@@ -3180,6 +3273,9 @@
           titleText.textContent = tr("title.logs");
           refreshLogs().catch(() => {});
           loadLogSubscriptions().catch(() => {});
+        } else if (view === "lore") {
+          titleText.textContent = tr("title.lore");
+          refreshLore().catch(() => {});
         } else if (view === "ops") {
           titleText.textContent = tr("title.ops");
           refreshOps().catch(() => {});
@@ -3651,6 +3747,7 @@
       if (navTasks) navTasks.classList.toggle("on", onTasks);
       if (navManage) navManage.classList.toggle("on", sideNav === "manage");
       if (navLogs) navLogs.classList.toggle("on", sideNav === "logs");
+      if (navLore) navLore.classList.toggle("on", sideNav === "lore");
       if (navOps) navOps.classList.toggle("on", sideNav === "ops");
       if (navSettings) navSettings.classList.toggle("on", sideNav === "settings");
       if (navTasksGroup) navTasksGroup.classList.toggle("expanded", onTasks);
@@ -3660,6 +3757,7 @@
     function hideAdminPages() {
       if (tasksPage) tasksPage.classList.remove("open");
       if (logsPage) logsPage.classList.remove("open");
+      if (lorePage) lorePage.classList.remove("open");
       if (opsPage) opsPage.classList.remove("open");
       if (settingsPage) settingsPage.classList.remove("open");
       if (chat) chat.classList.remove("hidden-by-logs");
@@ -5065,7 +5163,7 @@
         closeLightbox();
         return;
       }
-      if (view === "manage" || view === "logs" || view === "ops" || view === "settings" || view === "thread" || view === "compose") {
+      if (view === "manage" || view === "logs" || view === "lore" || view === "ops" || view === "settings" || view === "thread" || view === "compose") {
         e.preventDefault();
         showHome();
       }
@@ -5458,6 +5556,7 @@
       appbar.classList.add("ready", "in-thread");
       if (which === "manage" && tasksPage) tasksPage.classList.add("open");
       if (which === "logs" && logsPage) logsPage.classList.add("open");
+      if (which === "lore" && lorePage) lorePage.classList.add("open");
       if (which === "ops" && opsPage) opsPage.classList.add("open");
       if (which === "settings" && settingsPage) settingsPage.classList.add("open");
     }
@@ -5487,6 +5586,119 @@
       Promise.all([loadLogSubscriptions(), refreshLogs()]).catch((e) => {
         if (logList) logList.innerHTML = `<div class="task-empty">${String(e.message || e)}</div>`;
         if (logCountMeta) logCountMeta.textContent = "";
+      });
+    }
+
+    function showLorePage() {
+      view = "lore";
+      sideNav = "lore";
+      activeTaskId = null;
+      activeTaskGoal = "";
+      activeTaskStatus = "";
+      showAdminMain("lore");
+      titleText.textContent = tr("title.lore");
+      refreshLore().catch((e) => {
+        if (loreList) loreList.innerHTML = `<div class="task-empty">${String(e.message || e)}</div>`;
+        if (loreCountMeta) loreCountMeta.textContent = "";
+      });
+    }
+
+    function loreRowLabel(row) {
+      const kind = String(row.kind || "");
+      if (kind === "kv") return row.key || tr("lore.kind.kv");
+      if (kind === "note") return row.title || row.key || row.id || tr("lore.kind.note");
+      return row.key || row.title || kind || "—";
+    }
+
+    function loreRowBody(row) {
+      if (row.kind === "kv") {
+        const v = row.value;
+        const vs = typeof v === "string" ? v : JSON.stringify(v);
+        return [vs, row.evidence].filter(Boolean).join("\n");
+      }
+      return [row.body, row.evidence].filter(Boolean).join("\n");
+    }
+
+    async function refreshLore() {
+      const [st, buf] = await Promise.all([
+        taskApi("/api/lore/status"),
+        taskApi("/api/lore/buffer?limit=120"),
+      ]);
+      loreRowsCache = buf.rows || [];
+      const n = loreRowsCache.length;
+      if (loreCountMeta) {
+        loreCountMeta.textContent = n
+          ? tr("lore.meta.count").replace("{n}", String(n))
+          : tr("lore.meta.empty");
+      }
+      if (loreStatusLine) {
+        const vecOn = !!st.vector_enabled;
+        const pkg = !!st.sqlite_vec_available;
+        loreStatusLine.innerHTML =
+          `<span class="${vecOn ? "on" : "off"}">${escapeHtml(vecOn ? tr("lore.status.vectorOn") : tr("lore.status.vectorOff"))}</span>` +
+          `<span>${escapeHtml(pkg ? tr("lore.status.vecPkg") : tr("lore.status.vecMissing"))}</span>` +
+          (st.embed_model ? `<span>${escapeHtml(String(st.embed_model))}</span>` : "");
+      }
+      if (!loreList) return;
+      if (!n) {
+        loreList.innerHTML = `<div class="task-empty">${escapeHtml(tr("lore.empty"))}</div>`;
+        return;
+      }
+      loreList.innerHTML = "";
+      loreRowsCache.slice().reverse().forEach((row, revIdx) => {
+        const idx = loreRowsCache.length - 1 - revIdx;
+        const el = document.createElement("div");
+        el.className = "lore-row";
+        const kindLabel = row.kind === "note" ? tr("lore.kind.note") : tr("lore.kind.kv");
+        const top = document.createElement("div");
+        top.className = "lore-top";
+        top.innerHTML =
+          `<span class="lore-kind">${escapeHtml(kindLabel)}</span>` +
+          `<span class="lore-key">${escapeHtml(loreRowLabel(row))}</span>` +
+          (row.importance ? `<span class="lore-kind">${escapeHtml(String(row.importance))}</span>` : "") +
+          (row.ts ? `<span>${escapeHtml(String(row.ts).slice(0, 19))}</span>` : "");
+        const body = document.createElement("div");
+        body.className = "lore-body";
+        body.textContent = loreRowBody(row) || "";
+        const actions = document.createElement("div");
+        actions.className = "lore-actions";
+        const btnPromote = document.createElement("button");
+        btnPromote.type = "button";
+        btnPromote.className = "primary";
+        btnPromote.textContent = tr("lore.promote");
+        btnPromote.onclick = async () => {
+          try {
+            await taskApi("/api/lore/buffer/promote", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ row: loreRowsCache[idx] }),
+            });
+            await refreshLore();
+          } catch (e) {
+            alert(String(e.message || e));
+          }
+        };
+        const btnDrop = document.createElement("button");
+        btnDrop.type = "button";
+        btnDrop.textContent = tr("lore.drop");
+        btnDrop.onclick = async () => {
+          try {
+            await taskApi("/api/lore/buffer/drop", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ row: loreRowsCache[idx] }),
+            });
+            await refreshLore();
+          } catch (e) {
+            alert(String(e.message || e));
+          }
+        };
+        actions.appendChild(btnPromote);
+        actions.appendChild(btnDrop);
+        el.appendChild(top);
+        el.appendChild(body);
+        el.appendChild(actions);
+        loreList.appendChild(el);
       });
     }
 
@@ -6494,7 +6706,7 @@
     if (backBtn) backBtn.onclick = () => showHome();
     if (navTasks) {
       navTasks.onclick = () => {
-        if (view === "manage" || view === "logs" || view === "ops" || view === "settings") showHome();
+        if (view === "manage" || view === "logs" || view === "lore" || view === "ops" || view === "settings") showHome();
         else {
           sideNav = "tasks";
           syncSideNav();
@@ -6503,8 +6715,32 @@
     }
     if (navManage) navManage.onclick = () => showTasksPage();
     if (navLogs) navLogs.onclick = () => showLogsPage();
+    if (navLore) navLore.onclick = () => showLorePage();
     if (navOps) navOps.onclick = () => showOpsPage();
     if (navSettings) navSettings.onclick = () => showSettingsPage();
+    if (btnLoreRefresh) btnLoreRefresh.onclick = () => refreshLore().catch((e) => alert(String(e.message || e)));
+    if (btnLoreClear) {
+      btnLoreClear.onclick = async () => {
+        if (!confirm(tr("lore.clearConfirm"))) return;
+        try {
+          await taskApi("/api/lore/buffer/clear", { method: "POST" });
+          await refreshLore();
+        } catch (e) {
+          alert(String(e.message || e));
+        }
+      };
+    }
+    if (btnLoreReindex) {
+      btnLoreReindex.onclick = async () => {
+        try {
+          const data = await taskApi("/api/lore/vector/reindex", { method: "POST" });
+          alert(tr("lore.reindexOk").replace("{n}", String(data.indexed != null ? data.indexed : "—")));
+          await refreshLore();
+        } catch (e) {
+          alert(String(e.message || e));
+        }
+      };
+    }
     if (btnSettingsSave) btnSettingsSave.onclick = () => saveSettings();
     const btnRestart = document.getElementById("btnRestart");
     const btnSnapshot = document.getElementById("btnSnapshot");
@@ -6699,6 +6935,10 @@
       }
       if (view === "logs") {
         showLogsPage();
+        return;
+      }
+      if (view === "lore") {
+        showLorePage();
         return;
       }
       if (view === "ops") {

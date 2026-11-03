@@ -10,7 +10,7 @@ English: [README.md](README.md).
 cd fawai-avatar
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ./fawai_lore          # 个人知识库 KV + 笔记库
-pip install -e "./fawai_lore[vector]"  # 可选：sqlite-vec 笔记向量（或 pip install sqlite-vec -i https://pypi.org/simple/）
+pip install -e "./fawai_lore[vector]"  # 可选：sqlite-vec 笔记向量（装后 FAWAI_LORE_VECTOR 默认 auto 即开）
 pip install -e .                 # 无界面 / 编码·文件·shell / 网关
 # pip install -e ".[gui]"        # 可选：桌面截屏与键鼠（macOS 或有 DISPLAY 的 Linux）
 cp .env.example .env   # 填写 FAWAI_LLM_API_KEY；.env 已 gitignore

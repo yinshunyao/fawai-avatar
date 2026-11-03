@@ -392,6 +392,81 @@ def create_app(
             return matches[0]
         return None
 
+    @app.get("/api/lore/status")
+    async def lore_status_api(
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        """个人知识库状态：向量开关、缓冲条数。"""
+        _check_token(x_fawai_token)
+        from fawai_avatar.lore_api import lore_status
+
+        return JSONResponse(lore_status())
+
+    @app.get("/api/lore/buffer")
+    async def lore_buffer_list_api(
+        x_fawai_token: str | None = Header(default=None),
+        limit: int = 80,
+    ) -> JSONResponse:
+        """待确认缓冲列表（非 P0 候选）。"""
+        _check_token(x_fawai_token)
+        from fawai_avatar.lore_api import lore_buffer_list
+
+        return JSONResponse(lore_buffer_list(limit=limit))
+
+    @app.post("/api/lore/buffer/clear")
+    async def lore_buffer_clear_api(
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.lore_api import lore_buffer_clear
+
+        return JSONResponse(lore_buffer_clear())
+
+    @app.post("/api/lore/buffer/promote")
+    async def lore_buffer_promote_api(
+        payload: dict[str, Any] | None = Body(default=None),
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        """将一条缓冲写入 KV/笔记，并从缓冲移除。"""
+        _check_token(x_fawai_token)
+        from fawai_avatar.lore_api import lore_buffer_promote
+
+        body = payload or {}
+        row = body.get("row") if isinstance(body.get("row"), dict) else body
+        result = lore_buffer_promote(row if isinstance(row, dict) else {})
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error") or result)
+        return JSONResponse(result)
+
+    @app.post("/api/lore/buffer/drop")
+    async def lore_buffer_drop_api(
+        payload: dict[str, Any] | None = Body(default=None),
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        """丢弃一条缓冲，不入库。"""
+        _check_token(x_fawai_token)
+        from fawai_avatar.lore_api import lore_buffer_drop
+
+        body = payload or {}
+        row = body.get("row") if isinstance(body.get("row"), dict) else body
+        result = lore_buffer_drop(row if isinstance(row, dict) else {})
+        if not result.get("ok"):
+            raise HTTPException(status_code=404, detail="row not found")
+        return JSONResponse(result)
+
+    @app.post("/api/lore/vector/reindex")
+    async def lore_vector_reindex_http(
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        """重建笔记向量索引（需向量策略开启且已装 sqlite-vec）。"""
+        _check_token(x_fawai_token)
+        from fawai_avatar.lore_api import lore_vector_reindex_api
+
+        result = lore_vector_reindex_api()
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error") or result)
+        return JSONResponse(result)
+
     @app.get("/api/system-logs")
     async def list_system_logs_api(
         x_fawai_token: str | None = Header(default=None),
