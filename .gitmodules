@@ -1,0 +1,6 @@
+[submodule "fawai_lore"]
+	path = fawai_lore
+	url = https://github.com/yinshunyao/fawai_lore.git
+[submodule "fawai_shovels"]
+	path = fawai_shovels
+	url = https://github.com/yinshunyao/fawai_shovels.git

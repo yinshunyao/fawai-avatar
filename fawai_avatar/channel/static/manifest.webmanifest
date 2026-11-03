@@ -1,0 +1,9 @@
+{
+  "name": "fawai 分身会话",
+  "short_name": "fawai",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#e8ecf1",
+  "theme_color": "#f3f5f8",
+  "lang": "zh-CN"
+}

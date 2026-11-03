@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fawai-avatar"
+version = "0.1.1"
+description = "PC/手机操作分身：观察 → 大脑 → 控制，总管调度多工作任务"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "openai>=1.40.0",
+  "Pillow>=10.0.0",
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.30.0",
+  "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+# 桌面截屏 / 键鼠（macOS 或有 DISPLAY 的 Linux）；无界面服务器不必装
+gui = ["mss>=9.0.0", "pyautogui>=0.9.54"]
+dev = ["pytest>=8.0.0"]
+
+[project.scripts]
+fawai-gateway = "fawai_avatar.channel.lan_gateway:main"
+fawai-keeper = "fawai_avatar.runtime.keeper:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["fawai_avatar*"]
+# Install lore lib separately: pip install -e ./fawai_lore
+
+[tool.setuptools.package-data]
+fawai_avatar = ["channel/static/*"]

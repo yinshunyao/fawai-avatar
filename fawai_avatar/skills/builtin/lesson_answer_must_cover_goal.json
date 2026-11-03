@@ -1,0 +1,9 @@
+{
+  "id": "lesson_answer_must_cover_goal",
+  "title": "问询终稿须答到目标问点",
+  "when_to_use": "goal 在问状态/进度/是否/多少，或复盘发现终稿只有「已获取/已汇总/并结束」等过程元叙述时",
+  "steps": "1. 对照 goal 列出用户要的事实字段（状态、数字、是否完成、边界）。\n2. success 的 thought 直接写事实；禁止只描述查询/汇总过程。\n3. 工具结果不足则 status=failed 或 need_input，写清缺什么；禁止用元叙述假装完成。\n4. 复盘时若 outcome_judgment 点名答非所问，须升为机制根因并给默认勾选优化项。",
+  "tags": ["lesson", "review", "answer_coverage", "false_success", "outcome_judgment"],
+  "source": "builtin:answer-coverage-gate",
+  "created_at": "2026-11-03T00:00:00+00:00"
+}

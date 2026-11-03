@@ -1,0 +1,9 @@
+{
+  "id": "lesson_write_set_not_acceptance",
+  "title": "write_set 非空不等于验收通过",
+  "when_to_use": "改前端/布局/样式任务复盘或规划收尾；出现 completed 但界面无变化、或仅新增未引用 CSS 变量时",
+  "steps": "1. 先查是否从未 mutate；若已 mutate，再查 diff 是否只有未 var() 引用的 CSS 变量、注释或空白。\n2. 探索闸门/守卫 abort 只说明相位问题，不证明目标已达成。\n3. success 前须能用一句话说明用户可见副作用；说不清或自认无变化 → failed，禁止 native tool_calls 占位收尾。\n4. 附图目标须对照图中可见问题改实际生效选择器/属性。",
+  "tags": ["lesson", "review", "weak_write", "outcome_judgment", "frontend"],
+  "source": "builtin:task-068abbe-false-success",
+  "created_at": "2026-11-02T00:00:00+00:00"
+}

@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+data/
+dist/
+build/
+bin/frpc
+bin/frpc_*
+.DS_Store
+.env
+.env.local
+*.pem
+*.key

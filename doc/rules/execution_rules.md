@@ -1,0 +1,1 @@
+在调度机制中增加“写动作缺失”检测：若连续 3 步仅有 read/grep 等只读动作而无 write/patch，强制触发 replan 并要求下一步必须包含写动作，否则直接判定为 stagnation。
