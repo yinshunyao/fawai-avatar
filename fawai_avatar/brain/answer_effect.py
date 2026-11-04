@@ -399,3 +399,60 @@ def unread_compressed_dumps(
         if p not in out:
             out.append(p)
     return out
+
+
+def is_tool_observe_dump_path(path: str) -> bool:
+    """是否为 obs_tool 压缩落盘（tool_*_hits/stdout 等）。"""
+    key = normalize_path_key(path)
+    if not key:
+        return False
+    name = Path(key).name
+    if not name.startswith("tool_"):
+        return False
+    return "observe" in key.replace("\\", "/") or name.endswith(
+        ("_hits.txt", "_stdout.txt", "_stderr.txt", "_content.txt", "_lines.txt")
+    )
+
+
+def is_hits_observe_dump_path(path: str) -> bool:
+    """检索 hits 压缩落盘（误压时勿用未读闸绑死 mutate）。"""
+    name = Path(normalize_path_key(path) or path).name
+    return name.startswith("tool_") and name.endswith("_hits.txt")
+
+
+def has_source_window_read(read_ok_paths: list[str] | set[str]) -> bool:
+    """是否已成功 fs_read 过非 observe dump 的源码/材料 path（小窗取证）。"""
+    for raw in read_ok_paths or []:
+        p = str(raw or "").strip()
+        if p and not is_tool_observe_dump_path(p):
+            return True
+    return False
+
+
+def should_suppress_compressed_unread_ban(
+    *,
+    write_set: list[str] | None = None,
+    read_ok_paths: list[str] | set[str] | None = None,
+) -> bool:
+    """改写已开始，或已对源码 path 小窗取证时：不再因未读 hits dump 注入禁宽搜。
+
+    问询收尾的【压缩未读】答复闸仍可单独用 unread_compressed_dumps；本函数只管
+    编码闭环里的【压缩未读·禁宽搜】误拦 mutate。
+    """
+    if any(str(p or "").strip() for p in (write_set or [])):
+        return True
+    return has_source_window_read(read_ok_paths or [])
+
+
+def prune_hits_dumps_after_source_evidence(
+    dump_paths: list[str],
+    *,
+    write_set: list[str] | None = None,
+    read_ok_paths: list[str] | set[str] | None = None,
+) -> list[str]:
+    """源码小窗/mutate 后丢弃未读 hits dump，避免禁宽搜与答复闸被检索摘要拖死。"""
+    if not should_suppress_compressed_unread_ban(
+        write_set=write_set, read_ok_paths=read_ok_paths
+    ):
+        return list(dump_paths or [])
+    return [p for p in (dump_paths or []) if not is_hits_observe_dump_path(str(p))]

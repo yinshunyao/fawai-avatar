@@ -1,8 +1,8 @@
 {
   "id": "lesson_verify_read_not_endless_explore",
   "title": "请先 fs_read 不是无限只读许可证",
-  "when_to_use": "改文件/前端任务出现 patch old not found、substring not found，或步骤重复 alternate 后仍连续 fs_read/fs_grep 同一 path 时",
-  "steps": "1. 「请先 fs_read 核对原文」只授权一轮定向核对 exact old，随即必须 fs_patch/fs_replace；禁止把失败提示当成无限只读许可证。\n2. 步骤重复/执行反省的 alternate ≠ 已进入改写相位：裁决后下一轮若仍只成功只读，仍属探索空转，应 mutate 或 need_input/failed。\n3. 已定位 path + 渲染/修改点后，禁止无新问题换 offset/pattern 反复读重叠窗口；同 path 重叠窗只读会加速探索闸门。\n4. 守卫 abort / stagnation alternate 只说明相位问题，不证明目标已达成，也不证明「还要再读」。",
+  "when_to_use": "改文件/前端任务出现 patch old not found、substring not found，或步骤重复 alternate 后仍连续同构 fs_read/fs_grep 同一 path 时",
+  "steps": "1. 「请先 fs_read / 【补丁锚点未接地】」优先用失败回执「原文小窗」或定向小窗核对 exact old，再 fs_patch/fs_replace；读成功 ≠ old 已接地。\n2. 路径 not found / 相对链接解析失败时：允许 fs_glob/fs_grep/explore_search 纠路径，禁止臆造绝对路径；不要把找文件任务收成禁定位。\n3. old 必须从读到的行或失败回执「原文小窗」逐字复制；禁止按目标意图编造仓内不存在的闸门/文案。\n4. 避免无行号的大段文件头盲读（offset=1 且 limit 很大）；有行号时优先小窗。\n5. 步骤重复 alternate = 换指纹（小窗 exact old→patch 或换工具/换 path），≠ 无限同构只读；裁决后仍同构空转应换道或 failed。",
   "tags": ["lesson", "review", "explore_gate", "stagnation", "verify_read", "frontend"],
   "source": "builtin:task-79e9bbbe-markdown-explore-loop",
   "created_at": "2026-11-02T00:00:00+00:00"

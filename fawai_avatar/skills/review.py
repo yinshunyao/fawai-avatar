@@ -27,7 +27,7 @@ _DIMENSION_LABELS = {
     "planning": "任务规划",
     "execution": "任务执行",
     "scheduling": "调度过程",
-    "tool_results": "工具使用结果",
+    "tool_results": "工具本身与调用",
     "outcome_judgment": "结果判断",
 }
 _MAX_JOINT = 12
@@ -35,8 +35,9 @@ _APPROVE_ONLY_RE = re.compile(
     r"^(?:放行|执行|确认|同意|开始|go|ok|yes)[!！。.\s]*$",
     re.IGNORECASE,
 )
+# 取消指令仍可追加复盘，不再拦截
 _CANCEL_RE = re.compile(
-    r"^(?:取消|不改|不用了|跳过全部|全部跳过|abort|cancel|no)[!！。.\s]*$",
+    r"^(?:取消|不改|不用了|跳过全部|全部跳过|abort|cancel|no)[!！。.\s,，]*",
     re.IGNORECASE,
 )
 _ALL_APPLY_RE = re.compile(
@@ -114,6 +115,8 @@ def propose_review_session(
             "message": f"未知任务: {', '.join(x[:8] for x in missing)}",
             "task_ids": ids,
         }
+    
+    # 允许对任何状态的任务（包括已取消）进行复盘
 
     joint = len(sources) > 1
     instruction = build_review_instruction(sources)
@@ -186,15 +189,7 @@ def parse_review_apply_reply(
     catalog = _normalize_items(items)
     all_ids = [str(it["id"]) for it in catalog]
 
-    if _CANCEL_RE.match(raw):
-        return {
-            "ok": True,
-            "mode": "cancel",
-            "selected_ids": [],
-            "revise_guidance": "",
-            "cancel": True,
-        }
-
+    # 取消指令不再拦截，统一作为修改意见处理（支持取消后追加复盘并按指令执行）
     if _ALL_APPLY_RE.match(raw):
         return {
             "ok": True,
@@ -255,7 +250,7 @@ def build_review_instruction(tasks: list[TaskRecord]) -> str:
     lines = [
         "【复盘指令】" + ("联合复盘" if joint else "单任务复盘"),
         f"待复盘任务数：{len(tasks)}",
-        "流程：放行后全维深析（规划/执行/调度/工具结果/结果判断）→ 出示优化清单 → "
+        "流程：放行后全维深析（规划/执行/调度/工具本身与调用/结果判断）→ 出示优化清单 → "
         "勾选同意后先存档再执行（skill/lesson/代码/规则/提示词）。",
         "成功与失败都可沉淀；禁止一律写成成功 Skill；分析阶段不直接改代码。",
         "",
@@ -374,8 +369,12 @@ def analyze_review_tasks(
     ratchet: bool = False,
     use_llm: bool | None = None,
     user_guidance: str | None = None,
+    stats: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """只分析：全维结论 + 优化清单；不写库、不改文件。"""
+    """只分析：全维结论 + 优化清单；不写库、不改文件。
+
+    stats：可选任务级用量累加器（meta.stats）；有 LLM 时写入 token / llm_calls。
+    """
     ids = _normalize_task_ids(task_ids)
     if not ids:
         return {"ok": False, "message": "缺少 task_ids", "task_ids": []}
@@ -440,6 +439,7 @@ def analyze_review_tasks(
             include_steps=include_steps,
             use_llm=live,
             user_guidance=guidance,
+            stats=stats,
         )
     except Exception as exc:  # noqa: BLE001
         return {
@@ -667,7 +667,7 @@ def build_materials_text(
     parts: list[str] = [
         f"任务数: {len(tasks)}",
         "模式: " + ("联合复盘" if len(tasks) > 1 else "单任务复盘"),
-        "说明：须覆盖任务规划/执行/调度/工具结果/结果判断五维；"
+        "说明：须覆盖任务规划/执行/调度/工具本身与调用/结果判断五维；"
         "成功与失败都有复盘价值；联合时综合承接链。",
         f"has_any_step_trace: {any(_has_step_trace(t) for t in tasks)}",
     ]
@@ -943,12 +943,14 @@ def _analyze(
     include_steps: bool,
     use_llm: bool,
     user_guidance: str = "",
+    stats: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if use_llm:
         return _analyze_with_llm(
             tasks,
             include_steps=include_steps,
             user_guidance=user_guidance,
+            stats=stats,
         )
     return _analyze_rule_based(
         tasks, include_steps=include_steps, user_guidance=user_guidance
@@ -1013,8 +1015,12 @@ def _analyze_rule_based(
     dims["planning"] = "；".join(plan_bits) or f"目标链：{goals}"
     dims["execution"] = "；".join(exec_bits) or "缺少执行轨迹"
     dims["scheduling"] = "；".join(sched_bits) or "无调度计数"
-    dims["tool_results"] = "；".join(tool_bits) or (
+    tool_body = "；".join(tool_bits) or (
         "无逐步工具结果" if not include_steps else "步骤中无 results"
+    )
+    dims["tool_results"] = (
+        f"【工具本身】材料不足（mock 未评 schema/报错契约）。"
+        f"【调用】{tool_body}"
     )
     dims["outcome_judgment"] = "；".join(judge_bits) or f"综合 outcome={outcome}"
 
@@ -1244,8 +1250,10 @@ def _analyze_with_llm(
     *,
     include_steps: bool,
     user_guidance: str = "",
+    stats: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from fawai_avatar.llm.client import LlmClient
+    from fawai_avatar.task import stats as task_stats
 
     context = build_materials_text(
         tasks,
@@ -1261,24 +1269,31 @@ def _analyze_with_llm(
 
 【任务分析强制口径】（与 doc/功能/任务复盘/分析规则.md 一致）
 - 智能体机制优先：须指出规划/观察/动作/反省/步骤重复/结果判定哪环失效；禁止只复述终态错误句。
+- 先评必要路径再评工具细节：列出必要/可选路径（抽象槽位，如鉴权材料、作用对象/脚本、副作用动作）；查是否偏科只攻一条而遗忘另一条已就绪路径、是否把可选探索当必要；远端与其它任务同一尺子。analysis 须含路径表结论。
+- 工具双栏（强制）：analysis 与 tool_results 均须分栏写清「工具本身」与「调用」，不得只罗列 ok/message。
+  · 工具本身：schema/能力槽是否缺；描述与真实行为是否一致；成功/失败返回与报错是否误导（易假归因）；压缩/截断是否使观察不可用；能力清单是否漏本 goal 所需族。优化可落工具实现/错误文案/schema/清单/压缩策略。
+  · 调用：选型是否对族；参数是否足以推进必要路径；时机/相位是否错（该 mutate 仍只读）；同族微调未换道；成功只读是否当进展；已齐材料是否未用于副作用。优化可落规划/进度换道闸/反省/结果判定。
+  · 两栏都可写「未见缺口/未见明显失误」，但不得只评一栏；材料不足须点明。禁止把工具产品缺陷一律写成「模型不会用」，也禁止把调用失误一律改成重写工具。
 - 优化须针对通用任务（可迁移到同类目标）；单任务细节只作证据，不得当唯一优化标题。
-- 区分表面失败与机制失败（例：fingerprint / 探索闸门 abort 可能只是止损，根因常是从未 mutate、inject 未收紧工具面、或 alternate/架构门误伤改写）。
-- analysis 总述建议含：机制根因（可复用模式名）→ 证据要点 → 通用优化方向。
-- 最终答复用户（analysis / dimensions / items 的 title 与 rationale）：须同时保证全面性、准确性、专业性、易读性——覆盖命中机制与有材料的五维；断言可落到证据，不确定则写材料不足；用机制术语写清改哪一层；短段先结论后证据，禁止堆内部字段名当主文。
+- 禁止本案故事线升闸：换掉专有名词后 title/验收须仍成立；已有必要路径台账/进度闸/方法族/abort 交付/工具契约能覆盖时只写「补强既有层」，禁止平行新开专名专用门。
+- 区分表面失败与机制失败（例：fingerprint abort 可能只是止损，根因常是必要路径偏科、从未 mutate、alternate 误伤、或工具报错误导）。
+- analysis 总述建议含：必要/可选路径 → 工具双栏 → 机制根因（可复用模式名）→ 证据要点 → 通用优化方向（标明改工具层还是调用/闭环层）。
+- 最终答复用户（analysis / dimensions / items 的 title 与 rationale）：须同时保证全面性、准确性、专业性、易读性——覆盖命中机制、工具双栏与有材料的五维；断言可落到证据，不确定则写材料不足；用机制术语写清改哪一层；短段先结论后证据，禁止堆内部字段名当主文。
 - 问询/状态类假成功（强制）：若 goal 在问状态/进度/是否/多少/配置落点/硬件配置，而 final_thought 或末步 thought 只写「已获取/已汇总/已找到并结束」等过程元叙述、或硬件盘点只报一两项缺来源路径 → 须把「假成功 / 答复未覆盖目标」或「配置盘点过薄」升为机制根因之一，并至少给一条默认勾选优化（lesson 或 prompt_patch/code_patch：答复覆盖闸门）；禁止只写在 outcome_judgment 末句却清单不跟进。轨迹材料含 steps_index 与头尾采样时，必须核对末步，禁止只根据前缀探索噪声定主因。
+- 假归因/交付：工具为 not found/shell 闸而终稿写「沙箱禁读」且未交已齐路径上的可执行交付 → 升假归因 + 交付兑现；并在工具双栏区分「报错是否误导」vs「调用是否未换道」；勿写专名菜谱。
 
 必须覆盖以下五维（dimensions 每键一两段，禁止空话；须落到机制而非流水账）：
-- planning 任务规划：goal 拆解、能力选型、探索 vs 改写相位是否错误、是否误走 GUI/超清单
-- execution 任务执行：是否长期无 mutate；逐步 actions 是否空转式只读；闸门 force_mutate 后是否仍只读
-- scheduling 调度过程：replan/reflect/stagnation 是纠偏还是注入错误世界模型/矛盾约束；架构二次失败是否硬掐死写入
-- tool_results 工具使用结果：ok 的只读是否被误当成进展；写动作是否缺失；mutate_prefer 工具面是否生效
-- outcome_judgment 结果判断：终态文案是否掩盖机制空洞；假成功/边界未明示；问询类是否答到 goal 问点
+- planning 任务规划：必要/可选路径是否拆清；能力选型；探索 vs 改写；是否偏科；是否误走 GUI/超清单
+- execution 任务执行：各必要路径是否都有尝试；是否长期无 mutate；可选探索是否喧宾夺主
+- scheduling 调度过程：replan/reflect/stagnation 是纠偏还是注入错误约束/加重偏科；架构二次失败是否硬掐死写入
+- tool_results 工具本身与调用：须显式两小节——（1）工具本身（schema/报错/描述/压缩/清单）；（2）调用（选型/参数/相位/换道/结果是否推进必要路径）。禁止只堆 ok/message 流水账
+- outcome_judgment 结果判断：是否按必要路径分项说明阻塞；假归因；假成功/边界；问询类是否答到 goal 问点
 
 然后给出可勾选优化清单 items（可空）。每项须让用户**不看代码也能判断是否执行**：
 - id: 从 "1" 起的字符串编号
 - kind: skill | lesson | code_patch | rule_patch | prompt_patch
 - title / rationale（对应哪一维；title 写通用机制，勿绑死单一 goal 文案；文案过「最终答复用户」四性）
-- impact: 必填，一两句——改哪一层（规划/观察/闸门/提示词/知识库等）、执行后会怎样、如何验收（类任务可观察指标）
+- impact: 必填，一两句——改哪一层（工具实现/契约 vs 规划/观察/闸门/提示词/知识库等）、执行后会怎样、如何验收（类任务可观察指标）
 - selected_default: bool（是否建议默认勾选）
 - payload: 必须可执行且具体（禁止空壳）；用户勾选前会看到由此生成的路径/步骤/补丁摘要
   - skill/lesson: {{id,title,when_to_use,steps,tags}}（steps 写清可执行步骤，非口号）
@@ -1302,9 +1317,18 @@ def _analyze_with_llm(
 
 {context}
 """
-    result = LlmClient().chat([{"role": "user", "content": prompt}], tools=None)
+    # 任务复盘需要质量，按主脑角色开思考（可预算）
+    result = LlmClient().chat(
+        [{"role": "user", "content": prompt}],
+        tools=None,
+        thinking_role="main",
+    )
     if not result.get("ok"):
         raise RuntimeError(str(result.get("error") or "LLM 调用失败"))
+    usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+    if stats is not None:
+        # API 已成功返回即累计；后续 JSON 解析失败仍计 token
+        task_stats.apply_llm_call(stats, usage=usage)
     content = str(result.get("content") or "").strip()
     payload = _parse_json_object(content)
     if payload is None:
@@ -1671,7 +1695,7 @@ def _parse_id_list(raw: str, all_ids: list[str]) -> list[str]:
 
 def _guess_outcome(task: TaskRecord) -> str:
     meta = task.meta or {}
-    if task.status == "failed" or meta.get("ok") is False:
+    if task.status in ["failed", "cancelled"] or meta.get("ok") is False:
         return "failure"
     if task.status == "completed" or meta.get("ok") is True:
         return "success"

@@ -28,12 +28,21 @@ def _env_int(name: str, default: int) -> int:
 
 
 def soft_chars() -> int:
-    # 默认收紧：大文件反复回灌时控制单条工具观察体积
-    return _env_int("FAWAI_TOOL_OBS_SOFT_CHARS", 2000)
+    """工具观察 soft 压缩阈值。默认 `0`=关闭（压缩会拖慢规划）；`>0` 才启用。"""
+    return _env_int("FAWAI_TOOL_OBS_SOFT_CHARS", 0)
 
 
 def hard_chars() -> int:
     return _env_int("FAWAI_TOOL_OBS_HARD_CHARS", 6000)
+
+
+def hits_soft_chars() -> int:
+    """fs_grep / explore hits 专用 soft。
+
+    默认 `0`=不压缩（回灌与工具返回对齐；体量靠 head_limit/context）。
+    `>0` 才按字符数压缩；勿再把 `0` 解释成沿用 stdout soft。
+    """
+    return _env_int("FAWAI_TOOL_OBS_HITS_SOFT_CHARS", 0)
 
 
 def head_lines() -> int:
@@ -49,8 +58,12 @@ def keyword_hit_limit() -> int:
 
 
 def fs_read_line_preview() -> int:
-    """fs_read 回灌 history 时最多展开多少行（默认 40）。"""
-    return _env_int("FAWAI_TOOL_OBS_FS_READ_LINES", 40)
+    """fs_read 回灌展开行数硬顶。
+
+    默认 `0`：与本次工具返回的 `lines` 对齐（读多少回灌多少；窗口由模型
+    `offset`/`limit` 决定）。`>0` 才额外封顶（紧急刹车）。
+    """
+    return _env_int("FAWAI_TOOL_OBS_FS_READ_LINES", 0)
 
 
 def _observe_dir(data_dir: str | Path | None = None) -> Path:
@@ -92,8 +105,12 @@ def digest_text(
     goal: str = "",
     label: str = "stdout",
     data_dir: str | Path | None = None,
+    soft_override: int | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    """压缩大段工具文本；返回 (展示串, meta)。"""
+    """压缩大段工具文本；返回 (展示串, meta)。
+
+    soft_override：检索 hits 等可传入更高阈值，避免误用 stdout 紧门。
+    """
     raw = text if isinstance(text, str) else str(text)
     meta: dict[str, Any] = {
         "observe_method": "obs_tool",
@@ -103,11 +120,12 @@ def digest_text(
         "lines": raw.count("\n") + (1 if raw else 0),
         "compressed": False,
     }
-    soft = soft_chars()
-    hard = max(soft, hard_chars())
-    if len(raw) <= soft:
+    soft = soft_chars() if soft_override is None else max(0, int(soft_override))
+    # soft<=0：关闭压缩，全文回灌
+    if soft <= 0 or len(raw) <= soft:
         return raw, meta
 
+    hard = max(soft, hard_chars())
     meta["compressed"] = True
     dump_path = _dump_full(raw, kind=label, data_dir=data_dir)
     meta["dump_path"] = dump_path
@@ -174,10 +192,15 @@ def digest_text(
     return body, meta
 
 
-def _render_hits(hits: list[Any], *, max_hits: int = 40) -> str:
-    """把 grep/explore hits 渲成 path:line 正文，供规划直接读。"""
+def _render_hits(hits: list[Any], *, max_hits: int | None = None) -> str:
+    """把 grep/explore hits 渲成 path:line 正文，供规划直接读。
+
+    默认展开工具返回的全部命中（体量由工具 head_limit 控制）；
+    仅当显式传入 max_hits>0 时才截断展开条数。
+    """
+    rows = hits if max_hits is None or max_hits <= 0 else hits[: max(1, max_hits)]
     rendered: list[str] = []
-    for hit in hits[: max(1, max_hits)]:
+    for hit in rows:
         if not isinstance(hit, dict):
             rendered.append(str(hit))
             continue
@@ -197,7 +220,7 @@ def _render_hits(hits: list[Any], *, max_hits: int = 40) -> str:
                 rendered.append(
                     f"{path}:{row.get('line', '?')}+ {row.get('text', '')}"
                 )
-    if len(hits) > max_hits:
+    if max_hits is not None and max_hits > 0 and len(hits) > max_hits:
         rendered.append(f"…另有 {len(hits) - max_hits} 条命中未展开")
     return "\n".join(rendered)
 
@@ -257,8 +280,9 @@ def format_tool_observation(
             tag = "已压缩" if part_meta.get("compressed") else "全文"
             lines.append(f"  {label}（{tag}）:\n{digested}")
 
-        # message 本体很长且未走 stdout 字段时，同样压缩落盘（常见于 shell 把全文塞进 message）
-        if len(msg) > soft_chars() and "stdout" not in digested_keys:
+        # message 本体很长且未走 stdout 字段时，同样可 soft 压缩（soft<=0 则跳过）
+        soft_n = soft_chars()
+        if soft_n > 0 and len(msg) > soft_n and "stdout" not in digested_keys:
             digested, part_meta = digest_text(
                 msg, goal=goal, label="stdout", data_dir=data_dir
             )
@@ -266,30 +290,27 @@ def format_tool_observation(
             tag = "已压缩" if part_meta.get("compressed") else "全文"
             lines.append(f"  stdout（{tag}）:\n{digested}")
 
+        # fs_read：回灌与本次读到的行对齐（默认不再二次截断/ soft 压缩）；
+        # 一次看多少行由模型 offset/limit 决定。
         file_lines = data.get("lines")
         if isinstance(file_lines, list) and file_lines:
-            preview_n = fs_read_line_preview()
+            cap = fs_read_line_preview()
+            shown_rows = file_lines if cap <= 0 else file_lines[:cap]
             rendered: list[str] = []
-            for row in file_lines[:preview_n]:
+            for row in shown_rows:
                 if isinstance(row, dict):
                     rendered.append(f"{row.get('n', '?')}: {row.get('text', '')}")
                 else:
                     rendered.append(str(row))
             body = "\n".join(rendered)
-            if len(file_lines) > preview_n:
+            if cap > 0 and len(file_lines) > cap:
                 body += (
-                    f"\n…共 {len(file_lines)} 行已读，仅展示前 {preview_n} 行；"
-                    "下一刀请按行号小窗 fs_read，禁止无新问题整段重读"
+                    f"\n…共 {len(file_lines)} 行已读，观察硬顶 {cap} 行"
+                    "（FAWAI_TOOL_OBS_FS_READ_LINES）；请缩小 limit 或提高硬顶"
                 )
-            # 大段 lines 再走 soft/hard 压缩，避免单步把规划打满
-            if len(body) > soft_chars():
-                digested, part_meta = digest_text(
-                    body, goal=goal, label="lines", data_dir=data_dir
-                )
-                meta["parts"].append(part_meta)
-                lines.append(f"  lines（已压缩）:\n{digested}")
-            else:
-                lines.append(f"  lines:\n{body}")
+            elif data.get("truncated"):
+                body += "\n…文件后续未读完；需要时加大 offset 续读（本次已回灌全部已读行）"
+            lines.append(f"  lines:\n{body}")
         if data.get("paths"):
             paths = data.get("paths")
             preview = paths if isinstance(paths, list) else [paths]
@@ -299,34 +320,44 @@ def format_tool_observation(
                 path_block += f"\n  …共 {len(preview)} 条"
             lines.append(f"  paths ({len(preview)}):\n{path_block}")
 
-        # fs_grep / explore 等返回 hits；兼容旧字段 matches
+        # fs_grep / explore hits：默认全文回灌（不压缩、不二次截断条数）；
+        # 体量靠工具 head_limit/context；模型自行决定是否加大 limit 翻页。
         hit_rows = data.get("hits")
         if hit_rows is None:
             hit_rows = data.get("matches")
+        hits_soft = hits_soft_chars()
         if isinstance(hit_rows, list) and hit_rows:
             hit_text = _render_hits(hit_rows)
-            if len(hit_text) > soft_chars():
+            if hits_soft > 0 and len(hit_text) > hits_soft:
                 digested, part_meta = digest_text(
-                    hit_text, goal=goal, label="hits", data_dir=data_dir
+                    hit_text,
+                    goal=goal,
+                    label="hits",
+                    data_dir=data_dir,
+                    soft_override=hits_soft,
                 )
                 meta["parts"].append(part_meta)
                 lines.append(f"  hits（摘要，共 {len(hit_rows)}）:\n{digested}")
-                lines.append(
-                    "  【宽检索提示】命中已压缩：下一刀请收窄 pattern / 加 context，"
-                    "或按 path:line 小窗 fs_read；禁止同范围再宽 grep。"
-                )
             else:
                 lines.append(f"  hits（共 {len(hit_rows)}）:\n{hit_text}")
-                if len(hit_rows) >= 20:
-                    lines.append(
-                        "  【宽检索提示】命中偏多：优先收窄 pattern 或按行号定向，"
-                        "勿重复同范围检索。"
-                    )
+            try:
+                action_limit = int(args.get("head_limit") or 40)
+            except (TypeError, ValueError):
+                action_limit = 40
+            if action_limit > 0 and len(hit_rows) >= action_limit:
+                lines.append(
+                    f"  （已达本次 head_limit={action_limit}；"
+                    "需要更多请加大 head_limit 或收窄 pattern 后再搜）"
+                )
         elif hit_rows is not None and not isinstance(hit_rows, list):
             preview = str(hit_rows)
-            if len(preview) > soft_chars():
+            if hits_soft > 0 and len(preview) > hits_soft:
                 digested, part_meta = digest_text(
-                    preview, goal=goal, label="hits", data_dir=data_dir
+                    preview,
+                    goal=goal,
+                    label="hits",
+                    data_dir=data_dir,
+                    soft_override=hits_soft,
                 )
                 meta["parts"].append(part_meta)
                 lines.append(f"  hits（摘要）:\n{digested}")

@@ -181,6 +181,8 @@ def compress_history_for_plan(
             or "工具结果" in text
             or "【探索进度闸门】" in text
             or "【探索改写强制】" in text
+            or "【铲子优先】" in text
+            or "【铲子提炼】" in text
         ):
             summarized.append({"role": role, "content": _summarize_tool_feedback(text)})
         else:

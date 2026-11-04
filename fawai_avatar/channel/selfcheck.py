@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -250,8 +252,65 @@ def _check_rebuild_timeline_from_steps() -> None:
     assert not timeline_needs_rebuild(live2, task)
 
 
+def _iter_phase_literals(py_root: Path) -> set[str]:
+    """扫 Python 里 progress/meta 用到的 phase 字面量（不含测试噪声变量）。"""
+    phases: set[str] = set()
+    # phase="foo" / phase='foo' / "phase": "foo"
+    pat = re.compile(
+        r"""(?:phase\s*=\s*["']([a-z][a-z0-9_]*)["'])|(?:["']phase["']\s*:\s*["']([a-z][a-z0-9_]*)["'])"""
+    )
+    skip_dirs = {"__pycache__", ".venv", "runtime_releases", "data"}
+    for path in py_root.rglob("*.py"):
+        if any(part in skip_dirs for part in path.parts):
+            continue
+        # 自检/demo 里的假 phase 不强制进 i18n（仍会扫到 hub/loop 真源）
+        if path.name in {"selfcheck.py"}:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for m in pat.finditer(text):
+            phases.add(m.group(1) or m.group(2))
+    return phases
+
+
+def _check_progress_phase_i18n() -> None:
+    """杜绝 progress.meta.phase 缺中英文标签：源码有 phase 则 zh-CN/en 必须有 phase.*。"""
+    channel_dir = Path(__file__).resolve().parent
+    pkg_root = channel_dir.parent  # fawai_avatar/
+    static_i18n = channel_dir / "static" / "i18n"
+    zh = json.loads((static_i18n / "zh-CN.json").read_text(encoding="utf-8"))
+    en = json.loads((static_i18n / "en.json").read_text(encoding="utf-8"))
+    used = _iter_phase_literals(pkg_root)
+    # 仅要求会话可见 progress/card 阶段有标签；排除纯内部 crash 标记
+    ignore = {"step"}  # crash_phase 变量值，非 progress.meta.phase
+    missing_zh: list[str] = []
+    missing_en: list[str] = []
+    raw_looking: list[str] = []
+    for phase in sorted(used - ignore):
+        key = f"phase.{phase}"
+        if key not in zh:
+            missing_zh.append(key)
+        if key not in en:
+            missing_en.append(key)
+        # 中文条目不得等于英文码本身（防「有键但没译」）
+        if key in zh and str(zh[key]).strip() == phase:
+            raw_looking.append(key)
+    assert not missing_zh, f"zh-CN.json 缺 progress 阶段文案: {missing_zh}"
+    assert not missing_en, f"en.json 缺 progress 阶段文案: {missing_en}"
+    assert not raw_looking, f"zh-CN phase 标签仍是英文码: {raw_looking}"
+    # 两边 phase.* 键集合一致
+    zh_phases = {k for k in zh if k.startswith("phase.")}
+    en_phases = {k for k in en if k.startswith("phase.")}
+    only_zh = sorted(zh_phases - en_phases)
+    only_en = sorted(en_phases - zh_phases)
+    assert not only_zh and not only_en, f"phase.* 中英键不一致 only_zh={only_zh} only_en={only_en}"
+
+
 def main() -> None:
     _check_image_marks()
+    _check_progress_phase_i18n()
     _check_history_keeps_user_images()
     _check_history_keeps_pinned_task_timeline()
     _check_history_keeps_multi_run_segments()
@@ -371,6 +430,33 @@ def main() -> None:
             assert branched_run.task_id != rid
             assert branched_run.meta.get("parent_task_id") == rid
 
+            # 入站幂等：同 message_id 不二次落盘/路由；短窗同文不落第二份
+            idemp = SessionHub(sup, worker=None, auto_run_worker=False)
+            idemp_seen: list[Message] = []
+
+            async def idemp_capture(msg: Message) -> None:
+                idemp_seen.append(msg)
+
+            idemp.add_broadcaster(idemp_capture)
+            first = Message.text_user("幂等探针甲", task_id=None)
+            mid = first.message_id
+            card1 = await idemp.handle_inbound(first)
+            assert card1 is not None and card1.kind == "card"
+            n_hist = sum(1 for m in idemp.history if m.message_id == mid)
+            assert n_hist == 1
+            assert any(
+                m.role == "user" and m.message_id == mid and m.text == "幂等探针甲"
+                for m in idemp_seen
+            )
+            again = Message.text_user("幂等探针甲")
+            again.message_id = mid
+            assert await idemp.handle_inbound(again) is None
+            assert sum(1 for m in idemp.history if m.message_id == mid) == 1
+            near = Message.text_user("幂等探针甲")
+            assert near.message_id != mid
+            assert await idemp.handle_inbound(near) is None
+            assert sum(1 for m in idemp.history if (m.text or "") == "幂等探针甲") == 1
+
             # 历史落盘：新枢纽实例应能读回
             assert hub.history_path.is_file()
             reloaded = SessionHub(sup, worker=None, auto_run_worker=False)
@@ -448,6 +534,9 @@ def main() -> None:
                 )
                 assert "parseImageMarks" in index_html
                 assert "mediaUrlFromRef" in index_html
+                assert "newClientMessageId" in index_html
+                assert "waitForInboundAck" in index_html
+                assert "chat.sending" in index_html or "tr(\"chat.sending\")" in index_html
 
         asyncio.run(run())
         print("channel self-check ok", "outbound=", len(seen))

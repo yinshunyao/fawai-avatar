@@ -25,11 +25,15 @@ LAYER_DOC_MAP: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     (
         "fawai_avatar/control/",
-        ("doc/功能/控制/说明.md", "doc/功能/编码闭环/说明.md"),
+        (
+            "doc/功能/控制/说明.md",
+            "doc/功能/编码闭环/说明.md",
+            "doc/功能/自主操控/说明.md",
+        ),
     ),
     (
         "fawai_avatar/observe/",
-        ("doc/功能/观察/说明.md",),
+        ("doc/功能/观察/说明.md", "doc/功能/自主操控/说明.md"),
     ),
     (
         "fawai_avatar/runtime/",
@@ -141,7 +145,49 @@ RULE_REGISTRY: tuple[RuleEntry, ...] = (
     RuleEntry(
         id="file_no_gui",
         when=("写入", "工作区", "fs_write", "notes/", ".txt"),
-        constraint="工作区文件目标必须用 fs_* / version_*，禁止 click/type/hotkey 代替。",
+        constraint="工作区文件目标必须用 fs_* / version_*，禁止 click/type/hotkey/ui_* 代替。",
+        hard=False,
+    ),
+    RuleEntry(
+        id="shovel_lifecycle",
+        when=(
+            "写脚本",
+            "临时脚本",
+            "生成脚本",
+            "py_write",
+            "py_run",
+            "shovel",
+            "可复用工具",
+            "自动化脚本",
+            "bash 脚本",
+        ),
+        constraint=(
+            "造临时脚本前先 shovel_search；能调 fawai_shovels 则 shell 调 invoke；"
+            "需求参数化/env，禁止明文口令与未公开绝对路径；"
+            "通用性≥3 升公共铲（文首 meta+台账）或 skill_write；≤2 仅本案。"
+        ),
+        hard=False,
+    ),
+    RuleEntry(
+        id="gui_ui_verify",
+        when=(
+            "GUI",
+            "gui",
+            "点击",
+            "鼠标",
+            "操作界面",
+            "TextEdit",
+            "文本编辑",
+            "ui_click",
+            "ui_type",
+            "obs_ax",
+            "控件",
+        ),
+        constraint=(
+            "GUI 窄场景：优先 obs_ax + ui_click/ui_type(ref)；"
+            "键入后须 ui_verify（或闭环 AX 回证）通过才可 success；"
+            "禁止未回证假成功。"
+        ),
         hard=False,
     ),
     RuleEntry(
@@ -327,7 +373,10 @@ def annotate_plan_with_docs(plan: Plan, doc_refs: list[str]) -> Plan:
         status=plan.status,
         raw=raw,
         observe_kinds=list(plan.observe_kinds),
+        observe_args=dict(plan.observe_args or {}),
         title=plan.title or "",
+        step_label=plan.step_label or "",
+        delegate=plan.delegate,
     )
 
 
@@ -380,7 +429,10 @@ def lift_architecture_decls_from_actions(plan: Plan) -> Plan:
         status=plan.status,
         raw=raw,
         observe_kinds=list(plan.observe_kinds),
+        observe_args=dict(plan.observe_args or {}),
         title=plan.title or "",
+        step_label=plan.step_label or "",
+        delegate=plan.delegate,
     )
 
 
@@ -413,7 +465,10 @@ def ensure_architecture_decls(plan: Plan, *, auto_default: bool = False) -> Plan
         status=out.status,
         raw=raw,
         observe_kinds=list(out.observe_kinds),
+        observe_args=dict(out.observe_args or {}),
         title=out.title or "",
+        step_label=out.step_label or "",
+        delegate=out.delegate,
     )
 
 
@@ -437,7 +492,10 @@ def apply_architecture_skip_fallback(plan: Plan, *, reason: str) -> Plan:
         status=plan.status,
         raw=raw,
         observe_kinds=list(plan.observe_kinds),
+        observe_args=dict(plan.observe_args or {}),
         title=plan.title or "",
+        step_label=plan.step_label or "",
+        delegate=plan.delegate,
     )
 
 

@@ -13,28 +13,65 @@ def _env(name: str, default: str | None = None) -> str | None:
     return value.strip()
 
 
-def load_dotenv(path: str | Path | None = None) -> Path | None:
-    """加载工程根 `.env`（不覆盖已有环境变量）。返回实际加载路径。"""
+def dotenv_path(path: str | Path | None = None) -> Path:
+    """工程根 ``.env`` 路径（与 ``channel.system_settings.env_file_path`` 一致）。"""
     if path is None:
-        root = Path(__file__).resolve().parents[1]
-        path = root / ".env"
-    else:
-        path = Path(path)
+        return Path(__file__).resolve().parents[1] / ".env"
+    return Path(path)
+
+
+def parse_dotenv_pairs(path: Path) -> list[tuple[str, str]]:
+    """解析 ``.env`` 为 ``(key, value)``；忽略空行与注释。"""
     if not path.is_file():
-        return None
+        return []
+    out: list[tuple[str, str]] = []
     for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
         key = key.strip()
+        if not key or key.startswith("#"):
+            continue
         value = value.strip().strip("'").strip('"')
-        if key and key not in os.environ:
+        out.append((key, value))
+    return out
+
+
+def overlay_dotenv(
+    env: dict[str, str],
+    path: str | Path | None = None,
+) -> dict[str, str]:
+    """把磁盘 ``.env`` 覆盖写入 ``env``（Web 已写盘的键以磁盘为准）。
+
+    保活外层长期存活时，父进程 ``os.environ`` 可能仍是启动时的旧值；
+    拉起子进程前须用本函数叠加磁盘，避免模型等配置「重启回退」。
+    """
+    for key, value in parse_dotenv_pairs(dotenv_path(path)):
+        env[key] = value
+    return env
+
+
+def load_dotenv(
+    path: str | Path | None = None,
+    *,
+    override: bool = False,
+) -> Path | None:
+    """加载工程根 ``.env``。
+
+    - ``override=False``（默认）：不覆盖已有环境变量（导入时软加载）。
+    - ``override=True``：磁盘键覆盖进程环境（网关/保活入口启动用，与 Web 写盘一致）。
+    """
+    resolved = dotenv_path(path)
+    if not resolved.is_file():
+        return None
+    for key, value in parse_dotenv_pairs(resolved):
+        if override or key not in os.environ:
             os.environ[key] = value
-    return path
+    return resolved
 
 
-# 导入配置时自动尝试加载一次
+# 导入配置时自动尝试加载一次（不覆盖已有环境；入口再 override）
 load_dotenv()
 
 
@@ -60,17 +97,15 @@ def _env_int(name: str, *, default: int | None = None) -> int | None:
 
 @dataclass(frozen=True)
 class LlmConfig:
+    """接入凭证 + 路由模型名。生成参数按模型档案挂载，见 ``llm.model_profiles``。"""
+
     api_key: str | None
     base_url: str | None
     text_model: str
     vlm_model: str
     asr_model: str
+    fast_model: str | None = None
     force_model: str | None = None
-    temperature: float | None = None
-    top_p: float | None = None
-    max_tokens: int | None = None
-    presence_penalty: float | None = None
-    frequency_penalty: float | None = None
     timeout_sec: float | None = None
 
     @property
@@ -82,36 +117,25 @@ class LlmConfig:
     def from_env(cls) -> "LlmConfig":
         load_dotenv()
         timeout = _env_int("FAWAI_LLM_TIMEOUT", default=120)
-        max_tokens = _env_int("FAWAI_LLM_MAX_TOKENS", default=0)
         return cls(
             api_key=_env("FAWAI_LLM_API_KEY") or _env("OPENAI_API_KEY"),
             base_url=_env("FAWAI_LLM_BASE_URL") or _env("OPENAI_BASE_URL"),
             text_model=_env("FAWAI_LLM_TEXT_MODEL") or "qwen3.7-plus",
             vlm_model=_env("FAWAI_LLM_VLM_MODEL") or "qwen3-vl-plus",
             asr_model=_env("FAWAI_LLM_ASR_MODEL") or "qwen3-asr-flash",
+            fast_model=_env("FAWAI_LLM_FAST_MODEL") or None,
             force_model=_env("FAWAI_LLM_MODEL") or _env("OPENAI_MODEL"),
-            temperature=_env_float("FAWAI_LLM_TEMPERATURE"),
-            top_p=_env_float("FAWAI_LLM_TOP_P"),
-            max_tokens=None if max_tokens is None or max_tokens <= 0 else max_tokens,
-            presence_penalty=_env_float("FAWAI_LLM_PRESENCE_PENALTY"),
-            frequency_penalty=_env_float("FAWAI_LLM_FREQUENCY_PENALTY"),
             timeout_sec=None if timeout is None or timeout <= 0 else float(timeout),
         )
 
-    def chat_sampling_kwargs(self) -> dict[str, float | int]:
-        """OpenAI chat.completions 可选采样参数（空配置不传）。"""
-        out: dict[str, float | int] = {}
-        if self.temperature is not None:
-            out["temperature"] = self.temperature
-        if self.top_p is not None:
-            out["top_p"] = self.top_p
-        if self.max_tokens is not None:
-            out["max_tokens"] = self.max_tokens
-        if self.presence_penalty is not None:
-            out["presence_penalty"] = self.presence_penalty
-        if self.frequency_penalty is not None:
-            out["frequency_penalty"] = self.frequency_penalty
-        return out
+    def chat_sampling_kwargs(self, model: str | None = None) -> dict[str, float | int]:
+        """按选定模型读取 ``data/llm_models/{model}.json``；无档案则不传采样参数。"""
+        from fawai_avatar.llm.model_profiles import sampling_kwargs_for_model
+
+        mid = (model or self.model or "").strip()
+        if not mid:
+            return {}
+        return sampling_kwargs_for_model(mid)
 
 
 def max_steps_from_env(*, default: int = 0) -> int:

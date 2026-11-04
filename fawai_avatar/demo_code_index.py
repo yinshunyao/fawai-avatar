@@ -113,6 +113,14 @@ def main() -> None:
         assert r4.ok and r4.data and r4.data.get("results"), r4
         ex_kinds = {r.get("kind") for r in r4.data["results"]}
         assert "grep" in ex_kinds and "symbols" in ex_kinds, r4
+        r4b = tools.execute(
+            Action(kind="explore_search", args={"pattern": "bar", "path": "pkg", "head_limit": 10})
+        )
+        assert r4b.ok and r4b.data and r4b.data.get("results"), r4b
+        r4c = tools.execute(
+            Action(kind="explore_search", args={"queries": "helper", "path": "pkg", "head_limit": 10})
+        )
+        assert r4c.ok and r4c.data and r4c.data.get("results"), r4c
         print(
             "background ok",
             json.dumps({"s": r1.message, "m": r2.message, "rf": r3.message}, ensure_ascii=False),

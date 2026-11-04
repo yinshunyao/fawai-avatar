@@ -59,7 +59,7 @@ cd /data/models/fawai-avatar
 # FAWAI_FRP_REMOTE_PORT=48000
 # FAWAI_FRPC_BIN=/usr/local/bin/frpc
 # FAWAI_HEADLESS=1
-# FAWAI_CODE_RELOAD=0
+# FAWAI_CODE_RELOAD=1   # 默认关；需要代码变更自动重启时再开
 ```
 
 ## 步骤 3：注册 supervisor

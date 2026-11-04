@@ -2,7 +2,9 @@
 # term:代码索引  tool:code_symbols/code_map/code_index_refresh  doc:doc/功能/代码索引/说明.md
 # term:自我进化  tool:skill_*  doc:doc/功能/自我进化/说明.md
 # term:编码闭环  tool:fs_patch/code_check/git_*/explore_*  doc:doc/功能/编码闭环/说明.md
-"""后台动作：文件、代码索引、版本、Skill、编码闭环（不经 GUI / 不受 FAWAI_DRY_RUN 影响）。"""
+# term:Python 扩展  tool:py_write/py_pip/py_run  doc:doc/功能/Python扩展/说明.md
+# term:脚本铲子生命周期  tool:shovel_search  doc:doc/功能/脚本铲子生命周期/说明.md
+"""后台动作：文件、代码索引、版本、Skill、编码闭环、Python 扩展、铲检索（不经 GUI / 不受 FAWAI_DRY_RUN 影响）。"""
 
 from __future__ import annotations
 
@@ -14,9 +16,9 @@ from fawai_avatar.config import RuntimeConfig
 from fawai_avatar.skills.store import SkillStore, SkillValidationError
 from fawai_avatar.types import Action, ExecResult
 from fawai_avatar.versioning.store import VersionStore
-from fawai_avatar.workspace.check import run_code_check
+from fawai_avatar.workspace.check import coerce_code_check_args, run_code_check
 from fawai_avatar.workspace.code_index import CodeIndex
-from fawai_avatar.workspace.explore import explore_search
+from fawai_avatar.workspace.explore import coerce_explore_search_args, explore_search
 from fawai_avatar.workspace.fs import (
     WorkspaceFs,
     patch_anchor_quality_error,
@@ -24,8 +26,16 @@ from fawai_avatar.workspace.fs import (
     resolve_read_range,
 )
 from fawai_avatar.workspace.git_ops import GitError, git_commit, git_diff, git_status
-from fawai_avatar.workspace.paths import WorkspacePathError
+from fawai_avatar.workspace.paths import WorkspacePathError, format_file_missing_message
 from fawai_avatar.workspace.pending_diff import PendingDiffStore, unified_diff
+from fawai_avatar.workspace.py_session import (
+    PySessionError,
+    pip_install,
+    run_script,
+    session_root,
+    write_file as py_write_file,
+)
+from fawai_avatar.workspace.shovel_ops import ShovelOpsError, search_shovels
 
 
 _FS_KINDS = frozenset(
@@ -57,6 +67,8 @@ _LORE_KINDS = frozenset(
 )
 _DIFF_KINDS = frozenset({"diff_confirm", "diff_reject", "diff_list"})
 _VERIFY_KINDS = frozenset({"shell_verify"})
+_PY_KINDS = frozenset({"py_write", "py_pip", "py_run"})
+_SHOVEL_KINDS = frozenset({"shovel_search"})
 BACKGROUND_KINDS = (
     _FS_KINDS
     | _CODE_KINDS
@@ -66,6 +78,8 @@ BACKGROUND_KINDS = (
     | _LORE_KINDS
     | _DIFF_KINDS
     | _VERIFY_KINDS
+    | _PY_KINDS
+    | _SHOVEL_KINDS
 )
 
 _WRITE_KINDS = frozenset({"fs_write", "fs_replace", "fs_patch", "version_rollback", "git_commit"})
@@ -87,6 +101,7 @@ class BackgroundTools:
         self.auto_version = cfg.auto_version if auto_version is None else auto_version
         self.diff_mode = (diff_mode or cfg.diff_mode or "auto").strip().lower()
         self.task_id = task_id
+        self.data_dir = data
         self.full_write_line_limit = cfg.full_write_line_limit
         self.fs = WorkspaceFs(root, read_roots=list(cfg.read_roots))
         self.code = CodeIndex(root, data_dir=data)
@@ -163,33 +178,92 @@ class BackgroundTools:
                 return self._diff_list(action.args)
             if kind == "shell_verify":
                 return self._shell_verify(action.args)
+            if kind == "py_write":
+                return self._py_write(action.args)
+            if kind == "py_pip":
+                return self._py_pip(action.args)
+            if kind == "py_run":
+                return self._py_run(action.args)
+            if kind == "shovel_search":
+                return self._shovel_search(action.args)
             return ExecResult(ok=False, message=f"unknown background kind: {kind!r}")
+        except ShovelOpsError as exc:
+            return ExecResult(ok=False, message=str(exc))
+        except PySessionError as exc:
+            return ExecResult(ok=False, message=str(exc))
         except FileNotFoundError as exc:
-            return ExecResult(ok=False, message=f"not found: {exc}")
-        except (WorkspacePathError, SkillValidationError, GitError, ValueError, OSError) as exc:
+            return ExecResult(
+                ok=False,
+                message=format_file_missing_message(
+                    exc, work_root=self.fs.work_root
+                ),
+            )
+        except WorkspacePathError as exc:
+            msg = str(exc)
+            if "escapes" in msg.lower():
+                return ExecResult(
+                    ok=False,
+                    message=(
+                        f"{msg}；"
+                        "此为路径闸拒绝（不在 work_root / FAWAI_READ_ROOTS）。"
+                        "改用只读根内绝对路径 fs_read，或仅 work_root 相对路径；"
+                        "禁止 shell cat/cp 绕过"
+                    ),
+                )
+            return ExecResult(ok=False, message=msg)
+        except (SkillValidationError, GitError, ValueError, OSError) as exc:
             return ExecResult(ok=False, message=str(exc))
 
     def _fs_glob(self, args: dict[str, Any]) -> ExecResult:
         pattern = str(args.get("pattern") or "*")
         limit = int(args.get("head_limit") or 100)
-        paths = self.fs.glob(pattern, head_limit=limit)
-        return ExecResult(ok=True, message=f"glob {len(paths)}", data={"paths": paths})
+        # path 正式支持；兼容 root/dir；不得静默忽略后只扫 work_root
+        search_path = str(
+            args.get("path") or args.get("root") or args.get("dir") or "."
+        ).strip() or "."
+        paths = self.fs.glob(pattern, path=search_path, head_limit=limit)
+        return ExecResult(
+            ok=True,
+            message=f"glob {len(paths)}",
+            data={"paths": paths, "path": search_path, "pattern": pattern},
+        )
 
     def _fs_grep(self, args: dict[str, Any]) -> ExecResult:
         # pattern 为主名；兼容模型误写的 query
         pattern = str(args.get("pattern") or args.get("query") or "")
         if not pattern:
             return ExecResult(ok=False, message="fs_grep requires pattern")
+        # 体量靠工具参数限制（不做观察侧压缩/宽检索降质）；模型可加大 head_limit 翻页
+        # 不限制 pattern 最短长度：短词（如「取消」「ok」）应可搜；噪声靠 head_limit/path/glob 收窄
+        try:
+            head_limit = int(args.get("head_limit") or 40)
+        except (TypeError, ValueError):
+            head_limit = 40
+        head_limit = max(1, min(head_limit, 100))
+        try:
+            context_before = int(args.get("context_before") or args.get("B") or 0)
+        except (TypeError, ValueError):
+            context_before = 0
+        try:
+            context_after = int(args.get("context_after") or args.get("A") or 0)
+        except (TypeError, ValueError):
+            context_after = 0
+        context_before = max(0, min(context_before, 5))
+        context_after = max(0, min(context_after, 5))
         hits = self.fs.grep(
             pattern,
             path=str(args.get("path") or "."),
             glob=str(args.get("glob") or "*"),
             case_insensitive=bool(args.get("case_insensitive", False)),
-            head_limit=int(args.get("head_limit") or 50),
-            context_before=int(args.get("context_before") or args.get("B") or 0),
-            context_after=int(args.get("context_after") or args.get("A") or 0),
+            head_limit=head_limit,
+            context_before=context_before,
+            context_after=context_after,
         )
-        return ExecResult(ok=True, message=f"grep {len(hits)}", data={"hits": hits})
+        return ExecResult(
+            ok=True,
+            message=f"grep {len(hits)}",
+            data={"hits": hits, "count": len(hits)},
+        )
 
     def _fs_read(self, args: dict[str, Any]) -> ExecResult:
         path = str(args.get("path") or "")
@@ -526,31 +600,54 @@ class BackgroundTools:
         )
 
     def _code_check(self, args: dict[str, Any]) -> ExecResult:
-        paths = args.get("paths")
+        coerced = coerce_code_check_args(args)
+        paths = coerced.get("paths")
         path_list = [str(p) for p in paths] if isinstance(paths, list) else None
         data = run_code_check(
             self.fs.work_root,
-            path=str(args.get("path") or ""),
+            path=str(coerced.get("path") or ""),
             paths=path_list,
-            command=str(args["command"]) if args.get("command") else None,
-            timeout_sec=float(args.get("timeout_sec") or 60),
+            command=str(coerced["command"]) if coerced.get("command") else None,
+            timeout_sec=float(coerced.get("timeout_sec") or args.get("timeout_sec") or 60),
         )
         ok = bool(data.get("ok"))
         return ExecResult(ok=ok, message="code_check ok" if ok else "code_check failed", data=data)
 
     def _explore_search(self, args: dict[str, Any]) -> ExecResult:
-        queries = args.get("queries")
-        qlist = [str(q) for q in queries] if isinstance(queries, list) else None
-        if qlist is None and args.get("query"):
-            qlist = [str(args.get("query"))]
+        coerced = coerce_explore_search_args(args)
+        qlist = [str(q) for q in (coerced.get("queries") or []) if str(q).strip()]
+        try:
+            head_limit = int(coerced.get("head_limit") or 20)
+        except (TypeError, ValueError):
+            head_limit = 20
+        head_limit = max(1, min(head_limit, 100))
+        try:
+            context_before = int(
+                coerced.get("context_before") or coerced.get("B") or 0
+            )
+        except (TypeError, ValueError):
+            context_before = 0
+        try:
+            context_after = int(coerced.get("context_after") or coerced.get("A") or 0)
+        except (TypeError, ValueError):
+            context_after = 0
+        context_before = max(0, min(context_before, 5))
+        context_after = max(0, min(context_after, 5))
+        try:
+            max_workers = int(coerced.get("max_workers") or 4)
+        except (TypeError, ValueError):
+            max_workers = 4
         data = explore_search(
             self.fs.work_root,
-            queries=qlist,
-            path=str(args.get("path") or "."),
-            glob=str(args.get("glob") or "*"),
-            symbols_query=str(args.get("symbols_query") or ""),
-            max_workers=int(args.get("max_workers") or 4),
-            head_limit=int(args.get("head_limit") or 30),
+            queries=qlist or None,
+            path=str(coerced.get("path") or "."),
+            glob=str(coerced.get("glob") or "*"),
+            symbols_query=str(coerced.get("symbols_query") or ""),
+            include_symbols=bool(coerced.get("include_symbols")),
+            max_workers=max_workers,
+            head_limit=head_limit,
+            context_before=context_before,
+            context_after=context_after,
             code_index=self.code,
         )
         return ExecResult(ok=True, message="explore_search", data=data)
@@ -612,6 +709,80 @@ class BackgroundTools:
         )
         ok = bool(data.get("ok"))
         return ExecResult(ok=ok, message="shell_verify ok" if ok else "shell_verify failed", data=data)
+
+    def _resolve_task_id(self, args: dict[str, Any]) -> str:
+        tid = str(args.get("task_id") or self.task_id or "").strip()
+        if not tid:
+            raise PySessionError("py_* requires task_id")
+        return tid
+
+    def _py_write(self, args: dict[str, Any]) -> ExecResult:
+        path = str(args.get("path") or "").strip()
+        if not path:
+            return ExecResult(ok=False, message="py_write requires path")
+        if "content" not in args:
+            return ExecResult(ok=False, message="py_write requires content")
+        root = session_root(self.data_dir, self._resolve_task_id(args))
+        data = py_write_file(root, path=path, content=str(args.get("content")))
+        return ExecResult(ok=True, message=f"py_write {data.get('path')}", data=data)
+
+    def _py_pip(self, args: dict[str, Any]) -> ExecResult:
+        packages = args.get("packages")
+        if packages is None:
+            packages = args.get("package") or args.get("pkgs")
+        data = pip_install(
+            packages=packages,
+            work_root=self.fs.work_root,
+            timeout_sec=float(args.get("timeout_sec") or 300),
+        )
+        ok = bool(data.get("ok"))
+        pkgs = data.get("packages") or []
+        label = " ".join(str(p) for p in pkgs[:4])
+        if len(pkgs) > 4:
+            label += "…"
+        return ExecResult(
+            ok=ok,
+            message=f"py_pip ok ({label})" if ok else f"py_pip failed ({label})",
+            data=data,
+        )
+
+    def _py_run(self, args: dict[str, Any]) -> ExecResult:
+        root = session_root(self.data_dir, self._resolve_task_id(args))
+        raw_args = args.get("args")
+        argv: list[str] = []
+        if isinstance(raw_args, list):
+            argv = [str(x) for x in raw_args]
+        elif isinstance(raw_args, str) and raw_args.strip():
+            argv = raw_args.split()
+        data = run_script(
+            root,
+            work_root=self.fs.work_root,
+            script=str(args.get("script") or args.get("path") or "").strip() or None,
+            code=args.get("code") if isinstance(args.get("code"), str) else None,
+            module=str(args.get("module") or "").strip() or None,
+            args=argv,
+            timeout_sec=float(args.get("timeout_sec") or 60),
+            result_path=str(args.get("result_path") or "").strip() or None,
+        )
+        ok = bool(data.get("ok"))
+        entry = data.get("entry") or ""
+        rc = data.get("returncode")
+        return ExecResult(
+            ok=ok,
+            message=f"py_run ok {entry}" if ok else f"py_run failed {entry} exit={rc}",
+            data=data,
+        )
+
+    def _shovel_search(self, args: dict[str, Any]) -> ExecResult:
+        query = str(args.get("query") or args.get("q") or args.get("pattern") or "")
+        limit = int(args.get("limit") or 20)
+        data = search_shovels(query, work_root=self.fs.work_root, limit=limit)
+        n = int(data.get("count") or 0)
+        return ExecResult(
+            ok=True,
+            message=f"shovel_search {n} hits",
+            data=data,
+        )
 
     def _version_snapshot(self, args: dict[str, Any]) -> ExecResult:
         paths = args.get("paths")

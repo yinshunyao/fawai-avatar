@@ -77,17 +77,12 @@ def is_awaiting_clarification(task: TaskRecord | None) -> bool:
 
 
 def should_skip_auto_recover(task: TaskRecord | None) -> bool:
-    """进程恢复时勿自动拉 Worker：澄清等待 / 复盘等待。"""
+    """进程恢复时勿自动拉 Worker：仅澄清等待跳过；复盘/取消任务允许追加执行。"""
     if task is None:
         return False
     if is_awaiting_clarification(task):
         return True
-    meta = task.meta or {}
-    if meta.get("kind") == "review" and str(meta.get("review_phase") or "") in {
-        "awaiting_approval",
-        "awaiting_apply",
-    }:
-        return True
+    # 取消复盘等待跳过限制：取消的复盘也可追加并按指令执行
     return False
 
 
@@ -172,5 +167,8 @@ def normalize_need_input_plan(plan: Plan) -> Plan:
         status="need_input",
         raw=raw,
         observe_kinds=list(plan.observe_kinds),
+        observe_args=dict(plan.observe_args or {}),
         title=plan.title or "",
+        step_label=plan.step_label or "",
+        delegate=plan.delegate,
     )

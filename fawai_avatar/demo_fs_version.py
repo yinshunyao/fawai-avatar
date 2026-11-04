@@ -65,8 +65,10 @@ def main(work_root: str, data_dir: str) -> None:
     r = tools.execute(Action(kind="fs_glob", args={"pattern": "notes/**/*.{txt,md}"}))
     assert "notes/a.txt" in (r.data or {}).get("paths", []), r.data
 
+    # 短 pattern（2 字）须可搜；勿再加最小长度闸
     r = tools.execute(Action(kind="fs_grep", args={"pattern": "v2", "path": "notes"}))
     print("grep", r.data)
+    assert r.ok and (r.data or {}).get("hits"), r
     # 兼容模型误写 query
     r = tools.execute(Action(kind="fs_grep", args={"query": "v2", "path": "notes"}))
     assert r.ok and (r.data or {}).get("hits"), r
@@ -99,8 +101,10 @@ def main(work_root: str, data_dir: str) -> None:
     from fawai_avatar.workspace.fs import WorkspaceFs
     from fawai_avatar.workspace.paths import WorkspacePathError
 
-    outside = Path(tempfile.mkdtemp(prefix="fawai-read-root-")) / "secret_cfg.md"
+    outside_dir = Path(tempfile.mkdtemp(prefix="fawai-read-root-"))
+    outside = outside_dir / "secret_cfg.md"
     outside.write_text("# cfg\nport=37443\n", encoding="utf-8")
+    (outside_dir / "云服务重要信息.md").write_text("# 4090\nssh demo\n", encoding="utf-8")
     fs_ro = WorkspaceFs(work_root, read_roots=["/"])
     got = fs_ro.read(str(outside), offset=1, limit=10)
     assert any("37443" in row["text"] for row in got["lines"]), got
@@ -110,6 +114,35 @@ def main(work_root: str, data_dir: str) -> None:
     except WorkspacePathError as exc:
         assert "escapes work root" in str(exc), str(exc)
     print("read_roots ok", outside)
+
+    # fs_glob path=仓外目录：须真正从该目录扫，不得静默只扫 work_root
+    found = fs_ro.glob("**/*云*.md", path=str(outside_dir), head_limit=20)
+    assert any(str(outside_dir) in p and "云服务重要信息.md" in p for p in found), found
+    try:
+        fs_ro.glob("**/*", path="/", head_limit=5)
+        raise AssertionError("path=/ broad pattern should fail")
+    except ValueError as exc:
+        assert "过宽" in str(exc), str(exc)
+    # 经 BackgroundTools：错路径须 file missing 文案（临时挂上只读根）
+    tools.fs = fs_ro
+    r = tools.execute(
+        Action(
+            kind="fs_glob",
+            args={"path": str(outside_dir), "pattern": "**/*云*.md", "head_limit": 20},
+        )
+    )
+    assert r.ok and (r.data or {}).get("paths"), r
+    r = tools.execute(Action(kind="fs_glob", args={"path": "/", "pattern": "**/*"}))
+    assert not r.ok and "过宽" in (r.message or ""), r.message
+    r = tools.execute(
+        Action(kind="fs_read", args={"path": str(outside_dir / "no-such.md")})
+    )
+    assert not r.ok and "file missing" in (r.message or ""), r.message
+    assert "≠ 沙箱越界" in (r.message or ""), r.message
+    # 父目录在、文件不在：须明示「仅文件名缺失」，禁止一律催拼接纠偏
+    assert "仅该文件名缺失" in (r.message or ""), r.message
+    assert "勿当作路径拼接错误" in (r.message or ""), r.message
+    assert "请核对路径拼接" not in (r.message or ""), r.message
 
     print(json.dumps({"work_root": work_root, "status": "smoke ok"}, ensure_ascii=False))
 

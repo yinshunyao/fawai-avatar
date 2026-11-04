@@ -1,8 +1,16 @@
+# 与 pyproject.toml 对齐；按 OS 条件装 GUI。
+# macOS：默认含桌面截屏/键鼠 + AX（obs_ax / ui_*）。
+# Linux/其它：仅核心；有 DISPLAY 时另装：pip install -e ".[gui]"
+# 浏览器（可选，无头可用）：pip install -e ".[browser]" && playwright install chromium
 openai>=1.40.0
 Pillow>=10.0.0
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 python-multipart>=0.0.9
-# 桌面 GUI（可选）：pip install -e ".[gui]"
-# mss>=9.0.0
-# pyautogui>=0.9.54
+
+# --- macOS GUI（必装于 Darwin）---
+mss>=9.0.0; sys_platform == "darwin"
+pyautogui>=0.9.54; sys_platform == "darwin"
+pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"
+pyobjc-framework-Quartz>=10.0; sys_platform == "darwin"
+pyobjc-framework-ApplicationServices>=10.0; sys_platform == "darwin"

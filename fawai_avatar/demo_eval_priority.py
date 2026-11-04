@@ -270,7 +270,7 @@ def case_d5_lease_reject_and_replan(work: Path, data: Path) -> dict[str, Any]:
     if int(out.get("reflect_count") or 0) < 1:
         return _fail("D5-lease-replan", f"reflect not observed: {out}")
     decision = ((out.get("reflection") or {}).get("decision")) or ""
-    if decision not in {"retry", "alternate", "abort"}:
+    if decision not in {"retry", "alternate"}:
         return _fail("D5-lease-replan", f"bad reflection decision: {out.get('reflection')}")
     if not (work / "notes" / "replan_ok.txt").is_file():
         return _fail("D5-lease-replan", "recovered file missing")
@@ -286,15 +286,25 @@ def case_d5_lease_reject_and_replan(work: Path, data: Path) -> dict[str, Any]:
 
 
 def case_d5b_fingerprint_abort(work: Path, data: Path) -> dict[str, Any]:
-    """D5b：同指纹空转 → 反省后 abort，不耗尽 max_steps。"""
+    """D5b：同指纹空转 → 反省升 alternate 并提示规划 failed（不再 abort）。"""
     os.environ["FAWAI_BRAIN_MOCK"] = "1"
     from fawai_avatar.brain.reflect import action_fingerprint
 
     bad = Action(kind="fs_read", args={"path": "notes/never_exists_fp.txt"})
     fp = action_fingerprint(bad)
 
-    class SameFailBrain:
+    class SameFailThenPlanFailed:
         def plan(self, goal: str, observation: Observation, history=None) -> Plan:
+            hist = history or []
+            joined = "\n".join(str(m.get("content") or "") for m in hist)
+            # 仅认指纹升闸提示，勿误伤台账里泛提 status=failed 的句子
+            if "反省不再 abort" in joined or "做过 alternate，仍失败" in joined:
+                return Plan(
+                    thought="同指纹无进展，规划 failed 止损",
+                    actions=[],
+                    done=True,
+                    status="failed",
+                )
             return Plan(
                 thought="keep same failing read",
                 actions=[bad],
@@ -303,10 +313,10 @@ def case_d5b_fingerprint_abort(work: Path, data: Path) -> dict[str, Any]:
             )
 
     sup = Supervisor(str(data / "d5b_fp"))
-    tid = sup.create_task("fingerprint abort")
+    tid = sup.create_task("fingerprint escalate then plan failed")
     loop = WorkerLoop(
         sup,
-        brain=SameFailBrain(),  # type: ignore[arg-type]
+        brain=SameFailThenPlanFailed(),  # type: ignore[arg-type]
         controller=Controller(dry_run=False, supervisor=sup),
         max_steps=8,
         capture=False,
@@ -320,14 +330,20 @@ def case_d5b_fingerprint_abort(work: Path, data: Path) -> dict[str, Any]:
     reflect_count = int(out.get("reflect_count") or 0)
     if reflect_count < 2:
         return _fail("D5b-fingerprint-abort", f"expected >=2 reflects, got {out}")
-    # 同指纹第二次应 abort（首次 alternate 后仍同指纹）
     decision = ((out.get("reflection") or {}).get("decision")) or ""
-    if decision != "abort":
-        return _fail("D5b-fingerprint-abort", f"expected abort, got {decision}: {out}")
-    # 不应跑满 max_steps（8 步空转）
+    if decision == "abort":
+        return _fail(
+            "D5b-fingerprint-abort",
+            f"reflect must not abort anymore, got {decision}: {out}",
+        )
+    if decision not in {"alternate", "retry"}:
+        return _fail("D5b-fingerprint-abort", f"expected alternate/retry, got {decision}: {out}")
     steps = out.get("steps") or []
     if len(steps) >= 8:
         return _fail("D5b-fingerprint-abort", f"burned max_steps: {len(steps)}")
+    err = str(out.get("error") or "") + str(out.get("final_thought") or "")
+    if "止损" not in err and "failed" not in err.lower():
+        return _fail("D5b-fingerprint-abort", f"expected plan failed after escalate, got {out}")
     return _pass(
         "D5b-fingerprint-abort",
         {
@@ -340,7 +356,7 @@ def case_d5b_fingerprint_abort(work: Path, data: Path) -> dict[str, Any]:
 
 
 def case_d5c_step_repeat_abort(work: Path, data: Path) -> dict[str, Any]:
-    """D5c：成功同构步重复 → 步骤重复裁决后仍同指纹 → 硬 abort。"""
+    """D5c：成功同构步 → 步骤重复回灌 → 大脑决定中止（代码不硬 abort）。"""
     os.environ["FAWAI_BRAIN_MOCK"] = "1"
     os.environ["FAWAI_STEP_REPEAT"] = "1"
     os.environ["FAWAI_STEP_REPEAT_N"] = "2"
@@ -352,8 +368,21 @@ def case_d5c_step_repeat_abort(work: Path, data: Path) -> dict[str, Any]:
     same = Action(kind="fs_read", args={"path": "notes/same.txt"})
     fp = step_fingerprint([same], observe_methods=["none"])
 
-    class SameOkBrain:
+    class BrainStopsAfterStagnation:
+        """同构只读直到收到【步骤重复】，再由规划 status=failed 中止。"""
+
         def plan(self, goal: str, observation: Observation, history=None) -> Plan:
+            hist = history or []
+            if any(
+                str(m.get("content") or "").lstrip().startswith("【步骤重复】")
+                for m in hist
+            ):
+                return Plan(
+                    thought="步骤重复后仍无换道空间，中止任务",
+                    actions=[],
+                    done=True,
+                    status="failed",
+                )
             return Plan(
                 thought="keep reading same file",
                 actions=[same],
@@ -362,10 +391,10 @@ def case_d5c_step_repeat_abort(work: Path, data: Path) -> dict[str, Any]:
             )
 
     sup = Supervisor(str(data / "d5c_step"))
-    tid = sup.create_task("step repeat abort")
+    tid = sup.create_task("step repeat brain abort")
     loop = WorkerLoop(
         sup,
-        brain=SameOkBrain(),  # type: ignore[arg-type]
+        brain=BrainStopsAfterStagnation(),  # type: ignore[arg-type]
         controller=Controller(dry_run=False, supervisor=sup),
         max_steps=8,
         capture=False,
@@ -377,19 +406,37 @@ def case_d5c_step_repeat_abort(work: Path, data: Path) -> dict[str, Any]:
     if out.get("ok"):
         return _fail("D5c-step-repeat-abort", f"expected fail, got ok: {out}")
     stag = int(out.get("stagnation_count") or 0)
-    if stag < 2:
+    if stag < 1:
         return _fail(
             "D5c-step-repeat-abort",
-            f"expected stagnation_count>=2, got {out}",
+            f"expected stagnation_count>=1, got {out}",
         )
     decision = ((out.get("reflection") or {}).get("decision")) or ""
     trigger = ((out.get("reflection") or {}).get("trigger")) or ""
-    if decision != "abort":
-        return _fail("D5c-step-repeat-abort", f"expected abort, got {decision}: {out}")
+    forced = bool((out.get("reflection") or {}).get("forced"))
     if trigger != "step_repeat":
         return _fail(
             "D5c-step-repeat-abort", f"expected trigger=step_repeat, got {trigger}: {out}"
         )
+    if forced:
+        return _fail(
+            "D5c-step-repeat-abort",
+            f"expected no code hard-abort (forced=false), got {out}",
+        )
+    if decision == "abort":
+        return _fail(
+            "D5c-step-repeat-abort",
+            f"expected inject-then-brain-fail (not stagnation abort), got {out}",
+        )
+    err = str(out.get("error") or "")
+    if "中止" not in err and "failed" not in err.lower():
+        # finish 常把 plan.thought 写入 error
+        thought = str(out.get("final_thought") or "")
+        if "中止" not in thought and "中止" not in err:
+            return _fail(
+                "D5c-step-repeat-abort",
+                f"expected brain failed after stagnation, got {out}",
+            )
     steps = out.get("steps") or []
     if len(steps) >= 8:
         return _fail("D5c-step-repeat-abort", f"burned max_steps: {len(steps)}")
@@ -400,6 +447,7 @@ def case_d5c_step_repeat_abort(work: Path, data: Path) -> dict[str, Any]:
             "steps": len(steps),
             "step_fingerprint": fp,
             "decision": decision,
+            "forced": forced,
         },
     )
 
@@ -453,7 +501,14 @@ def case_d5d_step_crash_replan(work: Path, data: Path) -> dict[str, Any]:
             )
 
     class BoomLoop(WorkerLoop):
-        def _observe(self, goal: str, *, methods: list[str] | None = None) -> Observation:
+        def _observe(
+            self,
+            goal: str,
+            *,
+            methods: list[str] | None = None,
+            observe_args: dict[str, Any] | None = None,
+        ) -> Observation:
+            del observe_args  # 签名对齐 WorkerLoop；本案不消费
             if not getattr(self, "_crashed_once", False):
                 self._crashed_once = True
                 raise RuntimeError("simulated observe boom")

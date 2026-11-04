@@ -1,0 +1,19 @@
+---
+description: fawai-avatar：progress/card 的 meta.phase 必须有中英文 phase.* 标签
+alwaysApply: true
+---
+
+# progress 阶段文案（强制）
+
+适用于新增/改名会话可见的 `progress` / `card` **`meta.phase`**（如 `obs_reflect`、`verify_read`、`cancelling`），以及改 PWA 步骤徽章展示时。
+
+## 强制
+
+1. **同一回合**在 `fawai_avatar/channel/static/i18n/zh-CN.json` 与 `en.json` 增加 **`phase.<码>`**；中文条目须是中文，**禁止**键在而值仍是英文码。
+2. 细则与验收见 `doc/功能/界面多语言/说明.md`（progress 阶段闸）。
+3. 改完跑：`.venv/bin/python -m fawai_avatar.channel.selfcheck`（含 `_check_progress_phase_i18n`，扫源码 phase 字面量对目录键）。
+
+## 禁止
+
+- 只推新 `phase="…"` 进度却不补 i18n，导致徽章露 `obs_reflect` 这类英文码
+- 只写中文或只写英文一侧

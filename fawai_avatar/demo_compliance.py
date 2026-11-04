@@ -201,7 +201,15 @@ def main() -> None:
     assert explore_gate_should_inject(streak=8, gate=8)
     assert not explore_gate_should_abort(streak=8, abort_at=16)
     assert explore_gate_should_abort(streak=16, abort_at=16)
-    assert explore_only_gate_threshold(goal="会话页面支持 markdown 渲染") == 5
+    # 默认产品：探索闸门 / 强制改写均关
+    assert explore_only_gate_threshold(goal="会话页面支持 markdown 渲染") == 0
+    assert explore_only_gate_threshold(goal="改代码优化 index.html") == 0
+    from fawai_avatar.brain.explore_progress import explore_only_abort_threshold
+
+    assert explore_only_abort_threshold(goal="改代码") == 0
+    assert not explore_gate_should_inject(
+        streak=8, gate=explore_only_gate_threshold(goal="改代码")
+    )
     counts = {}
     for _ in range(3):
         counts = update_read_path_counts(
@@ -267,14 +275,59 @@ def main() -> None:
     )
     names = {t["function"]["name"] for t in openai_tools_for_coding(mutate_prefer=True)}
     assert "fs_patch" in names and "fs_read" not in names
+    # 【反省开读】/【开读须改写】硬闸已退役：检测恒 False，且不再驱动 mutate_prefer
     assert not history_requests_verify_read(
-        [{"role": "user", "content": "【探索进度闸门】下一步必须：fs_patch"}]
-    )
-    assert history_requests_verify_read(
         [
             {"role": "user", "content": "【探索进度闸门】下一步必须：fs_patch"},
             {"role": "user", "content": format_verify_read_message(paths=["a.py"])},
         ]
+    )
+    assert not history_requests_mutate_prefer(
+        [{"role": "user", "content": format_verify_read_message(paths=["a.py"])}]
+    )
+    from fawai_avatar.brain.explore_progress import (
+        extract_exact_old_windows,
+        format_verify_must_patch_message,
+        history_requests_verify_must_patch,
+        is_blind_file_head_read,
+    )
+
+    assert "【开读须改写】" in format_verify_must_patch_message(
+        paths=["a.py"], reason="开读后仍只读未 patch"
+    )
+    assert not history_requests_verify_must_patch(
+        [
+            {"role": "user", "content": format_verify_read_message(paths=["a.py"])},
+            {
+                "role": "user",
+                "content": format_verify_must_patch_message(paths=["a.py"]),
+            },
+        ]
+    )
+    assert not history_requests_verify_read(
+        [
+            {"role": "user", "content": format_verify_read_message(paths=["a.py"])},
+            {
+                "role": "user",
+                "content": format_verify_must_patch_message(paths=["a.py"]),
+            },
+        ]
+    )
+    assert is_blind_file_head_read(
+        [Action(kind="fs_read", args={"path": "a.py", "offset": 1, "limit": 200})]
+    )
+    assert not is_blind_file_head_read(
+        [Action(kind="fs_read", args={"path": "a.py", "offset": 640, "limit": 40})]
+    )
+    win_msg = (
+        "old not found；【补丁锚点未接地】\n"
+        "文件中与 old 记号最接近的原文小窗（须逐字作 old，勿改写）：\n"
+        "663:    \"dimensions\": {},\n664:    \"items\": [],"
+    )
+    wins = extract_exact_old_windows([ExecResult(ok=False, message=win_msg)])
+    assert wins and "663:" in wins[0]
+    assert "原文小窗" in format_verify_read_message(
+        paths=["a.py"], exact_windows=wins
     )
     names_vr = {
         t["function"]["name"]
@@ -283,15 +336,28 @@ def main() -> None:
     assert "fs_patch" in names_vr and "fs_read" in names_vr and "fs_grep" in names_vr
 
     from fawai_avatar.brain.explore_progress import (
+        anchor_quality_score,
+        explore_progress_armed,
         extract_locate_anchors,
+        format_compressed_hits_message,
+        format_compressed_unread_ban_message,
         format_locate_budget_message,
+        format_locate_mutate_force_message,
         format_wide_grep_message,
+        history_requests_mutate_prefer as history_mutate_prefer_locate,
+        locate_budget_should_abort_after_force,
+        locate_budget_should_force_mutate,
         locate_budget_should_inject,
+        locate_budget_threshold,
+        locate_force_threshold,
         merge_locate_anchors,
+        preferred_locate_anchors,
+        step_has_search_actions,
         step_repeats_banned_wide_grep,
         step_wide_grep_paths,
         update_post_locate_streak,
     )
+    from fawai_avatar.brain.capabilities import looks_like_coding_goal
 
     grep_hits = ExecResult(
         ok=True,
@@ -327,9 +393,75 @@ def main() -> None:
             results=[grep_hits],
         )
     assert streak == 3
-    assert locate_budget_should_inject(streak=streak, budget=3)
+    # 默认产品：定位预算 / 强制改写均关——多轮只读不算违规
+    assert locate_budget_threshold() == 0
+    assert locate_force_threshold(budget=3) == 0
+    assert not locate_budget_should_inject(streak=streak)  # 默认 budget=0
+    assert locate_budget_should_inject(streak=streak, budget=3)  # 显式开启才注入
     assert "【定位预算】" in format_locate_budget_message(
         streak=3, budget=3, anchors=anchors
+    )
+    assert "不因只读步数强制" in format_locate_budget_message(
+        streak=3, budget=3, anchors=anchors
+    )
+    # 口语 goal 漏检启发式时：有锚点仍计定位 streak（供显式开关使用）
+    colloquial = "应该取消这个限制啊。修改一下代码"
+    assert looks_like_coding_goal(colloquial)
+    assert explore_progress_armed(goal="随便看看", locate_anchors=anchors)
+    assert explore_progress_armed(
+        goal="随便看看", locate_anchors=[], behavior_armed=True
+    )
+    colloquial_streak = 0
+    for _ in range(3):
+        colloquial_streak = update_post_locate_streak(
+            colloquial_streak,
+            goal="与编码无关的闲聊",
+            locate_anchors=anchors,
+            actions=grep_act,
+            results=[grep_hits],
+        )
+    assert colloquial_streak == 3
+    # 强制改写仅显式 FAWAI_LOCATE_FORCE_STEPS 开启
+    import os
+
+    _prev_force = os.environ.get("FAWAI_LOCATE_FORCE_STEPS")
+    os.environ["FAWAI_LOCATE_FORCE_STEPS"] = "4"
+    try:
+        assert locate_force_threshold(budget=3) == 4
+        assert locate_budget_should_force_mutate(
+            streak=4, budget=3, write_set=[], mutate_forced=False
+        )
+        assert not locate_budget_should_force_mutate(
+            streak=4, budget=3, write_set=[], mutate_forced=True
+        )
+        assert locate_budget_should_abort_after_force(
+            streak=4,
+            budget=3,
+            write_set=[],
+            mutate_forced=True,
+            actions=grep_act,
+            results=[grep_hits],
+        )
+        assert "【定位改写强制】" in format_locate_mutate_force_message(
+            streak=4, budget=3, anchors=anchors
+        )
+    finally:
+        if _prev_force is None:
+            os.environ.pop("FAWAI_LOCATE_FORCE_STEPS", None)
+        else:
+            os.environ["FAWAI_LOCATE_FORCE_STEPS"] = _prev_force
+    assert history_mutate_prefer_locate(
+        [{"role": "user", "content": "【定位改写强制】必须 fs_patch"}]
+    )
+    # 锚点质量：源码 path:line 优先于 README
+    mixed = merge_locate_anchors(
+        ["README.md:10", "fawai_avatar/channel/hub.py:1605"],
+        ["demo_cancel.py:2"],
+    )
+    prefer = preferred_locate_anchors(mixed, limit=2)
+    assert prefer and "hub.py" in prefer[0], prefer
+    assert anchor_quality_score("fawai_avatar/channel/hub.py:1605") > anchor_quality_score(
+        "README.md:10"
     )
     wide_res = ExecResult(
         ok=True,
@@ -351,12 +483,97 @@ def main() -> None:
     assert step_repeats_banned_wide_grep(
         actions=wide_act, banned_paths=wide_paths
     )
-    assert history_requests_mutate_prefer(
+    # 单文件：命中 30（≥目录阈值 20）但 < 单文件默认阈值 → 不降质
+    file_res = ExecResult(
+        ok=True,
+        message="grep 30",
+        data={
+            "count": 30,
+            "hits": [
+                {"path": "fawai_avatar/runtime/loop.py", "line": i, "text": "x"}
+                for i in range(30)
+            ],
+        },
+    )
+    file_act = [
+        Action(
+            kind="fs_grep",
+            args={
+                "path": "fawai_avatar/runtime/loop.py",
+                "pattern": "wide_grep",
+            },
+            write_resources=[],
+        )
+    ]
+    # 单文件豁免依赖 FAWAI_WIDE_GREP_FILE_HITS（默认已关=0 时与目录阈值相同）
+    import os
+
+    os.environ["FAWAI_WIDE_GREP_FILE_HITS"] = "48"
+    try:
+        assert step_wide_grep_paths(file_act, [file_res], hit_threshold=20) == []
+    finally:
+        os.environ.pop("FAWAI_WIDE_GREP_FILE_HITS", None)
+    # 降质后：近似宽 pattern 仍禁；收窄 + context 放行
+    assert step_repeats_banned_wide_grep(
+        actions=wide_act,
+        banned_paths=wide_paths,
+        banned_patterns={"fawai_avatar/channel/static": "."},
+    )
+    narrow_act = [
+        Action(
+            kind="fs_grep",
+            args={
+                "path": "fawai_avatar/channel/static",
+                "pattern": "markdown-render.js script src",
+                "context_before": 1,
+                "context_after": 1,
+            },
+            write_resources=[],
+        )
+    ]
+    assert not step_repeats_banned_wide_grep(
+        actions=narrow_act,
+        banned_paths=wide_paths,
+        banned_patterns={"fawai_avatar/channel/static": "."},
+    )
+    assert "【检索观察压缩】" in format_compressed_hits_message(
+        paths=["fawai_avatar/runtime/loop.py"]
+    )
+    ban_msg = format_compressed_unread_ban_message(
+        dump_paths=["data/observe/tool_x_hits.txt"]
+    )
+    assert "【压缩未读·禁宽搜】" in ban_msg
+    assert "禁止" in ban_msg and "fs_grep" in ban_msg
+    assert step_has_search_actions(
+        [Action(kind="fs_grep", args={"pattern": "x"}, write_resources=[])]
+    )
+    assert not step_has_search_actions(
+        [Action(kind="fs_read", args={"path": "a.py"}, write_resources=[])]
+    )
+    # 原生 schema 须暴露 fs_grep.pattern，避免空 properties
+    grep_tool = next(
+        t
+        for t in openai_tools_for_coding()
+        if t["function"]["name"] == "fs_grep"
+    )
+    assert "pattern" in grep_tool["function"]["parameters"].get("properties", {})
+    # 软【定位预算】不再收紧 mutate 工具面；仅【定位改写强制】才收紧
+    assert not history_requests_mutate_prefer(
         [
             {
                 "role": "user",
                 "content": format_locate_budget_message(
                     streak=3, budget=3, anchors=anchors
+                ),
+            }
+        ]
+    )
+    assert history_requests_mutate_prefer(
+        [
+            {
+                "role": "user",
+                "content": format_locate_mutate_force_message(
+                    streak=4, budget=3, anchors=anchors
                 ),
             }
         ]
@@ -486,6 +703,32 @@ def main() -> None:
         )
         == []
     )
+    from fawai_avatar.brain.answer_effect import (
+        prune_hits_dumps_after_source_evidence,
+        should_suppress_compressed_unread_ban,
+    )
+
+    assert not should_suppress_compressed_unread_ban(write_set=[], read_ok_paths=[])
+    assert should_suppress_compressed_unread_ban(
+        write_set=[], read_ok_paths=["fawai_avatar/skills/review.py"]
+    )
+    assert should_suppress_compressed_unread_ban(
+        write_set=["fawai_avatar/skills/review.py"], read_ok_paths=[]
+    )
+    dumps = [
+        "/tmp/data/observe/tool_20261103T145230Z_aad581c1_hits.txt",
+        "/tmp/data/observe/tool_20261103T145230Z_bbbbbbbb_stdout.txt",
+    ]
+    pruned = prune_hits_dumps_after_source_evidence(
+        dumps,
+        write_set=[],
+        read_ok_paths=["fawai_avatar/channel/hub.py"],
+    )
+    assert pruned == [dumps[1]], pruned
+    assert (
+        prune_hits_dumps_after_source_evidence(dumps, write_set=[], read_ok_paths=[])
+        == dumps
+    )
     assert is_shell_bypass_fs_constraint(
         "禁止使用 fs_read 读取绝对路径；改用 shell 工具执行 cat 命令直接读取目标文件内容"
     )
@@ -518,6 +761,46 @@ def main() -> None:
     )
     assert not any(is_shell_bypass_fs_constraint(c) for c in bypass_reflected.constraints)
     assert any("禁止用 shell cat" in c for c in bypass_reflected.constraints)
+    from fawai_avatar.brain.reflect import (
+        NOT_FOUND_FS_REPLACEMENT,
+        is_ban_absolute_fs_read_constraint,
+        is_force_glob_only_constraint,
+    )
+
+    assert is_ban_absolute_fs_read_constraint(
+        "禁止再次直接 fs_read /Users/shunyaoyin/... 绝对路径"
+    )
+    assert is_force_glob_only_constraint(
+        "必须使用 fs_glob 搜索 **/*云服务*.md 或 **/*配置*.md 以定位文件真实路径"
+    )
+    missing_grounded = ground_reflect_constraints(
+        Reflection(
+            cause="目标文件绝对路径在沙箱中不存在，疑似路径越界被屏蔽",
+            decision="alternate",
+            constraints=[
+                "禁止再次直接 fs_read /Users/shunyaoyin/... 绝对路径",
+                "必须使用 fs_glob 搜索 **/*云服务*.md",
+                "禁止复用失败动作指纹 abc",
+            ],
+            thought="改用 glob",
+            fingerprint="b73b",
+        ),
+        results=[
+            ExecResult(
+                ok=False,
+                message=(
+                    "not found (file missing): /Users/demo/study/x.md；≠ 沙箱越界/禁读"
+                ),
+            )
+        ],
+    )
+    assert missing_grounded.raw.get("ban_absolute_fs_read_stripped")
+    assert missing_grounded.raw.get("force_glob_only_stripped")
+    assert missing_grounded.raw.get("not_found_grounded")
+    assert NOT_FOUND_FS_REPLACEMENT in missing_grounded.constraints
+    assert not any(is_ban_absolute_fs_read_constraint(c) for c in missing_grounded.constraints)
+    assert not any(is_force_glob_only_constraint(c) for c in missing_grounded.constraints)
+    assert "非沙箱越界" in (missing_grounded.cause or "")
     from fawai_avatar.brain.reflect import (
         abort_should_deliver_commands,
         format_abort_delivery,
@@ -613,13 +896,16 @@ def main() -> None:
     )
     assert streak == 0
 
-    from fawai_avatar.channel.redact import redact_secrets
+    from fawai_avatar.channel.redact import redact_secrets, _redact_secrets_impl
 
+    # 入口暂透传（规划可读凭据）；历史实现仍可单测，便于日后恢复
     leaked = 'expect -c \'send "QSfDa/ENNvvQ\\r"\''
-    assert "***" in redact_secrets(leaked)
-    assert "QSfDa" not in redact_secrets(leaked)
+    assert redact_secrets(leaked) == leaked
+    assert "***" in _redact_secrets_impl(leaked)
+    assert "QSfDa" not in _redact_secrets_impl(leaked)
     ssh_block = "ssh -p 31057 root@example.com\nQSfDa/ENNvvQ\n"
-    redacted_ssh = redact_secrets(ssh_block)
+    assert redact_secrets(ssh_block) == ssh_block
+    redacted_ssh = _redact_secrets_impl(ssh_block)
     assert "***" in redacted_ssh
     assert "QSfDa" not in redacted_ssh
     long_steps = [
@@ -708,6 +994,104 @@ def main() -> None:
     assert validate_architecture(goal, soft) is None
     print("[PASS] abs path + soft fallback")
 
+    print("== necessary path ledger ==")
+    from fawai_avatar.brain.necessary_paths import (
+        CONSTRAINT_PATH_LEDGER,
+        enrich_reflection_path_ledger,
+        failed_needs_path_ledger_retry,
+        format_path_ledger_fail_prompt,
+        goal_needs_path_ledger_gate,
+        path_ledger_prompt_lines,
+        thought_claims_command_delivery,
+        thought_has_copyable_command,
+        thought_has_path_breakdown,
+    )
+    from fawai_avatar.brain.reflect import Reflection
+
+    assert goal_needs_path_ledger_gate(
+        "根据磁盘上的配置，把最新版本升级到测试服务器"
+    )
+    assert not goal_needs_path_ledger_gate("现在几点了")
+    assert "必要路径" in path_ledger_prompt_lines(short=False)
+    assert "证据保真" in path_ledger_prompt_lines(short=False)
+    assert "证据保真" in path_ledger_prompt_lines(short=True)
+    assert "证据" in CONSTRAINT_PATH_LEDGER
+    empty_cmd = "沙箱禁读致凭据缺失，闸门已触。给出本机可复制部署命令，待用户补密码。"
+    assert thought_claims_command_delivery(empty_cmd)
+    assert not thought_has_copyable_command(empty_cmd)
+    assert failed_needs_path_ledger_retry(
+        goal="根据配置升级到测试服务器", thought=empty_cmd
+    )
+    good = (
+        "必要路径：鉴权材料阻塞（口令未读到）；作用对象/脚本已齐（本地仓+部署脚本）。"
+        "二是阻塞于口令。可复制命令：\n"
+        "```\nbash fawai_shovels/shell/rsync-ssh-deploy.sh\n```"
+    )
+    assert thought_has_path_breakdown(good)
+    assert thought_has_copyable_command(good)
+    assert not failed_needs_path_ledger_retry(
+        goal="根据配置升级到测试服务器", thought=good
+    )
+    enriched = enrich_reflection_path_ledger(
+        Reflection(
+            cause="缺密",
+            decision="alternate",
+            constraints=["换工具"],
+            thought="再找",
+            fingerprint="p",
+        )
+    )
+    assert CONSTRAINT_PATH_LEDGER in enriched.constraints
+    prompt = format_path_ledger_fail_prompt(
+        goal="根据配置升级到测试服务器", thought=empty_cmd
+    )
+    assert "【必要路径收尾】" in prompt and "可复制命令" in prompt
+    print("[PASS] necessary path ledger")
+
+    print("== step repeat allow_repeat skip ==")
+    from fawai_avatar.brain.reflect import (
+        action_skips_step_repeat,
+        plan_skips_step_repeat,
+        step_fingerprint,
+    )
+
+    same_read = Action(
+        kind="fs_read",
+        args={"path": "hub.py", "offset": 1470, "limit": 60},
+        write_resources=[],
+    )
+    verify_read = Action(
+        kind="fs_read",
+        args={
+            "path": "hub.py",
+            "offset": 1470,
+            "limit": 60,
+            "allow_repeat": True,
+        },
+        write_resources=[],
+    )
+    assert not action_skips_step_repeat(same_read)
+    assert action_skips_step_repeat(verify_read)
+    assert plan_skips_step_repeat([verify_read])
+    assert plan_skips_step_repeat([], plan_raw={"allow_repeat": True})
+    assert not plan_skips_step_repeat([same_read], plan_raw={})
+    # 标识不进指纹：有/无 allow_repeat 的同读指纹一致
+    assert step_fingerprint([same_read]) == step_fingerprint(
+        [
+            Action(
+                kind="fs_read",
+                args={
+                    "path": "hub.py",
+                    "offset": 1470,
+                    "limit": 60,
+                    "allow_repeat": True,
+                },
+                write_resources=[],
+            )
+        ]
+    )
+    print("[PASS] step repeat allow_repeat skip")
+
     print("== stagnation grounded sanitize ==")
     from fawai_avatar.brain.reflect import _ground_stagnation_constraints
 
@@ -732,7 +1116,8 @@ def main() -> None:
     assert not any("Vue" in c for c in cleaned)
     assert not any("必须先使用 fs_read" in c for c in cleaned)
     assert not any("继续扩大 offset" in c for c in cleaned)
-    assert any("优先 fs_patch" in c for c in cleaned)
+    assert any("换指纹" in c and "fs_patch" in c for c in cleaned)
+    assert not any("改写相位" in c and "必须进入" in c for c in cleaned)
     rewritten = _ground_stagnation_constraints(
         [
             "必须先使用 fs_read 读取 index.html，再调用 fs_patch 替换",
@@ -740,8 +1125,40 @@ def main() -> None:
         actions=acts,
         decision="alternate",
     )
-    assert any("最多一次定向" in c and "fs_patch" in c for c in rewritten)
-    assert any("alternate ≠ 已进入改写相位" in c for c in rewritten)
+    assert any("exact old" in c and "fs_patch" in c for c in rewritten)
+    assert any("alternate ≠ 强制写状态" in c for c in rewritten)
+    # 强制写相位文案须被改写成换指纹
+    forced_phase = _ground_stagnation_constraints(
+        ["已定位到目标正则，下一步必须进入改写相位，直接修改代码"],
+        actions=acts,
+        decision="alternate",
+    )
+    assert any("换指纹" in c for c in forced_phase)
+    assert not any("必须进入改写相位" in c for c in forced_phase)
+    from fawai_avatar.brain.reflect import _scrub_force_mutate_phase_text
+
+    scrubbed = _scrub_force_mutate_phase_text(
+        "已定位到目标正则，下一步必须进入改写相位，直接修改代码以解除或调整取消限制。"
+    )
+    assert "必须进入改写相位" not in scrubbed
+    assert "换指纹" in scrubbed
+    # 仅有 locate_anchors + 薄 grep：先拿正文，不逼写相位
+    wide_only = _ground_stagnation_constraints(
+        ["必须使用 fs_grep 在全仓再搜一遍 cancel", "换个观察方式"],
+        actions=[
+            Action(
+                kind="fs_grep",
+                args={"path": ".", "pattern": "cancel"},
+                write_resources=[],
+            )
+        ],
+        decision="alternate",
+        locate_anchors=["fawai_avatar/channel/hub.py:1605"],
+        results=[ExecResult(ok=True, message="grep 12")],
+    )
+    assert not any("必须使用 fs_grep" in c for c in wide_only)
+    assert any("hub.py" in c and "可复制正文" in c for c in wide_only)
+    assert any("alternate ≠ 强制写状态" in c for c in wide_only)
     print("[PASS] stagnation grounded")
 
     print("== B: architecture hard-fail rescued before capability failed ==")
@@ -759,9 +1176,11 @@ def main() -> None:
     ).get("architecture_auto_bound")
     print("[PASS] architecture soft rescue")
 
-    print("== D: soften format abort when write_set non-empty ==")
+    print("== D: coerce abort → alternate（反省不再 abort）==")
     from fawai_avatar.brain.reflect import (
         Reflection,
+        apply_fingerprint_guard,
+        coerce_reflection_no_abort,
         soften_abort_when_mutated_format_error,
     )
 
@@ -773,31 +1192,34 @@ def main() -> None:
         fingerprint="68145e8864fce992",
         forced=True,
     )
-    kept = soften_abort_when_mutated_format_error(
-        abort_ref, write_set=[], results=[ExecResult(ok=False, message="fs_patch requires path")]
+    coerced = coerce_reflection_no_abort(abort_ref)
+    assert coerced.decision == "alternate"
+    assert (coerced.raw or {}).get("coerced_from_abort") is True
+    assert any("status=failed" in c for c in coerced.constraints)
+    # 指纹守卫：alternate 后仍同指纹 → 升约束，仍不 abort
+    guarded = apply_fingerprint_guard(
+        Reflection(
+            cause="again",
+            decision="retry",
+            constraints=[],
+            thought="x",
+            fingerprint="fp1",
+        ),
+        fingerprint="fp1",
+        fail_counts={"fp1": 3},
+        prior_alternate_fps={"fp1"},
     )
-    assert kept.decision == "abort"
+    assert guarded.decision == "alternate"
+    assert guarded.forced is True
+    assert any("status=failed" in c for c in guarded.constraints)
+    # 兼容旧 soften 辅助仍可用（若上游仍塞 abort）
     soft = soften_abort_when_mutated_format_error(
         abort_ref,
         write_set=["fawai_avatar/channel/static/markdown-render.js"],
         results=[ExecResult(ok=False, message="fs_patch requires path")],
     )
     assert soft.decision == "alternate"
-    assert soft.raw.get("softened_format_abort") is True
-    assert any("扁平" in c for c in soft.constraints)
-    # 非格式失败不软化
-    semantic = soften_abort_when_mutated_format_error(
-        Reflection(cause="old not found", decision="abort", fingerprint="x"),
-        write_set=["a.py"],
-        results=[
-            ExecResult(
-                ok=False,
-                message="hunk 0: old not found in a.py；请先 fs_read 核对原文后再 patch",
-            )
-        ],
-    )
-    assert semantic.decision == "abort"
-    print("[PASS] soften format abort")
+    print("[PASS] coerce abort / fingerprint no-abort")
 
     print("== patch args coerce + verify_read reflect ==")
     from fawai_avatar.brain.capabilities import normalize_tool_args
@@ -835,7 +1257,8 @@ def main() -> None:
         thought="先读再改",
         fingerprint="fp",
     )
-    assert reflection_needs_verify_read(need)
+    # 硬闸退役：即使 cause 含 fs_read 也不再注入反省开读
+    assert not reflection_needs_verify_read(need)
     assert not reflection_needs_verify_read(
         Reflection(cause="lease busy", decision="alternate", fingerprint="y")
     )
@@ -845,6 +1268,89 @@ def main() -> None:
     )
     assert paths == ["a.py"]
     print("[PASS] patch coerce + verify_read")
+
+    print("== batch continue on read-only fail ==")
+    import tempfile
+    from pathlib import Path
+
+    from fawai_avatar.runtime.loop import WorkerLoop, should_break_action_batch
+    from fawai_avatar.task.supervisor import Supervisor
+
+    # 单元：只读失败不 break；写/shell 失败 break
+    short = Action(kind="fs_grep", args={"pattern": "复盘"})
+    long = Action(kind="fs_grep", args={"pattern": "cancel.*review"})
+    assert not should_break_action_batch(
+        short, ExecResult(ok=False, message="pattern too short (2 chars)")
+    )
+    assert not should_break_action_batch(long, ExecResult(ok=True, message="grep 1"))
+    assert should_break_action_batch(
+        Action(kind="fs_patch", args={"path": "a.py"}, write_resources=["a.py"]),
+        ExecResult(ok=False, message="old not found"),
+    )
+    assert should_break_action_batch(
+        Action(kind="shell", args={"cmd": "false"}),
+        ExecResult(ok=False, message="exit 1"),
+    )
+
+    class _SeqController:
+        """首条短词失败、次条成功；写失败则返回失败。"""
+
+        def __init__(self) -> None:
+            self.calls: list[Action] = []
+            self._background = None
+
+        def execute(self, action: Action, *, task_id: str | None = None) -> ExecResult:
+            self.calls.append(action)
+            kind = (action.kind or "").strip().lower()
+            pat = str((action.args or {}).get("pattern") or "")
+            if kind == "fs_write":
+                return ExecResult(ok=False, message="write blocked")
+            if pat == "复盘":
+                return ExecResult(
+                    ok=False, message="pattern too short (2 chars), use more specific pattern"
+                )
+            return ExecResult(
+                ok=True,
+                message="grep 1",
+                data={"hits": [{"path": "notes/a.txt", "line": 1, "text": "cancel review"}]},
+            )
+
+    data = Path(tempfile.mkdtemp(prefix="fawai_batch_data_"))
+    sup = Supervisor(str(data / "sup"))
+    tid = sup.create_task("batch continue")
+    assert sup.set_running(tid)
+    ctrl = _SeqController()
+    loop = WorkerLoop(sup, controller=ctrl, max_steps=2, capture=False)  # type: ignore[arg-type]
+    results = loop._execute_actions(
+        tid,
+        [
+            Action(kind="fs_grep", args={"pattern": "复盘", "path": "notes"}),
+            Action(
+                kind="fs_grep",
+                args={"pattern": "cancel review", "path": "notes"},
+            ),
+        ],
+    )
+    assert len(results) == 2, results
+    assert not results[0].ok and results[1].ok, results
+    assert len(ctrl.calls) == 2
+    assert (results[1].data or {}).get("hits"), results[1]
+    # 写失败仍掐后续只读
+    ctrl.calls.clear()
+    results_w = loop._execute_actions(
+        tid,
+        [
+            Action(
+                kind="fs_write",
+                args={"path": "a.txt", "content": "x"},
+                write_resources=["a.txt"],
+            ),
+            Action(kind="fs_grep", args={"pattern": "cancel review", "path": "notes"}),
+        ],
+    )
+    assert len(results_w) == 1 and not results_w[0].ok, results_w
+    assert len(ctrl.calls) == 1
+    print("[PASS] batch continue on read-only fail")
 
     print("demo_compliance: all passed")
 

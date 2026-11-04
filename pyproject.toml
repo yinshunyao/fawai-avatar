@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fawai-avatar"
-version = "0.1.1"
+version = "0.1.2"
 description = "PC/手机操作分身：观察 → 大脑 → 控制，总管调度多工作任务"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -18,7 +18,18 @@ dependencies = [
 
 [project.optional-dependencies]
 # 桌面截屏 / 键鼠（macOS 或有 DISPLAY 的 Linux）；无界面服务器不必装
-gui = ["mss>=9.0.0", "pyautogui>=0.9.54"]
+gui = [
+  "mss>=9.0.0",
+  "pyautogui>=0.9.54",
+  # macOS AX（obs_ax / ui_*）；Linux 有 DISPLAY 仍可用键鼠，AX 首期 Darwin
+  "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",
+  "pyobjc-framework-Quartz>=10.0; sys_platform == 'darwin'",
+  "pyobjc-framework-ApplicationServices>=10.0; sys_platform == 'darwin'",
+]
+# 内置浏览器（Playwright）；无头默认可用，与 OS GUI / headless 无关
+browser = [
+  "playwright>=1.40.0",
+]
 dev = ["pytest>=8.0.0"]
 
 [project.scripts]

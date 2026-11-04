@@ -1,0 +1,437 @@
+# term:编排脑  doc:doc/功能/复杂任务计划模式/说明.md
+"""计划模式编排脑：进模判定、出图、追加对话对图/租约的影响分析。"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import uuid
+from typing import Any, Literal
+
+from fawai_avatar.brain.plan_graph import PlanGraph, PlanNode
+
+AppendKind = Literal[
+    "no_graph_change",
+    "reorder",
+    "lease_adjust",
+    "dispatch_note",
+    "new_task",
+]
+
+_EXPLICIT_MARKERS = (
+    "先规划",
+    "计划模式",
+    "出个计划",
+    "拆成几步",
+    "拆成子任务",
+    "分步完成",
+    "分阶段",
+)
+_STAGE_RE = re.compile(r"然后|接着|之后|同时|分别|并且要|；")
+_SPLIT_RE = re.compile(r"(?:然后|接着|之后|；)")
+
+
+def plan_mode_enabled() -> bool:
+    raw = os.environ.get("FAWAI_PLAN_MODE", "auto").strip().lower()
+    return raw not in {"0", "false", "off", "no", "disabled"}
+
+
+def _mock_enabled() -> bool:
+    return os.environ.get("FAWAI_BRAIN_MOCK", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def decide_complexity(goal: str) -> dict[str, Any]:
+    """
+    编排脑判定是否进入计划模式（无人审）。
+
+    返回 {"enter": bool, "reason": str, "source": "llm"|"mock"|"heuristic"|"off"|"fallback"}。
+    非 mock 时优先 LLM；失败或 mock 用启发式。FAWAI_PLAN_MODE=0 恒不进。
+    """
+    if not plan_mode_enabled():
+        return {"enter": False, "reason": "FAWAI_PLAN_MODE 关闭", "source": "off"}
+    text = (goal or "").strip()
+    if not text:
+        return {"enter": False, "reason": "空目标", "source": "fallback"}
+
+    if _mock_enabled():
+        return _heuristic_complexity(text) | {"source": "mock"}
+
+    try:
+        out = _llm_complexity(text)
+        if out is not None:
+            return out
+    except Exception:  # noqa: BLE001 — 判定失败回退启发式
+        pass
+    return _heuristic_complexity(text) | {"source": "fallback"}
+
+
+def should_enter_plan_mode(goal: str) -> bool:
+    """复杂度是否进计划模式；真源为编排脑 decide_complexity（无人确认）。"""
+    return bool(decide_complexity(goal).get("enter"))
+
+
+def _heuristic_complexity(text: str) -> dict[str, Any]:
+    force = os.environ.get("FAWAI_PLAN_MODE", "auto").strip().lower() in {
+        "1",
+        "true",
+        "on",
+        "force",
+        "always",
+    }
+    if any(m in text for m in _EXPLICIT_MARKERS):
+        return {"enter": True, "reason": "显式计划口令"}
+    stages = len(_STAGE_RE.findall(text))
+    if force and stages >= 1:
+        return {"enter": True, "reason": "FAWAI_PLAN_MODE 强制且含阶段连接"}
+    if stages >= 2:
+        return {"enter": True, "reason": "多阶段连接词"}
+    if stages >= 1 and len(text) >= 36:
+        return {"enter": True, "reason": "可拆阶段且目标较长"}
+    return {"enter": False, "reason": "单阶段/简单目标"}
+
+
+def _llm_complexity(goal: str) -> dict[str, Any] | None:
+    from fawai_avatar.llm.client import chat
+
+    system = (
+        "你是操作分身的编排脑。只判断用户目标是否需要「计划模式」"
+        "（拆成带依赖的子任务图，再分派监管脑执行）。"
+        "只输出一个 JSON 对象："
+        '{"enter":true|false,"reason":"不超过40字"}。'
+        "规则："
+        "1) 多阶段交付、明确先后/并行、多种互斥资源、或显式要求先规划 → enter=true；"
+        "2) 单文件读写、单次查询答复、已定位窄改动、单一窄 GUI → enter=false；"
+        "3) 不确定时：若拆开后各段可独立验收则 true，否则 false。"
+        "不要等人确认；你直接判定。"
+    )
+    resp = chat(
+        [
+            {"role": "system", "content": system},
+            {"role": "user", "content": goal[:2000]},
+        ],
+        tools=None,
+        tool_choice=None,
+    )
+    if not resp.get("ok"):
+        return None
+    parsed = _parse_json_object(str(resp.get("content") or ""))
+    if not parsed or "enter" not in parsed:
+        return None
+    enter = parsed.get("enter")
+    if isinstance(enter, str):
+        enter = enter.strip().lower() in {"1", "true", "yes", "y"}
+    elif not isinstance(enter, bool):
+        return None
+    reason = str(parsed.get("reason") or "").strip() or "编排脑判定"
+    return {"enter": bool(enter), "reason": reason[:80], "source": "llm"}
+
+
+def build_plan_graph(goal: str, *, plan_id: str | None = None) -> PlanGraph:
+    """出图：mock/启发式默认；非 mock 尝试 LLM，失败回退启发式。"""
+    pid = (plan_id or uuid.uuid4().hex).strip()
+    text = (goal or "").strip()
+    if _mock_enabled():
+        return _heuristic_graph(text, plan_id=pid, source="mock")
+    try:
+        graph = _llm_graph(text, plan_id=pid)
+        if graph is not None and graph.nodes:
+            return graph
+    except Exception:  # noqa: BLE001 — 出图失败用启发式
+        pass
+    return _heuristic_graph(text, plan_id=pid, source="heuristic")
+
+
+def analyze_plan_append(
+    *,
+    root_goal: str,
+    graph: PlanGraph,
+    user_text: str,
+    node_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    追加对话：编排脑先分析。
+
+    返回 kind / instruction / reason / source；可选 patch_nodes（reorder 时）。
+    """
+    text = (user_text or "").strip()
+    if not text:
+        return {
+            "kind": "no_graph_change",
+            "instruction": "",
+            "reason": "空追加",
+            "source": "fallback",
+        }
+    if _mock_enabled():
+        return _mock_append_analyze(text)
+    try:
+        out = _llm_append_analyze(
+            root_goal=root_goal, graph=graph, user_text=text, node_id=node_id
+        )
+        if out is not None:
+            return out
+    except Exception:  # noqa: BLE001
+        pass
+    return _mock_append_analyze(text) | {"source": "fallback"}
+
+
+def format_supervisor_goal(
+    *,
+    root_goal: str,
+    node: PlanNode,
+    artifacts: dict[str, Any],
+) -> str:
+    """监管脑看到的目标文案：节点 goal + 授权契约 + 上游产物。"""
+    lines = [
+        f"【监管脑授权】节点 `{node.id}`",
+        f"【停条件】{node.stop_when}",
+    ]
+    if node.produces:
+        lines.append(f"【须产出键】{', '.join(node.produces)}")
+    if node.consumes:
+        bits = []
+        for c in node.consumes:
+            bits.append(f"{c}={artifacts.get(c, '（缺失）')!r}"[:120])
+        lines.append("【上游产物】" + "; ".join(bits))
+    lines.append(f"【用户总目标】{(root_goal or '')[:500]}")
+    lines.append(f"【本节点目标】{node.goal}")
+    lines.append(
+        "你是监管脑：在本节点授权内自行完成任务并驱动执行步骤；"
+        "不要改其它节点或全局租约；完成后在结论中兑现产物键含义。"
+    )
+    return "\n".join(lines)
+
+
+def _heuristic_graph(goal: str, *, plan_id: str, source: str) -> PlanGraph:
+    text = goal.strip()
+    # 去掉显式口令前缀噪声，便于拆句
+    cleaned = text
+    for m in _EXPLICIT_MARKERS:
+        cleaned = cleaned.replace(m, " ")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip() or text
+
+    if "同时" in cleaned and "然后" not in cleaned:
+        # 简单并行：按「同时/分别/，」拆
+        parts = re.split(r"同时|分别|，|,", cleaned)
+        parts = [p.strip(" 。；;") for p in parts if p.strip(" 。；;")]
+        if len(parts) < 2:
+            parts = [cleaned]
+        nodes = []
+        for i, part in enumerate(parts):
+            nid = f"n{i+1}"
+            nodes.append(
+                PlanNode(
+                    id=nid,
+                    goal=part,
+                    depends_on=[],
+                    parallel_group="g1",
+                    produces=[f"out_{nid}"],
+                    stop_when=f"完成：{part[:40]}",
+                )
+            )
+        return PlanGraph(
+            plan_id=plan_id, root_goal=goal, nodes=nodes, source=source
+        )
+
+    parts = [p.strip(" 。；;") for p in _SPLIT_RE.split(cleaned) if p.strip(" 。；;")]
+    if len(parts) < 2:
+        # 单节点图（仍进计划模式时保底）
+        nodes = [
+            PlanNode(
+                id="n1",
+                goal=cleaned or goal,
+                produces=["out_n1"],
+                stop_when="完成用户目标",
+            )
+        ]
+    else:
+        nodes = []
+        for i, part in enumerate(parts):
+            nid = f"n{i+1}"
+            deps = [f"n{i}"] if i > 0 else []
+            consumes = [f"out_n{i}"] if i > 0 else []
+            nodes.append(
+                PlanNode(
+                    id=nid,
+                    goal=part,
+                    depends_on=deps,
+                    produces=[f"out_{nid}"],
+                    consumes=consumes,
+                    stop_when=f"完成：{part[:40]}",
+                )
+            )
+    return PlanGraph(plan_id=plan_id, root_goal=goal, nodes=nodes, source=source)
+
+
+def _llm_graph(goal: str, *, plan_id: str) -> PlanGraph | None:
+    from fawai_avatar.llm.client import chat
+
+    system = (
+        "你是操作分身的编排脑。把用户复杂目标拆成任务图。"
+        "只输出一个 JSON 对象，字段："
+        '{"nodes":[{"id":"n1","goal":"...","depends_on":[],"parallel_group":null,'
+        '"modality_hint":"background|foreground|mixed","produces":["out_n1"],'
+        '"consumes":[],"stop_when":"..."}]}。'
+        "规则：节点 goal 可独立验收；串行用 depends_on；可并行则 depends_on 空并可同 parallel_group；"
+        "produces/consumes 用短键；不要 markdown。"
+    )
+    resp = chat(
+        [
+            {"role": "system", "content": system},
+            {"role": "user", "content": goal[:2000]},
+        ],
+        tools=None,
+        tool_choice=None,
+    )
+    if not resp.get("ok"):
+        return None
+    parsed = _parse_json_object(str(resp.get("content") or ""))
+    if not parsed or not isinstance(parsed.get("nodes"), list):
+        return None
+    nodes: list[PlanNode] = []
+    for i, raw in enumerate(parsed["nodes"]):
+        if not isinstance(raw, dict):
+            continue
+        nid = str(raw.get("id") or f"n{i+1}").strip()
+        g = str(raw.get("goal") or "").strip()
+        if not g:
+            continue
+        produces = [str(x) for x in (raw.get("produces") or []) if str(x).strip()]
+        if not produces:
+            produces = [f"out_{nid}"]
+        nodes.append(
+            PlanNode(
+                id=nid,
+                goal=g,
+                depends_on=[
+                    str(x) for x in (raw.get("depends_on") or []) if str(x).strip()
+                ],
+                parallel_group=(
+                    str(raw["parallel_group"]).strip()
+                    if raw.get("parallel_group")
+                    else None
+                ),
+                modality_hint=str(raw.get("modality_hint") or "background"),
+                produces=produces,
+                consumes=[
+                    str(x) for x in (raw.get("consumes") or []) if str(x).strip()
+                ],
+                stop_when=str(raw.get("stop_when") or f"完成：{g[:40]}"),
+            )
+        )
+    if not nodes:
+        return None
+    return PlanGraph(
+        plan_id=plan_id, root_goal=goal, nodes=nodes, source="llm"
+    )
+
+
+def _llm_append_analyze(
+    *,
+    root_goal: str,
+    graph: PlanGraph,
+    user_text: str,
+    node_id: str | None,
+) -> dict[str, Any] | None:
+    from fawai_avatar.llm.client import chat
+
+    system = (
+        "你是操作分身的编排脑（追加分析）。任务图已在执行，用户追加了一条消息。"
+        "判断对图与租约的影响。只输出 JSON："
+        '{"kind":"no_graph_change|reorder|lease_adjust|dispatch_note|new_task",'
+        '"instruction":"给当前监管脑的短指令（≤80字）","reason":"≤40字"}。'
+        "规则：仅补充当前节点说明→no_graph_change 或 dispatch_note；"
+        "要改未决顺序/增删节点→reorder；要改写资源/前台占用→lease_adjust；"
+        "明显另一件事→new_task；不确定优先 no_graph_change。"
+    )
+    sketch = "\n".join(graph.summary_lines())[:800]
+    user = (
+        f"总目标:\n{root_goal[:800]}\n"
+        f"当前节点: {node_id or '（父计划/未知）'}\n"
+        f"任务图:\n{sketch}\n"
+        f"用户追加:\n{user_text[:800]}\n"
+    )
+    resp = chat(
+        [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        tools=None,
+        tool_choice=None,
+    )
+    if not resp.get("ok"):
+        return None
+    parsed = _parse_json_object(str(resp.get("content") or ""))
+    if not parsed:
+        return None
+    kind = str(parsed.get("kind") or "").strip()
+    if kind not in {
+        "no_graph_change",
+        "reorder",
+        "lease_adjust",
+        "dispatch_note",
+        "new_task",
+    }:
+        return None
+    instruction = str(parsed.get("instruction") or "").strip() or user_text[:80]
+    reason = str(parsed.get("reason") or "").strip() or "模型分析"
+    return {
+        "kind": kind,
+        "instruction": instruction[:120],
+        "reason": reason[:80],
+        "source": "llm",
+    }
+
+
+def _mock_append_analyze(text: str) -> dict[str, Any]:
+    if any(m in text for m in ("新任务", "另外一件", "另一件事", "别的事")):
+        return {
+            "kind": "new_task",
+            "instruction": "",
+            "reason": "话术明示另开任务",
+            "source": "mock",
+        }
+    if any(m in text for m in ("重排", "换顺序", "先做另一个", "调整顺序")):
+        return {
+            "kind": "reorder",
+            "instruction": text[:80],
+            "reason": "用户要求重排",
+            "source": "mock",
+        }
+    if any(m in text for m in ("租约", "别抢前台", "串行写", "资源冲突")):
+        return {
+            "kind": "lease_adjust",
+            "instruction": text[:80],
+            "reason": "用户提及租约/资源",
+            "source": "mock",
+        }
+    return {
+        "kind": "no_graph_change",
+        "instruction": text[:80],
+        "reason": "补充当前任务说明",
+        "source": "mock",
+    }
+
+
+def _parse_json_object(content: str) -> dict[str, Any] | None:
+    text = (content or "").strip()
+    if not text:
+        return None
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, dict) else None
+    except json.JSONDecodeError:
+        m = re.search(r"\{[\s\S]*\}", text)
+        if not m:
+            return None
+        try:
+            data = json.loads(m.group(0))
+            return data if isinstance(data, dict) else None
+        except json.JSONDecodeError:
+            return None

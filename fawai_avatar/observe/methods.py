@@ -14,12 +14,13 @@ from fawai_avatar.types import Observation
 OBSERVE_LABELS: dict[str, str] = {
     "obs_screen": "截屏",
     "obs_fs": "工作区文件",
+    "obs_ax": "AX控件树",
     "obs_shell": "脚本查询",
     "obs_tool": "工具结果",
     "none": "跳过",
 }
 
-_ENV_METHODS = frozenset({"obs_screen", "obs_fs", "obs_shell", "none"})
+_ENV_METHODS = frozenset({"obs_screen", "obs_fs", "obs_ax", "obs_shell", "none"})
 
 
 def observe_label(method: str) -> str:
@@ -95,11 +96,24 @@ def candidate_observe_methods(goal: str, *, capture: bool) -> list[str]:
         headless = is_headless()
     except Exception:  # noqa: BLE001
         headless = False
-    if _looks_like_structured_observe_goal(goal) or headless:
-        # 结构化 / 无界面：不以截屏为候选
+    if headless:
         return ["obs_fs", "none"]
-    # 非结构化且有桌面：可截屏，也鼓励工作区取证
-    return ["obs_fs", "obs_screen", "none"]
+    if _looks_like_structured_observe_goal(goal):
+        # 结构化：不以截屏/AX 为候选
+        return ["obs_fs", "none"]
+    # 非结构化且有桌面：截屏 +（macOS）AX + 工作区
+    cands = ["obs_fs", "obs_screen", "none"]
+    try:
+        from fawai_avatar.platform_info import runtime_platform
+
+        ax_ok = runtime_platform().system == "Darwin"
+    except Exception:  # noqa: BLE001
+        import sys
+
+        ax_ok = sys.platform == "darwin"
+    if ax_ok:
+        cands.insert(1, "obs_ax")
+    return cands
 
 
 def choose_observe_methods(goal: str, *, capture: bool) -> list[str]:
@@ -136,6 +150,8 @@ def resolve_observe_methods(
             m = "obs_screen"
         if m in {"fs", "workspace", "files"}:
             m = "obs_fs"
+        if m in {"ax", "accessibility", "ui_tree", "obs_a11y"}:
+            m = "obs_ax"
         if m in {"skip", "no_observe"}:
             m = "none"
         if m in cand_set and m in _ENV_METHODS and m not in picked:
@@ -152,41 +168,63 @@ def collect_observation(
     goal: str = "",
     capture: bool = True,
     frontmost_probe: Any | None = None,
+    observe_args: dict[str, Any] | None = None,
 ) -> Observation:
     """按方式采集并合并为一条 Observation；meta 带 observe_methods / 下一步候选。
 
     无论何种环境观察方式，都会附加廉价前台窗摘要（可注入 frontmost_probe 便于冒烟）。
+    observe_args.obs_screen.screen_target 控制截哪块屏（默认 frontmost）。
     """
+    from fawai_avatar.observe.displays import (
+        format_displays_block,
+        list_displays,
+        screen_target_from_observe_args,
+    )
+
     methods = [m for m in methods if m] or ["none"]
+    try:
+        from fawai_avatar.platform_info import is_headless
+
+        headless = is_headless()
+    except Exception:  # noqa: BLE001
+        headless = False
+    displays = [] if headless else list_displays()
+    screen_target = screen_target_from_observe_args(observe_args)
     parts: list[Observation] = []
     for method in methods:
         if method == "obs_screen":
-            try:
-                from fawai_avatar.platform_info import is_headless
-
-                if is_headless():
-                    parts.append(
-                        Observation(
-                            summary=(
-                                "无界面运行，无法截屏（obs_screen）。"
-                                "请改用 obs_fs / shell / fs_* 取证。"
-                            ),
-                            meta={
-                                "observe_method": "obs_screen",
-                                "ok": False,
-                                "reason": "headless",
-                            },
-                        )
+            if headless:
+                parts.append(
+                    Observation(
+                        summary=(
+                            "无界面运行，无法截屏（obs_screen）。"
+                            "请改用 obs_fs / shell / fs_* 取证。"
+                        ),
+                        meta={
+                            "observe_method": "obs_screen",
+                            "ok": False,
+                            "reason": "headless",
+                        },
                     )
-                    continue
-            except Exception:  # noqa: BLE001
-                pass
+                )
+                continue
             if screen_observe is None:
                 from fawai_avatar.observe.screen import observe as screen_observe_fn
 
-                screen_observe = screen_observe_fn
+                def _default_screen_observe() -> Observation:
+                    return screen_observe_fn(
+                        screen_target=screen_target, displays=displays
+                    )
+
+                screen_observe = _default_screen_observe
             try:
-                obs = screen_observe()
+                # 注入版 screen_observe 可无参；兼容旧无参 mock
+                try:
+                    obs = screen_observe(
+                        screen_target=screen_target, displays=displays
+                    )
+                except TypeError:
+                    obs = screen_observe()
             except Exception as exc:  # noqa: BLE001 — 截屏失败不崩闭环
                 parts.append(
                     Observation(
@@ -196,12 +234,16 @@ def collect_observation(
                             "ok": False,
                             "reason": "capture_failed",
                             "error": str(exc),
+                            "screen_target": screen_target,
                         },
                     )
                 )
                 continue
             meta = dict(obs.meta or {})
             meta["observe_method"] = "obs_screen"
+            meta.setdefault("screen_target", screen_target)
+            if displays and "displays" not in meta:
+                meta["displays"] = displays
             parts.append(
                 Observation(
                     summary=obs.summary,
@@ -213,12 +255,30 @@ def collect_observation(
             )
         elif method == "obs_fs":
             parts.append(_observe_workspace())
+        elif method == "obs_ax":
+            try:
+                from fawai_avatar.observe.ax_tree import observe_ax
+
+                parts.append(observe_ax())
+            except Exception as exc:  # noqa: BLE001
+                parts.append(
+                    Observation(
+                        summary=f"obs_ax 失败：{exc}",
+                        meta={
+                            "observe_method": "obs_ax",
+                            "ok": False,
+                            "reason": "ax_exception",
+                            "error": str(exc),
+                        },
+                    )
+                )
         elif method == "none":
             parts.append(
                 Observation(
                     summary=(
                         "本步未截屏、未采工作区目录（capture 关闭、步 0 默认跳过或模型点选 none）。"
-                        "可见前台态见下方前台窗摘要；需要画面时请在 observe_kinds 点选 obs_screen。"
+                        "可见前台态见下方前台窗摘要；需要画面时请在 observe_kinds 点选 obs_screen；"
+                        "需要控件树时点选 obs_ax。"
                     ),
                     meta={"observe_method": "none"},
                 )
@@ -242,24 +302,51 @@ def collect_observation(
     meta["observe_candidates"] = candidate_observe_methods(goal, capture=capture)
     meta["observe_methods"] = methods
     meta["observe_label"] = "、".join(observe_label(m) for m in methods)
-    merged = Observation(
-        summary=merged.summary,
-        image_path=merged.image_path,
-        width=merged.width,
-        height=merged.height,
-        meta=meta,
-    )
+    if displays:
+        meta["displays"] = displays
+        block = format_displays_block(displays)
+        summary = (merged.summary or "").rstrip()
+        if "显示器清单" not in summary:
+            summary = f"{summary}\n\n{block}" if summary else block
+        merged = Observation(
+            summary=summary,
+            image_path=merged.image_path,
+            width=merged.width,
+            height=merged.height,
+            meta=meta,
+        )
+    else:
+        merged = Observation(
+            summary=merged.summary,
+            image_path=merged.image_path,
+            width=merged.width,
+            height=merged.height,
+            meta=meta,
+        )
     from fawai_avatar.observe.frontmost import attach_frontmost
 
     return attach_frontmost(merged, probe=frontmost_probe)
 
 
-def progress_observe_text(methods: list[str], *, pending: bool = True) -> str:
+def progress_observe_text(
+    methods: list[str],
+    *,
+    pending: bool = True,
+    preview: str = "",
+    max_preview_chars: int = 1800,
+) -> str:
+    """环境观察进度文案；完成态须附带实际采到的摘要（含前台窗），禁止只写标签。"""
     labels = [observe_label(m) for m in methods]
     joined = "、".join(labels) if labels else "观察"
     if pending:
         return f"观察中（{joined}）…"
-    return f"观察完成（{joined}）"
+    head = f"观察完成（{joined}）"
+    body = (preview or "").strip()
+    if not body:
+        return head
+    if len(body) > max_preview_chars:
+        body = body[: max_preview_chars - 1] + "…"
+    return f"{head}\n{body}"
 
 
 def progress_tool_observe_text(

@@ -2,6 +2,7 @@
 # term:规划提示档  tool:prompt_profile  doc:doc/功能/规划提示档/说明.md
 # term:完成任务  doc:doc/功能/完成任务/说明.md
 # term:执行反省  tool:brain_reflect  doc:doc/功能/执行反省/说明.md
+# term:观察反省  tool:brain_obs_reflect  doc:doc/功能/观察反省/说明.md
 # term:步骤重复  tool:brain_stagnation  doc:doc/功能/步骤重复/说明.md
 # term:代码索引  doc:doc/功能/代码索引/说明.md
 # term:自我进化  doc:doc/功能/自我进化/说明.md
@@ -30,12 +31,15 @@ from fawai_avatar.brain.compliance import (
 from fawai_avatar.brain.context_inject import coding_context_prompt_block
 from fawai_avatar.brain.explore_progress import (
     history_requests_mutate_prefer,
+    history_requests_verify_must_patch,
     history_requests_verify_read,
+    is_blind_file_head_read,
     is_explore_only_actions,
     is_verify_read_only_actions,
 )
 from fawai_avatar.brain.history_window import compress_history_for_plan
 from fawai_avatar.brain.native_tools import openai_tools_for_coding, plan_from_tool_calls
+from fawai_avatar.brain.necessary_paths import path_ledger_prompt_lines
 from fawai_avatar.brain.prompt_profile import (
     PromptProfile,
     goal_has_user_image,
@@ -44,6 +48,7 @@ from fawai_avatar.brain.prompt_profile import (
     looks_like_fs_web_goal,
     profile_full,
 )
+from fawai_avatar.brain.obs_reflect import ObsReflection, run_obs_reflect
 from fawai_avatar.brain.reflect import Reflection, run_reflect, run_stagnation
 from fawai_avatar.config import RuntimeConfig
 from fawai_avatar.llm.client import LlmClient
@@ -52,15 +57,37 @@ from fawai_avatar.skills.store import skills_prompt_block
 from fawai_avatar.types import Action, ExecResult, Observation, Plan
 
 
+def _delegate_prompt_lines(*, planner_role: str) -> str:
+    """主脑可写 delegate；快模型禁止再委派。未配置快模型时不提示委派。"""
+    from fawai_avatar.brain.delegate import fast_model_from_env
+
+    if planner_role == "fast":
+        return (
+            "- **快模型段**：你只执行当前子目标；禁止输出 delegate；"
+            "达成停条件或无法继续时 status=success/failed，thought 写清结果摘要给主脑。"
+            "禁止 need_input（拿不准则 failed 并说明缺口）。\n"
+        )
+    if not fast_model_from_env():
+        return ""
+    return (
+        "- **主脑委派（可选）**：机械/低风险子段（只读定位、多文件检索、简单改写）可委派快模型："
+        '顶层加 `"delegate":{"tier":"fast","goal":"子目标","stop_when":"停条件","max_steps":5}`，'
+        "此时 actions 必须为空、status=continue；由快模型跑完后回灌摘要再由你验收。"
+        "高风险/终答/歧义路线/架构决断勿委派。\n"
+    )
+
+
 def _system_prompt(
     *,
     coding: bool = False,
     goal: str = "",
     profile: PromptProfile | None = None,
+    planner_role: str = "main",
 ) -> str:
     from fawai_avatar.platform_info import is_headless, platform_prompt_block
 
     prof = profile or profile_full(coding=coding)
+    delegate_rule = _delegate_prompt_lines(planner_role=planner_role)
     kind_set = kinds_for_format_example(prof)
     kinds = "|".join(sorted(kind_set))
     caps_block = capabilities_prompt_block(
@@ -78,7 +105,10 @@ def _system_prompt(
     coding_extra = ""
     if coding and not prof.short_rules:
         coding_extra = (
-            "- 编码目标：优先 fs_patch；写后必须 code_check（或 shell_verify）；每步 1～2 个 actions。\n"
+            "- 编码目标：优先 fs_patch；写后必须 code_check（或 shell_verify），args 须 path/paths"
+            "（或 command；兼容 file/files/cmd）；每步 1～2 个 actions。\n"
+            "- **临时脚本/算数/装包**：先 `shovel_search`；无命中再 `py_write`→`py_pip`（需依赖时）→`py_run`（落盘"
+            "data/sessions/{task_id}/）；参数/env；通用性≥3 可升铲；改产品源码仍用 fs_patch，勿用 py_* 改仓内业务文件。\n"
             "- 若启用原生 tool_calls：直接调用工具，不必再包一层 JSON plan；结束时调用 done。"
             "分层写路径由系统按 path 自动绑定默认 doc_refs；也可在写工具 args 里带 doc_refs"
             "或 architecture_skip_reason。\n"
@@ -86,36 +116,55 @@ def _system_prompt(
             "（系统可按 path 自动补默认 doc_refs）。\n"
             "- **改写优先**：历史已给出明确 path + 渲染/修改点后，本步优先 fs_patch/fs_replace/fs_write；"
             "禁止无新问题继续盲读同一文件或整文件扫读；需要细节时按行号小窗 fs_read。\n"
-            "- **高带宽定位**：开场 1～2 步优先 explore_search 或 fs_grep（带 context_before/after）；"
-            "禁止无 pattern 的整文件盲 fs_read；已有 path:line 禁止同范围宽 grep。\n"
+            "- **定位（条件）**：目标已给明确 path → 定向 fs_read/fs_patch，不必探仓；"
+            "仅缺 path 时优先 fs_grep（pattern）+ fs_glob（收窄 path/glob）；"
+            "多词并行才 explore_search（默认只 grep）；禁止整文件盲读；已有 path:line 禁止同范围宽搜。\n"
             "- **可见副作用**：若目标含页面/布局/附图，补丁须产生用户可感知变化；"
             "禁止只堆未引用 CSS 变量；success 的 thought 须写清可见变化，禁止 native tool_calls 占位。\n"
         )
     elif coding and prof.short_rules:
         coding_extra = (
-            "- 编码：优先 fs_patch；写后 code_check；每步 1～2 actions；原生 tool_calls 时可直接调工具"
-            "（分层写自动绑定 doc_refs）。已定位 path 后禁止无新问题盲读，改写优先。"
-            "开场优先 explore_search/fs_grep+context，禁止整文件盲读。"
+            "- 编码：优先 fs_patch；写后 code_check（须 path/paths）；每步 1～2 actions；原生 tool_calls 时可直接调工具"
+            "（分层写自动绑定 doc_refs）。已有 path 则定向读改，禁止无新问题盲读/为探仓而探仓；"
+            "仅缺 path 时优先 fs_grep/fs_glob；多词才 explore_search。禁止整文件盲读。"
+            "临时脚本先 shovel_search，再 py_write/py_pip/py_run；改产品源码勿用 py_*。"
             "页面/布局类禁止未引用 CSS 变量假成功；收尾 thought 须写可见变化。\n"
         )
     elif not coding and prof.id == "fs":
         coding_extra = (
-            "- 前端/文件改页：开场优先 explore_search 或 fs_grep+context 定位；"
-            "已定位入口 path 与渲染点后优先 fs_patch/fs_replace；"
+            "- 前端/文件改页：已有入口 path/渲染点 → 直接 fs_patch/fs_replace；"
+            "仅不知文件时优先 fs_grep/fs_glob（收窄 path）；多词才 explore_search；"
             "禁止反复整文件 fs_read / 同范围宽 grep；分层写自动绑定 doc_refs。\n"
             "- **可见副作用**：改布局/样式须改到实际生效的选择器或属性；"
             "禁止只新增未 var() 引用的 CSS 变量/注释后 success；"
             "write_set 非空≠验收通过。目标含用户附图时，须对照图中可见问题下刀。\n"
         )
     gui_rule = (
-        "- 无界面：禁止规划 click/type/hotkey；observe_kinds 勿选 obs_screen。\n"
+        "- 无界面：禁止规划 click/type/hotkey/app_focus/ui_*；observe_kinds 勿选 obs_screen/obs_ax。\n"
         if is_headless()
-        else "- GUI 动作（click/type/hotkey）设 needs_foreground=true；纯 shell/后台设 false。\n"
+        else (
+            "- GUI：click/type/hotkey/app_focus/ui_click/ui_type/ui_verify 设 needs_foreground=true；"
+            "纯 shell/后台设 false。\n"
+            "- 控件级优先：observe_kinds 含 obs_ax → ui_click/ui_type；"
+            "args.ref 只能抄摘要表编号（\"1\"/\"2\"…），禁止臆造 chat-input-field 等 id；"
+            "表中无控件则 obs_screen+click 或 failed；键入后须界面回证，未回证不得 success。\n"
+            "- 多屏：观察 meta.displays；选 obs_screen 时用 observe_args."
+            '{"obs_screen":{"screen_target":"frontmost|main|index:N|all"}}（默认 frontmost）；'
+            "未见目标则换 target 或 app_focus，禁止假定只在主屏。\n"
+            "- click 的 x/y 为**图内坐标**（相对截图 origin）；闭环加 origin_x/y；"
+            "勿与全局坐标混用（除非 args.coord_space=global）。\n"
+            "- 截图已见输入框有待发文案时：优先 press/hotkey 提交（如 enter 或应用惯用快捷键），"
+            "再用截屏确认是否发出；勿反复估发送按钮像素 click。\n"
+            "- AX bounds 若明显荒谬或 ui_click 报 ax_bounds_invalid：换道 obs_screen+click 或键盘，禁止同 ref 空转。\n"
+        )
     )
     if prof.id == "fs" or (
-        prof.kind_allow is not None and prof.kind_allow.isdisjoint({"click", "type", "hotkey"})
+        prof.kind_allow is not None
+        and prof.kind_allow.isdisjoint(
+            {"click", "type", "hotkey", "app_focus", "ui_click", "ui_type"}
+        )
     ):
-        gui_rule = "- 本轮勿规划 click/type/hotkey；改文件走 fs_*。\n"
+        gui_rule = "- 本轮勿规划 click/type/hotkey/app_focus/ui_*；改文件走 fs_*。\n"
     image_extra = ""
     if goal_has_user_image(goal) and (
         looks_like_fs_web_goal(goal) or coding
@@ -127,6 +176,7 @@ def _system_prompt(
     thought_rule = (
         "- **thought ≤40 字**（优先）；先保证 status/actions/observe_kinds 字段完整，禁止长篇推理占满输出。\n"
     )
+    path_ledger = path_ledger_prompt_lines(short=prof.short_rules)
     profile_line = f"本轮提示档：{prof.id}（按目的精简；硬校验仍用全量能力）。\n"
     if prof.short_rules:
         return f"""你是操作分身的执行大脑。据目标与观察规划**下一步**动作，并点选 observe_kinds。
@@ -135,20 +185,21 @@ def _system_prompt(
 {caps_block}
 {rules_inject}{ctx_block}{thought_rule}规则：
 - 只输出一个 JSON 对象，无 markdown 其它前后缀；禁止声称已执行物理操作。
-- shell 用 args.cmd；fs_read 用 path + offset/limit；fs_grep 用 pattern；fs_patch/replace 的 old 须与原文一致。
-- 定位优先 explore_search/fs_grep+context/code_symbols，再 fs_glob；禁止开场整文件盲读。
-- 遵守【定位预算】/【宽检索降质】：已有 path:line 后改写优先，禁止同范围再宽搜。
-- observe_kinds 必须从观察候选选；查代码/改产品优先 obs_fs 或 none。
-- 遵守历史中的【执行反省】/【步骤重复】constraints。
+- shell 用 args.cmd；fs_read 用 path + offset/limit；故意同窗再读加 allow_repeat=true；fs_grep 用 pattern；fs_patch/replace 的 old 须与原文一致。
+- 缺 path 时定位：优先 fs_grep/fs_glob（收窄 path/glob）；多词才 explore_search（默认只 grep）；结构用 code_symbols；已有 path 定向读改；禁止整文件盲读。
+- 工具结果默认全文回灌；检索体量靠 `head_limit`（默认宜小）与 `context_before/after`（≤5）控制，达上限可自行加大 limit 或收窄翻页，无宽检索降质闸。
+- **过程相位（必要）**：定位 → 取证（小窗 fs_read / 已有 path:line）→ 改写或作答 → 验收。宽搜/整文件盲读属可选，不得替代取证。
+- observe_kinds 必须从观察候选选；查代码/改产品优先 obs_fs 或 none；GUI 可选 obs_ax / obs_screen（可带 observe_args.obs_screen.screen_target）。
+- 遵守历史中的【执行反省】/【步骤重复】constraints；可参考【观察反省】hints（软建议），失败时仍以执行反省为准。
 - 最终给用户的话写在 success/failed 的 thought；勿贴原始 stdout。
 - 查找落点/账号优先 lore 与 fs_read（含 FAWAI_READ_ROOTS 绝对路径，默认整盘只读）；禁止开场 `grep -r ~`；勿用 shell cat/cp 绕过 fs。
-- 升级/同步远端：读配置取 host/port 后优先 `fawai_shovels/shell/rsync-ssh-deploy.sh` 或 `ssh-run-with-pass.sh`（口令仅 env）；可在 work_root 临时写脚本再跑；禁止无口令 BatchMode ssh 空探针当主路径。
+- 升级/同步远端：读配置取 host/port 后先 `shovel_search`，优先 `fawai_shovels/shell/rsync-ssh-deploy.sh` 或 `ssh-run-with-pass.sh`（口令仅 env）；可在 work_root 临时写脚本再跑；禁止无口令 BatchMode ssh 空探针当主路径。
 - 用户说不在电脑边/远程操作：禁止要求粘贴文件或拷进工作区；读不到则 failed 并在 thought 给出可复制命令。
-- 压缩观察须 fs_read 落盘全文再总结；问询收尾禁过程元叙述与过薄盘点。
-- 默认尽最大努力；仅猜错代价高（不可逆写删/提交/外发/花钱/互斥路线）才 status=need_input；有选项须带 options≥2，勿改开放长答。
-{coding_extra}{image_extra}{gui_rule}格式：
-{{"thought":"≤40字","title":"≤16字","status":"continue|success|failed|need_input","done":false,"observe_kinds":["obs_fs"],"doc_refs":[],"architecture_skip_reason":"","options":[{{"id":"a","label":"选项A"}}],"actions":[{{"kind":"{kinds}","args":{{}},"needs_foreground":false,"write_resources":[]}}]}}
-- continue 时 done=false；success/failed 通常 done=true；need_input 时 done=false、actions 空。尚未命名则必须给 title。"""
+- 问询收尾禁过程元叙述与过薄盘点；材料不足则 failed/need_input。
+{path_ledger}- 默认尽最大努力；仅猜错代价高（不可逆写删/提交/外发/花钱/互斥路线）才 status=need_input；有选项须带 options≥2，勿改开放长答。
+{delegate_rule}{coding_extra}{image_extra}{gui_rule}格式：
+{{"thought":"≤40字","title":"≤16字","step_label":"≤16字本步意图","status":"continue|success|failed|need_input","done":false,"observe_kinds":["obs_fs"],"observe_args":{{"obs_screen":{{"screen_target":"frontmost"}}}},"doc_refs":[],"architecture_skip_reason":"","options":[{{"id":"a","label":"选项A"}}],"delegate":null,"actions":[{{"kind":"{kinds}","args":{{}},"needs_foreground":false,"write_resources":[]}}]}}
+- continue 时 done=false；success/failed 通常 done=true；need_input 时 done=false、actions 空。尚未命名则必须给 title。每步必须给 step_label（本步在办什么，≠ title）。"""
 
     return f"""你是操作分身的执行大脑。根据用户目标与当前观察，规划下一步控制动作，并点选**下一步**环境观察方式。
 {profile_line}须根据下列运行平台事实选型（自动探测，勿臆造另一套 OS）：
@@ -160,29 +211,36 @@ def _system_prompt(
 - 未走原生 tool_calls 时：仅输出一个 JSON 对象，不要 markdown 代码块或其它前后缀文字。
 {thought_rule}- shell 动作的命令字段必须是 args.cmd（字符串）。也兼容 args.command，但请优先写 cmd。探测多 CLI：`command -v a b c || true`（which 缺一个即非零）。
 - hotkey：args.keys 为字符串列表，如 ["cmd","tab"]；禁止只写 {{"key":"cmd+tab"}}（虽兼容，但请用 keys 列表）。
-- fs_write/fs_replace/fs_patch：args.path + 相应字段；write_resources 必须列路径；replace/patch 的 old 必须与文件原文完全一致（先定向 fs_read）。
-- **定位文件（高带宽）**：开场优先 `explore_search` 或 `fs_grep`（**必须**带有意义的 pattern，推荐 context_before/after），再 `fs_glob`/`code_symbols`。`fs_glob` 支持 `**` 与 `{{html,js}}`。禁止无 pattern/无 offset 的整文件盲 `fs_read` 当定位手段。若连续空结果或需要目录树概览，再用 shell（`ls`/`find`），并遵守上方平台命令口径（macOS 勿用 `find -printf`）。
-- code_symbols / code_map / explore_search：改代码前先定位（多语言符号索引；explore 每条 query 自动 grep+symbols）；fs_grep 参数名是 **pattern**（不要写 query）；可带 context_before/after。索引可疑时用 code_index_refresh。
-- fs_read：args.path 必填；按行定向读用 **offset**（1-based 起始行）+ **limit**；也兼容 start_line/end_line；文件头省略 offset 或写 1（勿依赖 0）。已有 path:line 时只准小窗核对，禁止整段重读。
-- fs_grep / explore_search 命中只在工具结果观察里；禁止臆造 `grep_result_*.txt` 再 fs_read_many。hits 已压缩或命中过宽时：收窄 pattern / 按行号读，禁止同范围再宽搜。
-- 收到【定位预算】或【宽检索降质】时必须改写或收窄，不得继续同 path 空转确认。
+- fs_write/fs_replace/fs_patch：args.path + 相应字段；write_resources 必须列路径；replace/patch 的 old 必须与文件原文完全一致——只能从最近 fs_read/grep 命中行或失败回执「原文小窗」逐字复制，禁止按 goal 意图脑补闸门/文案（【补丁锚点未接地】）。
+- **定位文件（条件）**：目标/历史已给明确 path → 定向 `fs_read`/`fs_patch`，**不必**先探仓。仅不知文件时：**优先** `fs_grep`（**pattern**）与 `fs_glob`（须收窄 `path`/`glob`）；`explore_search` 暂时降权，仅多关键词并行时用（默认只 grep，要符号加 `include_symbols=true`）。再 `code_symbols`。`fs_glob` 支持 `**` 与 `{{html,js}}`；仓外目录须传 `path=`。禁止整文件盲 `fs_read`。连续空结果再用 shell `ls`/`find`（macOS 勿用 `find -printf`）。
+- code_symbols / code_map：改代码前看结构。explore_search：默认只并行 grep；`include_symbols`/`symbols_query` 才走索引。fs_grep 参数名是 **pattern**。索引可疑时用 code_index_refresh。
+- **脚本铲子生命周期**：造临时脚本/临时代码前先 `shovel_search`（可兼 `skill_search`）；命中则 `shell` 调已有铲 `invoke`；无命中再临时脚本。临时脚本须参数/env，禁止明文口令与未公开绝对路径；成功后自评三维分，通用性≥3 升 `fawai_shovels`（文首 meta+台账）或 `skill_write`，≤2 仅本案。
+- **Python 扩展**：临时脚本/算数/装包用 `py_write`（path+content，相对会话根）→ 可选 `py_pip`（packages）→ `py_run`（script|code|module 三选一）；stdout/stderr 落盘 `runs/`；改产品源码仍 `fs_patch`，禁止用 py_* 改仓内业务文件；不做 pdb。
+- fs_read：args.path 必填；按行定向读用 **offset**（1-based 起始行）+ **limit**；也兼容 start_line/end_line；文件头省略 offset 或写 1（勿依赖 0）。已有 path:line 时只准小窗核对，禁止整段重读。**故意**再次同窗读（如刚 fs_patch 后验收）须在该动作 args 设 `allow_repeat=true`（或本步 JSON 顶层同名字段），否则步骤重复守卫会按同构步裁决；无新意图勿滥标。
+- fs_grep / explore_search 命中只在工具结果观察里（默认全文回灌）；禁止臆造 `grep_result_*.txt` 再 fs_read_many。用适度 `head_limit`（默认宜 ≤40，硬顶 100）与 `context_before/after`（≤5）；达 head_limit 可自行加大或收窄后再搜翻页，无宽检索降质闸。
+- 多轮分片 `fs_read` 取证允许，证据够再改写，读不到目标材料则 failed/need_input。
+- **过程相位（必要）**：开场与重规划按相位推进——①定位（path 或 path:line）→ ②取证（按行号小窗 `fs_read` 或读清 hits）→ ③改写（`fs_patch`/`fs_replace`/`fs_write`）或面向用户作答 → ④验收对照 goal。宽搜、整文件盲读属**可选**，不得替代②；**不因只读步数强制 mutate**。
 - skill_write：args 含 id/title/when_to_use/steps（及可选 tags/source）；skill_search 用 args.query。
 - 个人知识库：可先看上方【个人知识库】摘要；不足再用 lore_search / lore_get；显式写入用 lore_set / lore_note_upsert（旁路也会自动记 P0 路径）。
-{coding_extra}{image_extra}{gui_rule}- **观察选取**：本步 actions 只能依据「当前观察」与历史里的「执行结果（工具结果观察）」；不要假装看到未观察的 GUI。
-- 步首可能**无截屏图**，但观察摘要通常含「前台窗摘要」（当前前台 App/窗口标题）。目标依赖某 App 可见 UI 时，须先对照此前台态；需要画面证据再在 observe_kinds 点选 obs_screen，禁止无画面却断言屏幕上的具体内容。
-- observe_kinds：为**下一步**环境观察点选方式，必须从当前观察 meta.observe_candidates（或提示中的候选）里选；可选 obs_fs / obs_screen / none（以候选为准）。查代码/改产品能力优先 obs_fs 或 none；GUI 目标也禁止无必要默选截屏——先看前台摘要，再决定是否截屏。
+{delegate_rule}{coding_extra}{image_extra}{gui_rule}- **观察选取**：本步 actions 只能依据「当前观察」与历史里的「执行结果（工具结果观察）」；不要假装看到未观察的 GUI。
+- 步首可能**无截屏图**，但观察摘要通常含「前台窗摘要」与「显示器清单」。目标依赖某 App 可见 UI 时，须先对照此前台态；需要画面证据再在 observe_kinds 点选 obs_screen，禁止无画面却断言屏幕上的具体内容。
+- observe_kinds：为**下一步**环境观察点选方式，必须从当前观察 meta.observe_candidates（或提示中的候选）里选；可选 obs_fs / obs_ax / obs_screen / none（以候选为准）。查代码/改产品能力优先 obs_fs 或 none；GUI 优先 obs_ax（控件 ref），需要画面再 obs_screen；禁止无必要默选截屏——先看前台摘要。
+- **多屏 / 全屏 Space**：选 obs_screen 时填写 observe_args.obs_screen.screen_target（frontmost 默认 / main / index:N / all）；外接屏或未见目标时换屏或 app_focus（args.app），勿写死只截主屏；禁止一次扫完全部屏。
+- click：x/y 相对本张截图左上角（meta.origin_x/y）；须落在画面尺寸内；不要直接填虚拟桌面负坐标除非 coord_space=global。
+- 输入框已有待发文本：优先 press/hotkey 提交并截屏确认，避免反复点发送按钮坐标。
 - 工具输出由闭环自动做工具结果观察（含 fs_grep 的 path:line hits）；你根据摘要继续规划。已有命中行时按行号附近定向 fs_read / fs_patch，禁止无视 hits 去盲扫整文件。
-- 执行结果会在下一轮以「执行结果（工具结果观察）」返回；若上一轮失败，会先有【执行反省】裁决（retry/alternate/abort）。
-- 收到【执行反省】/【步骤重复】时必须遵守其 constraints；禁止无视裁决原样重试同一指纹动作；alternate 须换工具或换命令结构；无法换道则 status=failed。不得把「按 grep 行号附近定向 fs_read」当成盲目无效。
+- 执行结果会在下一轮以「执行结果（工具结果观察）」返回；成功时可能附带【观察反省】（进度/hints 软建议）；若上一轮失败，会先有【执行反省】裁决（retry/alternate/abort）。
+- 收到【执行反省】/【步骤重复】时必须遵守其 constraints；【观察反省】hints 仅供参考，与硬约束冲突时以执行反省/步骤重复为准。禁止无视裁决原样重试同一指纹动作；alternate 须换工具或换命令结构；无法换道则 status=failed。不得把「按 grep 行号附近定向 fs_read」当成盲目无效。
 - **面向用户的最终回答写在 success/failed 那一轮的 thought 里**（会话层会把该 thought 发给用户）；禁止把原始 stdout/top 全文当作结论；禁止在 thought 里写明文口令。
-- **问询/状态/查找/配置盘点收尾**：thought 须直接写出可验收事实（状态、数字、是否完成、边界、来源路径）；禁止只写「已获取/已汇总/已找到并结束」等过程元叙述。查硬件/配置时用短结论 + 分项列表或表，覆盖证据里已有的 GPU/CPU/内存/磁盘/系统/路径等维度，禁止只报一两项交差；工具输出被压缩时须先 fs_read observe 落盘全文（优先相对 path）再总结，禁止 shell cat 代替。材料不足则 failed 或 need_input，说明缺什么。
+- **问询/状态/查找/配置盘点收尾**：thought 须直接写出可验收事实（状态、数字、是否完成、边界、来源路径）；禁止只写「已获取/已汇总/已找到并结束」等过程元叙述。查硬件/配置时用短结论 + 分项列表或表，覆盖证据里已有的 GPU/CPU/内存/磁盘/系统/路径等维度，禁止只报一两项交差。材料不足则 failed 或 need_input，说明缺什么。
 - **查找账号/地址/配置落点**：优先 lore_search / 规则已点名文档，再用 fs_read 绝对路径（FAWAI_READ_ROOTS 默认 `/`）；禁止开场对整个家目录 `grep -r ~`。禁止 shell cat/cp 绕过 fs。远端可用 shell ssh / rsync 部署 shovel（凭据从已授权可读文件取进 env，勿把明文口令写进 thought）。
 - **升级/部署到远端**：定位部署说明与 SSH 落点后，优先在 work_root 调用已有 `rsync-ssh-deploy.sh` / `ssh-run-with-pass.sh`，或临时 `fs_write` 脚本再 shell 执行；禁止只做 BatchMode 公钥探针就 abort。
 - **执行中澄清**：默认尽最大努力完成；可查可推断的不要问。用户表示远程/不在电脑边时，禁止 options 要求「粘贴配置/拷进工作区」。仅当继续猜会有明显坏结果（不可逆写/删、提交、外发、花钱、互斥执行路线必选一）时用 status=need_input；thought 为给用户的问句；done=false；actions 必须为空数组。若已有明确互斥选项，必须填 options（≥2 的 id+label），引导用户选一项，禁止改成开放式「请描述」。低风险缺省可合理假设并继续。
-格式：
-{{"thought":"简短推理或给用户的结论","title":"≤16字主题短名","status":"continue|success|failed|need_input","done":false,"observe_kinds":["obs_fs"],"doc_refs":["doc/功能/控制/说明.md"],"architecture_skip_reason":"","options":[{{"id":"a","label":"选项A"}}],"actions":[{{"kind":"{kinds}","args":{{}},"needs_foreground":false,"write_resources":[]}}]}}
+{path_ledger}格式：
+{{"thought":"简短推理或给用户的结论","title":"≤16字主题短名","step_label":"≤16字本步业务意图","status":"continue|success|failed|need_input","done":false,"observe_kinds":["obs_fs"],"observe_args":{{"obs_screen":{{"screen_target":"frontmost"}}}},"doc_refs":["doc/功能/控制/说明.md"],"architecture_skip_reason":"","options":[{{"id":"a","label":"选项A"}}],"delegate":null,"actions":[{{"kind":"{kinds}","args":{{}},"needs_foreground":false,"write_resources":[]}}]}}
 - status 为 success 或 failed 时通常 done 为 true；continue / need_input 时 done 为 false。
 - **title**：与目标主题强相关的短名（中文优先，≤16 字，不要任务 id、不要整句复述 goal）；若观察/历史提示「尚未命名」则本轮必须给出；已有正式标题时可省略。
+- **step_label**：本步业务意图短名（中文优先，≤16 字），写给会话步骤簇头看，如「查找转换脚本」「转 VOC XML」；禁止写 phase 名（规划中/观察反省）或工具名堆砌；每轮 continue/success/failed/need_input 都应给出；与 title（整条任务名）分开。
 - 若本步只跑查询、尚需根据结果回答用户：本步 status=continue、done=false；下一轮再 status=success、done=true、actions 为空，并在 thought 里用自然语言直接回答用户（例如「内存几乎用满，负载偏高」），不要粘贴命令原文，也不要只写「已查看并汇总」。"""
 
 _VALID_STATUS = frozenset({"continue", "success", "failed", "need_input"})
@@ -191,8 +249,17 @@ _MUTATE_PREFER_REPLAN_HINT = (
     "必须给出 fs_patch/fs_replace/fs_write（或 status=need_input/failed）。"
 )
 _VERIFY_READ_REPLAN_HINT = (
-    "【反省开读】允许对本轮失败 path 定向 fs_read/fs_grep，核对 exact old 后立即 "
-    "fs_patch/fs_replace；禁止无新问题盲读扩搜，也禁止空 actions 直接 status=failed。"
+    "【反省开读】允许对本轮失败 path 定向小窗 fs_read（limit≤40，禁止文件头大窗），"
+    "核对 exact old 后立即 fs_patch/fs_replace；若 history 已附原文小窗可直接 patch；"
+    "禁止无新问题盲读扩搜，也禁止空 actions 直接 status=failed。"
+)
+_VERIFY_MUST_PATCH_REPLAN_HINT = (
+    "【开读须改写】本步禁止再 fs_read/fs_grep/fs_glob；"
+    "必须 fs_patch/fs_replace（old 逐字来自原文小窗）或 status=failed/need_input。"
+)
+_VERIFY_BLIND_HEAD_REPLAN_HINT = (
+    "【反省开读】禁止文件头大窗盲读（offset≤1 且 limit≥80）。"
+    "请用失败回执原文小窗直接 fs_patch，或只读命中行附近 limit≤40 后立即 patch。"
 )
 _REPLAN_HINT = (
     "上一次计划未通过能力/守规校验，请严格按能力清单与守规约束重规划。"
@@ -230,21 +297,121 @@ def _strip_markdown_fences(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _try_loads_dict(text: str) -> dict[str, Any] | None:
+    try:
+        obj = json.loads(text)
+        return obj if isinstance(obj, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
+def _strip_dangling_json_tail(text: str) -> str:
+    """去掉截断导致的半截 key / 无值字段，便于再闭合括号。"""
+    s = text.rstrip()
+    # ,"partial_key   或 ,"partial_key"
+    s2 = re.sub(r",\s*\"[^\"]*\"?\s*$", "", s)
+    if s2 != s:
+        return s2.rstrip()
+    # ,"key":
+    s2 = re.sub(r",\s*\"[^\"]*\"\s*:\s*$", "", s)
+    if s2 != s:
+        return s2.rstrip()
+    # ,"key": "partial
+    s2 = re.sub(r",\s*\"[^\"]*\"\s*:\s*\"[^\"]*$", "", s)
+    if s2 != s:
+        return s2.rstrip()
+    # ,"key": 123.  / true / null 半截数字较罕见，先不动
+    # { "partial_key  （无前置逗号）
+    s2 = re.sub(r"\{\s*\"[^\"]*\"?\s*$", "{", s)
+    if s2 != s:
+        return s2.rstrip()
+    return s
+
+
+def _scan_json_frame(text: str) -> tuple[bool, list[str]]:
+    """返回 (是否仍在字符串内, 待闭合括号栈)。"""
+    in_str = False
+    escape = False
+    stack: list[str] = []
+    for ch in text:
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            stack.append("}")
+        elif ch == "[":
+            stack.append("]")
+        elif ch in "}]":
+            if stack and stack[-1] == ch:
+                stack.pop()
+    return in_str, stack
+
+
+def _close_truncated_json(text: str) -> str:
+    """补全未闭合的引号与括号（应对模型输出半截 JSON）。"""
+    out = text
+    in_str, stack = _scan_json_frame(out)
+    if in_str:
+        out += '"'
+    out = _strip_dangling_json_tail(out)
+    in_str, stack = _scan_json_frame(out)
+    if in_str:
+        out += '"'
+        out = _strip_dangling_json_tail(out)
+        _, stack = _scan_json_frame(out)
+    out += "".join(reversed(stack))
+    return out
+
+
+def _parse_repaired_json_object(text: str) -> dict[str, Any] | None:
+    """从半截 / 尾部损坏的 JSON 抢救可解析对象。"""
+    start = text.find("{")
+    if start < 0:
+        return None
+    fragment = text[start:]
+    # 逐步从尾部缩短，优先保留已写完的字段
+    cuts = [fragment]
+    for idx in range(len(fragment) - 1, max(len(fragment) // 3, 0), -1):
+        ch = fragment[idx]
+        if ch in ',}"\'':
+            cuts.append(fragment[: idx + 1])
+            if len(cuts) >= 24:
+                break
+    seen: set[str] = set()
+    for cut in cuts:
+        for candidate in (
+            cut,
+            _close_truncated_json(cut),
+            _close_truncated_json(_strip_dangling_json_tail(cut)),
+        ):
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            obj = _try_loads_dict(candidate)
+            if obj is not None:
+                return obj
+    return None
+
+
 def _parse_json_object(text: str) -> dict[str, Any] | None:
     cleaned = _strip_markdown_fences(text)
-    try:
-        obj = json.loads(cleaned)
-        return obj if isinstance(obj, dict) else None
-    except json.JSONDecodeError:
-        pass
+    obj = _try_loads_dict(cleaned)
+    if obj is not None:
+        return obj
     match = re.search(r"\{[\s\S]*\}", cleaned)
-    if not match:
-        return None
-    try:
-        obj = json.loads(match.group(0))
-        return obj if isinstance(obj, dict) else None
-    except json.JSONDecodeError:
-        return None
+    if match:
+        obj = _try_loads_dict(match.group(0))
+        if obj is not None:
+            return obj
+    # 半截 JSON（无闭合 } / 截在 key 中）→ 修补后再解析
+    return _parse_repaired_json_object(cleaned)
 
 
 def _observation_user_text(goal: str, observation: Observation) -> str:
@@ -267,6 +434,26 @@ def _observation_user_text(goal: str, observation: Observation) -> str:
             "下一步环境观察候选 observe_candidates（observe_kinds 必须从此选）："
             + ", ".join(str(x) for x in cands)
         )
+    if meta.get("origin_x") is not None or meta.get("origin_y") is not None:
+        parts.append(
+            f"截图坐标原点（图内→全局）：origin=({meta.get('origin_x')},{meta.get('origin_y')})；"
+            f"screen_target={meta.get('screen_target')}"
+        )
+    displays = meta.get("displays")
+    if isinstance(displays, list) and displays:
+        slim_disp = [
+            {
+                "index": d.get("index"),
+                "is_main": d.get("is_main"),
+                "bounds": d.get("bounds"),
+            }
+            for d in displays
+            if isinstance(d, dict)
+        ]
+        parts.append(
+            "显示器 displays（选 screen_target 用）："
+            + json.dumps(slim_disp, ensure_ascii=False)
+        )
     # 勿把大块内部 meta（含截图路径列表）整包塞进提示；只保留规划相关键
     slim = {
         k: meta[k]
@@ -278,6 +465,9 @@ def _observation_user_text(goal: str, observation: Observation) -> str:
             "need_task_title",
             "task_title",
             "title_source",
+            "screen_target",
+            "origin_x",
+            "origin_y",
         )
         if k in meta
     }
@@ -384,8 +574,38 @@ def _normalize_observe_kinds(raw: Any) -> list[str]:
     return out
 
 
+def _normalize_observe_args(raw: Any) -> dict[str, Any]:
+    """规范化 observe_args；兼容顶栏 screen_target。空输入返回 {}。"""
+    from fawai_avatar.observe.displays import normalize_screen_target
+
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    out: dict[str, Any] = dict(raw)
+    screen = out.get("obs_screen")
+    target = None
+    if isinstance(screen, dict):
+        target = screen.get("screen_target")
+        screen = dict(screen)
+    elif isinstance(screen, str):
+        target = screen
+        screen = {}
+    else:
+        screen = {}
+    if target is None and out.get("screen_target") is not None:
+        target = out.get("screen_target")
+    if target is not None or "obs_screen" in out or "screen_target" in out:
+        screen["screen_target"] = normalize_screen_target(target)
+        out["obs_screen"] = screen
+    return out
+
+
 def _plan_from_payload(data: dict[str, Any]) -> Plan:
-    from fawai_avatar.task.title import title_from_plan_payload
+    from fawai_avatar.brain.delegate import parse_delegate
+    from fawai_avatar.task.title import (
+        resolve_step_label,
+        step_label_from_plan_payload,
+        title_from_plan_payload,
+    )
 
     thought = str(data.get("thought") or "")
     status = str(data.get("status") or "continue")
@@ -403,6 +623,18 @@ def _plan_from_payload(data: dict[str, Any]) -> Plan:
     observe_kinds = _normalize_observe_kinds(
         data.get("observe_kinds") or data.get("observe") or data.get("observe_methods")
     )
+    observe_args = _normalize_observe_args(data.get("observe_args"))
+    # 若点了截屏但未写 observe_args，仍带默认 frontmost，便于闭环传参
+    if "obs_screen" in observe_kinds and "obs_screen" not in observe_args:
+        observe_args = _normalize_observe_args({"obs_screen": {}})
+    spec = parse_delegate(data.get("delegate"))
+    # 委派段：本步由快模型执行，主脑 actions 应为空
+    if spec is not None:
+        actions = []
+        if status == "need_input":
+            status = "continue"
+            done = False
+    explicit_label = step_label_from_plan_payload(data)
     return Plan(
         thought=thought,
         actions=actions,
@@ -410,7 +642,14 @@ def _plan_from_payload(data: dict[str, Any]) -> Plan:
         status=status,
         raw=data,
         observe_kinds=observe_kinds,
+        observe_args=observe_args,
         title=title_from_plan_payload(data),
+        step_label=resolve_step_label(
+            step_label=explicit_label,
+            thought=thought,
+            actions=actions,
+        ),
+        delegate=spec.to_dict() if spec else None,
     )
 
 
@@ -419,7 +658,7 @@ def _failed_plan(thought: str) -> Plan:
 
 
 def _is_format_failure(plan: Plan) -> bool:
-    """LLM 未产出可解析 JSON / 空内容时的失败（可重试一次）。"""
+    """LLM 未产出可解析 JSON / 空内容时的失败（可重试 / 软降级）。"""
     if plan.status != "failed" or plan.actions:
         return False
     thought = (plan.thought or "").strip()
@@ -436,6 +675,36 @@ def _format_failure_prose(plan: Plan) -> str:
     return thought
 
 
+def _soft_format_continue(plan: Plan) -> Plan:
+    """格式重规划仍失败：降为 continue，禁止以 JSON 解析失败整任务 failed。"""
+    raw = dict(plan.raw or {})
+    raw["format_soft_fallback"] = True
+    raw["format_fail_excerpt"] = (plan.thought or "")[:400]
+    return Plan(
+        thought="规划输出格式异常，本步跳过并重试（未中断任务）",
+        actions=[],
+        done=False,
+        status="continue",
+        raw=raw,
+        observe_kinds=[],
+        observe_args={},
+        title=plan.title or "",
+        step_label=plan.step_label or "规划格式重试",
+        delegate=None,
+    )
+
+
+def format_soft_fallback_history_message(plan: Plan) -> str | None:
+    """闭环空动作时：若为本轮格式软降级，注入格式重试提示。"""
+    raw = plan.raw if isinstance(plan.raw, dict) else {}
+    if not raw.get("format_soft_fallback"):
+        return None
+    excerpt = str(raw.get("format_fail_excerpt") or "").strip()
+    if excerpt:
+        return f"{_JSON_REPLAN_HINT}\n上一轮无法解析摘录：{excerpt[:300]}"
+    return _JSON_REPLAN_HINT
+
+
 def _attach_llm_meta(
     plan: Plan,
     *,
@@ -443,7 +712,7 @@ def _attach_llm_meta(
     elapsed_ms: int,
     prompt_profile: str | None = None,
 ) -> Plan:
-    """把本轮 LLM usage / 耗时 / 模型写入 plan.raw，供时间线展示。"""
+    """把本轮 LLM usage / 耗时 / 模型 / 思考写入 plan.raw，供时间线展示。"""
     raw = dict(plan.raw or {})
     usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
     if usage:
@@ -453,10 +722,17 @@ def _attach_llm_meta(
         raw["model"] = result.get("model")
     if result.get("route"):
         raw["route"] = result.get("route")
+    thinking = result.get("thinking")
+    if isinstance(thinking, dict) and thinking:
+        raw["thinking"] = thinking
     if prompt_profile:
         raw["prompt_profile"] = prompt_profile
     if plan.observe_kinds:
         raw["observe_kinds"] = list(plan.observe_kinds)
+    if plan.observe_args:
+        raw["observe_args"] = dict(plan.observe_args)
+    if plan.delegate:
+        raw["delegate"] = dict(plan.delegate)
     return Plan(
         thought=plan.thought,
         actions=list(plan.actions),
@@ -464,7 +740,10 @@ def _attach_llm_meta(
         status=plan.status,
         raw=raw,
         observe_kinds=list(plan.observe_kinds),
+        observe_args=dict(plan.observe_args or {}),
         title=plan.title or "",
+        step_label=plan.step_label or "",
+        delegate=dict(plan.delegate) if plan.delegate else None,
     )
 
 
@@ -478,6 +757,8 @@ class Brain:
         observation: Observation,
         *,
         history: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        planner_role: str = "main",
     ) -> Plan:
         if _mock_enabled():
             return mock_plan_for_goal(goal, history=history)
@@ -485,17 +766,50 @@ class Brain:
         # 规划用压缩窗；原 history 仍由闭环追加完整工具结果
         base_history = compress_history_for_plan(list(history or []))
         mutate_prefer = history_requests_mutate_prefer(base_history)
-        verify_read = history_requests_verify_read(base_history)
+        verify_must_patch = history_requests_verify_must_patch(base_history)
+        # 开读须改写时不再放行只读；普通反省开读仍可定向小窗
+        verify_read = (
+            history_requests_verify_read(base_history) and not verify_must_patch
+        )
+        # 快模型段：禁止再委派；不走「改写优先」闸（由主脑验收）
+        if planner_role == "fast":
+            mutate_prefer = False
+            verify_read = False
         plan = self._plan_once(
             goal,
             observation,
             history=base_history,
             mutate_prefer=mutate_prefer,
             verify_read=verify_read,
+            model=model,
+            planner_role=planner_role,
         )
 
+        # 开读轮禁止文件头大窗盲读 → 拒一次
+        if (
+            verify_read
+            and plan.status == "continue"
+            and is_blind_file_head_read(plan.actions)
+        ):
+            reject_history = base_history + [
+                {
+                    "role": "assistant",
+                    "content": (plan.thought or "blind-head-read")[:800],
+                },
+                {"role": "user", "content": _VERIFY_BLIND_HEAD_REPLAN_HINT},
+            ]
+            plan = self._plan_once(
+                goal,
+                observation,
+                history=reject_history,
+                mutate_prefer=True,
+                verify_read=True,
+                model=model,
+                planner_role=planner_role,
+            )
+
         # 闸门/强制改写后仍产出只读 → 再拒一次，收紧工具面
-        # 反省开读轮：定向 fs_read/fs_grep 允许，不拒
+        # 反省开读轮：定向小窗 fs_read/fs_grep 允许，不拒；开读须改写则拒
         if (
             mutate_prefer
             and plan.status == "continue"
@@ -507,9 +821,13 @@ class Brain:
                 {
                     "role": "user",
                     "content": (
-                        _VERIFY_READ_REPLAN_HINT
-                        if verify_read
-                        else _MUTATE_PREFER_REPLAN_HINT
+                        _VERIFY_MUST_PATCH_REPLAN_HINT
+                        if verify_must_patch
+                        else (
+                            _VERIFY_READ_REPLAN_HINT
+                            if verify_read
+                            else _MUTATE_PREFER_REPLAN_HINT
+                        )
                     ),
                 },
             ]
@@ -518,10 +836,12 @@ class Brain:
                 observation,
                 history=reject_history,
                 mutate_prefer=True,
-                verify_read=verify_read,
+                verify_read=verify_read and not verify_must_patch,
+                model=model,
+                planner_role=planner_role,
             )
 
-        # 模型偶发输出自然语言而非 JSON → 附加格式约束重规划 1 次（与能力校验同构）
+        # 模型偶发输出自然语言/半截 JSON → 附加格式约束重规划 1 次；仍失败则软降级 continue
         if _is_format_failure(plan):
             prose = _format_failure_prose(plan)
             format_history = base_history + [
@@ -534,9 +854,17 @@ class Brain:
                 history=format_history,
                 mutate_prefer=mutate_prefer,
                 verify_read=verify_read,
+                model=model,
+                planner_role=planner_role,
             )
             if _is_format_failure(plan):
-                return plan
+                return _soft_format_continue(plan)
+
+        # 快模型禁止再委派
+        if planner_role == "fast" and plan.delegate:
+            from fawai_avatar.brain.delegate import with_delegate
+
+            plan = with_delegate(plan, None)
 
         violation = validate_plan(goal, plan)
         if violation is None:
@@ -564,6 +892,8 @@ class Brain:
             force_json=arch_fail,
             mutate_prefer=False if arch_fail else mutate_prefer,
             verify_read=False if arch_fail else verify_read,
+            model=model,
+            planner_role=planner_role,
         )
         # JSON 重规划仍漏 doc_refs 时：按分层路径自动补默认声明（与原生通道同口径）
         if arch_fail:
@@ -617,6 +947,25 @@ class Brain:
             llm=None if _mock_enabled() else self.llm,
         )
 
+    def obs_reflect(
+        self,
+        goal: str,
+        actions: list[Action],
+        results: list[ExecResult],
+        *,
+        tool_feedback: str = "",
+        data_dir: str | None = None,
+    ) -> ObsReflection:
+        """工具结果成功后的观察反省：进度小结 + 下一规划软建议。"""
+        return run_obs_reflect(
+            goal,
+            actions,
+            results,
+            tool_feedback=tool_feedback,
+            data_dir=data_dir,
+            llm=None if _mock_enabled() else self.llm,
+        )
+
     def stagnation(
         self,
         goal: str,
@@ -626,8 +975,10 @@ class Brain:
         fingerprint: str,
         hit_count: int,
         history: list[dict[str, Any]] | None = None,
+        prior_judged: bool = False,
+        locate_anchors: list[str] | None = None,
     ) -> Reflection:
-        """成功路径步骤重复：continue / alternate / abort。"""
+        """成功路径步骤重复：continue / alternate / abort（代码不硬止损）。"""
         return run_stagnation(
             goal,
             actions,
@@ -635,6 +986,8 @@ class Brain:
             fingerprint=fingerprint,
             hit_count=hit_count,
             history=history,
+            prior_judged=prior_judged,
+            locate_anchors=locate_anchors,
             llm=None if _mock_enabled() else self.llm,
         )
 
@@ -647,6 +1000,8 @@ class Brain:
         force_json: bool = False,
         mutate_prefer: bool = False,
         verify_read: bool = False,
+        model: str | None = None,
+        planner_role: str = "main",
     ) -> Plan:
         coding = looks_like_coding_goal(goal)
         profile = infer_prompt_profile(
@@ -658,6 +1013,7 @@ class Brain:
 
         # 前端改页可开原生工具；编码上下文仍只跟 profile.include_coding_context
         # 架构校验重规划时 force_json：禁用原生，便于顶层带 doc_refs
+        # 快模型段：强制 JSON（便于禁委派）；主脑原生仍可用
         native_eligible = coding or looks_like_fs_web_goal(goal)
         cfg = RuntimeConfig.from_env()
         use_native = bool(
@@ -665,24 +1021,26 @@ class Brain:
             and native_eligible
             and profile.id != "vision"
             and not force_json
+            and planner_role != "fast"
         )
         system = _system_prompt(
             coding=bool(profile.include_coding_context),
             goal=goal,
             profile=profile,
+            planner_role=planner_role,
         )
         if mutate_prefer and verify_read:
             system = (
                 system
-                + "\n【本轮反省开读】允许对失败 path 定向 fs_read/fs_grep/fs_glob 核对原文，"
-                "核对后必须立刻 fs_patch/fs_replace/fs_write；禁止无新问题盲读扩搜；"
-                "禁止空 actions 直接 status=failed。\n"
+                + "\n【本轮反省开读】允许对失败 path 至多一次定向小窗 fs_read（limit≤40），"
+                "或直接用 history 里原文小窗作 old；随后必须立刻 fs_patch/fs_replace/fs_write；"
+                "禁止文件头大窗盲读；禁止无新问题盲读扩搜；禁止空 actions 直接 status=failed。\n"
             )
         elif mutate_prefer:
             system = (
                 system
                 + "\n【本轮改写优先】禁止只读探索工具；必须 fs_patch/fs_replace/fs_write"
-                " 或 need_input/failed。已观察 path 直接改，勿再盲读。\n"
+                " 或 need_input/failed。已观察 path / 原文小窗直接改，勿再盲读。\n"
             )
         messages: list[dict[str, Any]] = [
             {
@@ -702,13 +1060,22 @@ class Brain:
 
         tools = (
             openai_tools_for_coding(
-                mutate_prefer=mutate_prefer, verify_read=verify_read
+                mutate_prefer=mutate_prefer,
+                verify_read=verify_read,
+                allow_delegate=planner_role == "main",
             )
             if use_native
             else None
         )
         t0 = time.perf_counter()
-        result = self.llm.chat(messages, tools=tools)
+        # 主脑开思考（可预算）；快模型段关思考——见 llm/thinking.py
+        thinking_role = "fast" if planner_role == "fast" else "main"
+        result = self.llm.chat(
+            messages,
+            tools=tools,
+            model=model,
+            thinking_role=thinking_role,
+        )
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
         meta_kw = {"prompt_profile": profile.id}
         if not result.get("ok"):

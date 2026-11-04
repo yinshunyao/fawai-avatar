@@ -48,6 +48,9 @@ _MUTATE_PREFER_TOOL_KINDS = frozenset(
         "fs_patch",
         "code_check",
         "shell_verify",
+        "py_write",
+        "py_pip",
+        "py_run",
         "diff_list",
         "diff_apply",
         "diff_reject",
@@ -76,8 +79,24 @@ _READ_PATH_KINDS = frozenset({"fs_read", "fs_read_many"})
 GATE_MARKER = "【探索进度闸门】"
 MUTATE_FORCE_MARKER = "【探索改写强制】"
 VERIFY_READ_MARKER = "【反省开读】"
+VERIFY_MUST_PATCH_MARKER = "【开读须改写】"
 LOCATE_BUDGET_MARKER = "【定位预算】"
+LOCATE_MUTATE_FORCE_MARKER = "【定位改写强制】"
 WIDE_GREP_MARKER = "【宽检索降质】"
+
+# 锚点质量：文档 / 演示 / 测试路径降权（通用后缀与目录模式，不绑具体业务文件）
+_DOC_NAME_PREFIXES = ("readme", "changelog", "license", "contributing", "authors")
+_LOW_PRIORITY_DIR_PARTS = (
+    "/demo_",
+    "/demos/",
+    "/examples/",
+    "/example/",
+    "/fixtures/",
+    "/testdata/",
+    "/__tests__/",
+    "/test/",
+    "/tests/",
+)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -91,33 +110,34 @@ def _env_int(name: str, default: int) -> int:
 
 
 def explore_only_gate_threshold(*, goal: str = "") -> int:
-    """连续只读探索多少步后开始注入硬约束；0=关闭。
+    """连续只读探索多少步后注入软提示；0=关闭（默认）。
 
-    默认 8；前端/页面类（fs_web）默认 5（可用 FAWAI_EXPLORE_ONLY_GATE 统一覆盖）。
+    多轮分片 fs_read 属正常取证，默认不因只读步数逼写。
+    仅显式 `FAWAI_EXPLORE_ONLY_GATE`>0 时注入软提示（不再按前端 goal 默认 5/8）。
     """
+    _ = goal  # 保留参数兼容；默认关后不再按 fs_web 收紧
     raw = (os.environ.get("FAWAI_EXPLORE_ONLY_GATE") or "").strip()
-    if raw:
-        try:
-            return max(0, int(raw))
-        except ValueError:
-            pass
-    if goal and looks_like_fs_web_goal(goal) and not looks_like_coding_goal(goal):
-        return 5
-    return 8
+    if not raw:
+        return 0
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 0
 
 
 def explore_only_abort_threshold(*, goal: str = "") -> int:
-    """连续只读达到此值则进入强制改写 / 最终 failed；默认 2×gate；gate=0 时关闭。"""
-    gate = explore_only_gate_threshold(goal=goal)
-    if gate <= 0:
-        return 0
+    """连续只读达此值则【探索改写强制】；默认关。
+
+    须显式 `FAWAI_EXPLORE_ONLY_ABORT`>0；未设置时即使 GATE>0 也不自动 2×GATE。
+    """
+    _ = goal
     raw = (os.environ.get("FAWAI_EXPLORE_ONLY_ABORT") or "").strip()
-    if raw:
-        try:
-            return max(0, int(raw))
-        except ValueError:
-            pass
-    return gate * 2
+    if not raw:
+        return 0
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 0
 
 
 def repeated_read_boost_threshold() -> int:
@@ -214,6 +234,24 @@ def goal_needs_explore_gate(goal: str) -> bool:
         or looks_like_file_goal(goal)
         or looks_like_fs_web_goal(goal)
     )
+
+
+def explore_progress_armed(
+    *,
+    goal: str,
+    locate_anchors: list[str] | None = None,
+    behavior_armed: bool = False,
+) -> bool:
+    """探索/定位进度是否应跟踪。
+
+    除 goal 启发式外：已有定位锚点，或本 run 已成功只读探索过（行为武装），
+    均启用——避免口语 goal 漏检导致有锚点仍无限只读。
+    """
+    if goal_needs_explore_gate(goal):
+        return True
+    if any(str(x or "").strip() for x in (locate_anchors or [])):
+        return True
+    return bool(behavior_armed)
 
 
 def is_explore_only_actions(actions: list[Action]) -> bool:
@@ -389,8 +427,15 @@ def update_explore_only_streak(
     results: list[ExecResult],
     read_path_counts: dict[str, int] | None = None,
     read_windows: dict[str, list[tuple[int, int]]] | None = None,
+    locate_anchors: list[str] | None = None,
+    behavior_armed: bool = False,
 ) -> int:
-    if write_set or not goal_needs_explore_gate(goal):
+    armed = explore_progress_armed(
+        goal=goal,
+        locate_anchors=locate_anchors,
+        behavior_armed=behavior_armed,
+    )
+    if write_set or not armed:
         return 0
     if is_explore_only_step(actions, results):
         nxt = int(streak) + 1
@@ -413,27 +458,22 @@ def format_explore_gate_message(
     abort_at: int,
     repeated_paths: list[str] | None = None,
 ) -> str:
+    """软提示：提效 / 读不到则 failed；默认产品路径不注入（GATE=0）。"""
     abort_hint = (
-        f"达到 {abort_at} 步将先强制改写一轮，仍无写入再 failed。"
+        f" 实验开关：达 {abort_at} 步将强制改写轮。"
         if abort_at > 0
-        else "请尽快进入改写相位。"
+        else " 默认不因只读步数强制 mutate。"
     )
     repeat_hint = ""
-    localized = bool(repeated_paths)
     if repeated_paths:
         shown = ", ".join(repeated_paths[:4])
         more = "…" if len(repeated_paths) > 4 else ""
-        repeat_hint = f" 已对同一 path 反复只读（{shown}{more}）。"
-    localized_hint = (
-        "已定位改点却未写入，禁止继续只读探索。"
-        if localized
-        else "证据不足也须 need_input/failed 说明缺什么，禁止无新问题盲读。"
-    )
+        repeat_hint = f" 已对同一 path 多次只读（{shown}{more}）。"
     return (
-        f"{GATE_MARKER}已连续 {streak} 步仅成功只读探索（阈值 {gate}），"
-        f"且尚未写入任何路径。{repeat_hint}{localized_hint}"
-        "下一步必须：fs_patch / fs_replace / fs_write"
-        "（或 status=need_input / failed 说明缺什么），禁止无新问题继续盲读。"
+        f"{GATE_MARKER}已连续 {streak} 步仅成功只读探索（软提示阈值 {gate}），"
+        f"且尚未写入。{repeat_hint}"
+        "多轮分片取证允许；优先提高读取效率（path:line 小窗、读 dump、收窄 pattern），"
+        "证据已够再 fs_patch/fs_replace；读不到目标材料则 status=failed/need_input。"
         f"{abort_hint}"
     )
 
@@ -445,18 +485,17 @@ def format_mutate_force_message(
     abort_at: int,
     repeated_paths: list[str] | None = None,
 ) -> str:
-    """中止阈值到达后、真正 failed 前的最后一轮改写机会。"""
+    """仅当显式开启 FAWAI_EXPLORE_ONLY_ABORT 时使用。"""
     paths = ""
     if repeated_paths:
         shown = ", ".join(repeated_paths[:4])
         more = "…" if len(repeated_paths) > 4 else ""
-        paths = f" 优先改这些已观察 path：{shown}{more}。"
+        paths = f" 已观察 path：{shown}{more}。"
     return (
-        f"{MUTATE_FORCE_MARKER}已连续 {streak} 步只读（闸门 {gate} / 中止 {abort_at}），"
-        f"这是 failed 前唯一强制改写轮。{paths}"
-        "本步禁止 fs_read / fs_grep / fs_glob / explore_*；"
-        "必须 fs_patch / fs_replace / fs_write（或 need_input / failed）。"
-        "若本轮仍只读成功，将强制 failed。"
+        f"{MUTATE_FORCE_MARKER}已连续 {streak} 步只读（闸门 {gate} / 强制 {abort_at}，实验开关已开）。"
+        f"{paths}"
+        "本步须 fs_patch / fs_replace / fs_write，或 need_input / failed 说明读不到的材料；"
+        "若本轮仍只读成功，将 failed。默认产品路径应关闭本强制。"
     )
 
 
@@ -501,12 +540,15 @@ def explore_gate_should_abort_after_force(
 
 
 def history_requests_mutate_prefer(history: list[dict[str, Any]] | None) -> bool:
-    """近期 history 含闸门注入或改写强制 → 规划侧收紧工具面。"""
+    """近期 history 含闸门注入或改写强制 → 规划侧收紧工具面。
+
+    已退役的【反省开读】/【开读须改写】标记不再驱动 mutate_prefer（易把找文件收成禁定位）。
+    """
     if not history:
         return False
     for msg in reversed(list(history)[-8:]):
         text = str(msg.get("content") or "")
-        if MUTATE_FORCE_MARKER in text:
+        if MUTATE_FORCE_MARKER in text or LOCATE_MUTATE_FORCE_MARKER in text:
             return True
         if LOCATE_BUDGET_MARKER in text and (
             "必须 fs_patch" in text or "下一步必须" in text
@@ -519,32 +561,123 @@ def history_requests_mutate_prefer(history: list[dict[str, Any]] | None) -> bool
     return False
 
 
-def history_requests_verify_read(history: list[dict[str, Any]] | None) -> bool:
-    """近 4 条含【反省开读】→ 写工具面临时放行定向 fs_read/fs_grep。
-
-    只看很近的窗，避免开读标记长期削弱探索闸门；若其间又出现改写强制则取消。
-    """
-    if not history:
-        return False
-    for msg in reversed(list(history)[-4:]):
-        text = str(msg.get("content") or "")
-        if VERIFY_READ_MARKER in text:
-            return True
-        if MUTATE_FORCE_MARKER in text:
-            return False
+def history_requests_verify_must_patch(history: list[dict[str, Any]] | None) -> bool:
+    """【开读须改写】硬闸已退役：恒为 False（保留符号供旧调用/单测）。"""
+    _ = history
     return False
 
 
-def format_verify_read_message(*, paths: list[str] | None = None) -> str:
+def history_requests_verify_read(history: list[dict[str, Any]] | None) -> bool:
+    """【反省开读】硬闸已退役：恒为 False（保留符号供旧调用/单测）。"""
+    _ = history
+    return False
+
+
+def extract_exact_old_windows(
+    results: list[ExecResult] | None,
+    *,
+    max_windows: int = 2,
+    max_chars: int = 800,
+) -> list[str]:
+    """从补丁失败 message 抽出可复制的「原文小窗」块，供开读提示内联。"""
+    out: list[str] = []
+    for result in results or []:
+        msg = str(getattr(result, "message", None) or "")
+        if "原文小窗" not in msg and "须逐字作 old" not in msg:
+            continue
+        idx = msg.find("原文小窗")
+        if idx < 0:
+            idx = msg.find("须逐字作 old")
+        if idx < 0:
+            continue
+        chunk = msg[idx:].strip()
+        if len(chunk) > max_chars:
+            chunk = chunk[: max_chars - 1] + "…"
+        if chunk and chunk not in out:
+            out.append(chunk)
+        if len(out) >= max(1, max_windows):
+            break
+    return out
+
+
+def is_blind_file_head_read(actions: list[Action] | None) -> bool:
+    """是否在已知改写失败后仍做文件头大窗盲读（offset≤1 且 limit 偏大）。"""
+    for action in actions or []:
+        kind = (action.kind or "").strip().lower()
+        if kind != "fs_read":
+            continue
+        args = action.args or {}
+        raw_off = args.get("offset")
+        if raw_off is None:
+            raw_off = args.get("start_line")
+        if raw_off is None:
+            raw_off = args.get("line")
+        try:
+            offset = int(raw_off) if raw_off is not None else 1
+        except (TypeError, ValueError):
+            offset = 1
+        if offset == 0:
+            offset = 1
+        if offset > 1:
+            continue
+        raw_lim = args.get("limit")
+        if raw_lim is None and args.get("end_line") is not None:
+            try:
+                end_line = int(args.get("end_line"))
+                raw_lim = max(0, end_line - offset + 1)
+            except (TypeError, ValueError):
+                raw_lim = 200
+        try:
+            limit = int(raw_lim) if raw_lim is not None else 200
+        except (TypeError, ValueError):
+            limit = 200
+        if limit >= 80:
+            return True
+    return False
+
+
+def format_verify_read_message(
+    *,
+    paths: list[str] | None = None,
+    exact_windows: list[str] | None = None,
+) -> str:
+    """文案保留供单测/历史对照；闭环不再注入（硬闸已退役）。"""
     path_hint = ""
     cleaned = [p for p in (paths or []) if str(p or "").strip()]
     if cleaned:
         shown = ", ".join(cleaned[:4])
         path_hint = f"优先核对：{shown}。"
+    windows = [w for w in (exact_windows or []) if str(w or "").strip()]
+    window_block = ""
+    if windows:
+        joined = "\n---\n".join(windows[:2])
+        window_block = (
+            f"\n已附失败回执原文小窗（可直接逐字作 old，无需再读文件头）：\n{joined}\n"
+        )
     return (
-        f"{VERIFY_READ_MARKER}上一轮改写失败，本轮允许定向 fs_read/fs_grep/fs_glob 核对原文，"
-        f"再立即 fs_patch/fs_replace；{path_hint}"
-        "禁止无新问题盲读扩搜；禁止因「工具面曾禁读」直接 status=failed。"
+        f"{VERIFY_READ_MARKER}（已退役硬闸，仅文案）上一轮改写失败时可定向小窗核对；"
+        f"{path_hint}"
+        "old/new 宜来自失败回执「原文小窗」或本轮小窗逐字复制；"
+        "仍允许 fs_glob/fs_grep 纠路径，禁止因标记禁定位。"
+        f"{window_block}"
+    )
+
+
+def format_verify_must_patch_message(
+    *,
+    paths: list[str] | None = None,
+    reason: str = "",
+) -> str:
+    """文案保留供单测/历史对照；闭环不再注入（硬闸已退役）。"""
+    path_hint = ""
+    cleaned = [p for p in (paths or []) if str(p or "").strip()]
+    if cleaned:
+        path_hint = f"目标 path：{', '.join(cleaned[:4])}。"
+    why = (reason or "").strip() or "开读后仍只读"
+    return (
+        f"{VERIFY_MUST_PATCH_MARKER}（已退役硬闸，仅文案）{why}。{path_hint}"
+        "不再禁止 fs_read/fs_grep/fs_glob；可继续定位或 patch，"
+        "或 status=failed/need_input。"
     )
 
 
@@ -560,13 +693,113 @@ def hot_repeated_paths(
 
 
 def locate_budget_threshold() -> int:
-    """已定位 path:line / 入口 path 后，允许再只读探索的步数；0=关。默认 3。"""
-    return _env_int("FAWAI_LOCATE_BUDGET_STEPS", 3)
+    """已定位后「只读步数注入」阈值；0=关（默认）。
+
+    分片/多轮小窗 fs_read 属正常取证，默认不因定位后步数逼写。
+    仅显式设 `FAWAI_LOCATE_BUDGET_STEPS`>0 时才注入软提示。
+    """
+    return _env_int("FAWAI_LOCATE_BUDGET_STEPS", 0)
+
+
+def locate_force_threshold(*, budget: int | None = None) -> int:
+    """定位后强制改写的绝对步数；默认关。
+
+    须显式设 `FAWAI_LOCATE_FORCE_STEPS`>0 才启用【定位改写强制】与随后 abort。
+    未设置时恒为 0（即使 budget>0 也不自动 budget+1），避免「读几轮就被逼 mutate」。
+    """
+    _ = budget  # 保留参数兼容调用方；强制阈值不再隐含绑定 budget+1
+    raw = (os.environ.get("FAWAI_LOCATE_FORCE_STEPS") or "").strip()
+    if not raw:
+        return 0
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 0
 
 
 def wide_grep_hit_threshold() -> int:
-    """单次检索命中数 ≥ 此值视为宽检索；0=关。默认 20。"""
-    return _env_int("FAWAI_WIDE_GREP_HITS", 20)
+    """目录 / 仓范围单次检索命中数 ≥ 此值视为宽检索；0=关。
+
+    默认 `0`：不做宽检索降质注入；体量靠工具 head_limit，由模型自行翻页。
+    """
+    return _env_int("FAWAI_WIDE_GREP_HITS", 0)
+
+
+def wide_grep_file_hit_threshold() -> int:
+    """单文件 path 上的命中阈值；0=沿用目录阈值。默认 0（降质总开关关时无意义）。"""
+    return _env_int("FAWAI_WIDE_GREP_FILE_HITS", 0)
+
+
+_FILE_PATH_SUFFIXES = frozenset(
+    {
+        ".py",
+        ".pyi",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".mjs",
+        ".cjs",
+        ".json",
+        ".md",
+        ".mdc",
+        ".html",
+        ".htm",
+        ".css",
+        ".scss",
+        ".less",
+        ".vue",
+        ".svelte",
+        ".go",
+        ".rs",
+        ".java",
+        ".kt",
+        ".swift",
+        ".rb",
+        ".php",
+        ".c",
+        ".cc",
+        ".cpp",
+        ".h",
+        ".hpp",
+        ".cs",
+        ".sql",
+        ".sh",
+        ".bash",
+        ".zsh",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".ini",
+        ".txt",
+        ".xml",
+    }
+)
+
+
+def looks_like_file_path(path: str) -> bool:
+    """path 是否像单文件（按后缀启发式，不依赖磁盘）。"""
+    raw = (path or "").strip().rstrip("/")
+    if not raw or raw in {".", "(repo)", "*"}:
+        return False
+    name = raw.rsplit("/", 1)[-1]
+    if "." not in name or name.startswith("."):
+        return False
+    dot = name.rfind(".")
+    return name[dot:].lower() in _FILE_PATH_SUFFIXES
+
+
+def effective_wide_grep_threshold(path: str, *, hit_threshold: int | None = None) -> int:
+    """按检索范围取生效阈值：单文件用更高值，目录用目录阈值。"""
+    base = wide_grep_hit_threshold() if hit_threshold is None else int(hit_threshold)
+    if base <= 0:
+        return 0
+    if not looks_like_file_path(path):
+        return base
+    file_thr = wide_grep_file_hit_threshold()
+    if file_thr <= 0:
+        return base
+    return max(base, file_thr)
 
 
 def _grep_hit_rows(result: ExecResult) -> list[dict[str, Any]]:
@@ -624,6 +857,56 @@ def extract_locate_anchors(
     return out
 
 
+def _anchor_path(anchor: str) -> str:
+    raw = str(anchor or "").strip()
+    if not raw:
+        return ""
+    # path:line → path；Windows 盘符保留
+    if ":" in raw:
+        left, right = raw.rsplit(":", 1)
+        if right.isdigit():
+            return left
+    return raw
+
+
+def anchor_quality_score(anchor: str) -> int:
+    """越高越优先作为 mutate 目标提示；文档/demo/test 降权。"""
+    path = _anchor_path(anchor).replace("\\", "/")
+    if not path:
+        return -1
+    name = path.rsplit("/", 1)[-1].lower()
+    stem = name.rsplit(".", 1)[0] if "." in name else name
+    score = 2
+    if ":" in str(anchor) and str(anchor).rsplit(":", 1)[-1].isdigit():
+        score += 2
+    if looks_like_file_path(path):
+        score += 2
+    lowered = path.lower()
+    if any(stem.startswith(p) for p in _DOC_NAME_PREFIXES) or name.endswith(".md"):
+        score -= 4
+    if any(part in lowered for part in _LOW_PRIORITY_DIR_PARTS):
+        score -= 3
+    if name.startswith("demo_") or "/demo_" in lowered:
+        score -= 2
+    return score
+
+
+def preferred_locate_anchors(
+    anchors: list[str] | None,
+    *,
+    limit: int = 4,
+) -> list[str]:
+    """按质量排序后取前若干条，供提示与 mutate 优先 path。"""
+    cleaned = [str(x).strip() for x in (anchors or []) if str(x).strip()]
+    if not cleaned:
+        return []
+    ranked = sorted(
+        cleaned,
+        key=lambda a: (-anchor_quality_score(a), cleaned.index(a)),
+    )
+    return ranked[: max(1, limit)]
+
+
 def merge_locate_anchors(
     existing: list[str] | None,
     new_anchors: list[str],
@@ -635,7 +918,12 @@ def merge_locate_anchors(
         s = str(a or "").strip()
         if s and s not in out:
             out.append(s)
-    return out[: max(1, limit)]
+    # 保留全量但按质量重排，避免提示/强制轮被 README 占满
+    ranked = sorted(
+        out,
+        key=lambda a: (-anchor_quality_score(a), out.index(a)),
+    )
+    return ranked[: max(1, limit)]
 
 
 def step_has_ok_mutate(
@@ -662,18 +950,24 @@ def update_post_locate_streak(
     actions: list[Action],
     results: list[ExecResult],
     wide_grep_ban_paths: list[str] | None = None,
+    wide_grep_ban_patterns: dict[str, str] | None = None,
+    behavior_armed: bool = False,
 ) -> int:
-    """已有定位锚点且仍只读成功 → 累加定位后探索步数；成功 mutate 则清零。"""
-    if not goal_needs_explore_gate(goal):
-        return 0
+    """已有定位锚点且仍只读成功 → 累加定位后探索步数；成功 mutate 则清零。
+
+    有锚点时**不依赖** goal 启发式（口语「修改一下代码」漏检仍计预算）。
+    """
+    _ = (goal, behavior_armed)  # 锚点本身即武装；保留参数兼容调用方
     if step_has_ok_mutate(actions, results):
         return 0
-    if not locate_anchors:
+    if not any(str(x or "").strip() for x in (locate_anchors or [])):
         return 0
     if is_explore_only_step(actions, results):
         nxt = int(streak) + 1
         if step_repeats_banned_wide_grep(
-            actions=actions, banned_paths=wide_grep_ban_paths
+            actions=actions,
+            banned_paths=wide_grep_ban_paths,
+            banned_patterns=wide_grep_ban_patterns,
         ):
             nxt += 1
         return nxt
@@ -687,6 +981,42 @@ def locate_budget_should_inject(*, streak: int, budget: int | None = None) -> bo
     return thr > 0 and streak >= thr
 
 
+def locate_budget_should_force_mutate(
+    *,
+    streak: int,
+    budget: int | None = None,
+    write_set: list[str],
+    mutate_forced: bool,
+) -> bool:
+    """定位后只读超过 force 阈值且尚未强制过 → 先强制改写一轮。"""
+    if mutate_forced or write_set:
+        return False
+    force_at = locate_force_threshold(budget=budget)
+    return force_at > 0 and streak >= force_at
+
+
+def locate_budget_should_abort_after_force(
+    *,
+    streak: int,
+    budget: int | None = None,
+    write_set: list[str],
+    mutate_forced: bool,
+    actions: list[Action],
+    results: list[ExecResult],
+) -> bool:
+    """定位强制改写轮之后仍成功只读 → 真正 abort。"""
+    if write_set:
+        return False
+    force_at = locate_force_threshold(budget=budget)
+    if force_at <= 0:
+        return False
+    if mutate_forced and is_explore_only_step(actions, results):
+        return True
+    if mutate_forced and streak >= force_at:
+        return True
+    return False
+
+
 def format_locate_budget_message(
     *,
     streak: int,
@@ -694,15 +1024,37 @@ def format_locate_budget_message(
     anchors: list[str] | None = None,
 ) -> str:
     shown = ""
-    if anchors:
-        joined = ", ".join(anchors[:4])
-        more = "…" if len(anchors) > 4 else ""
+    preferred = preferred_locate_anchors(anchors, limit=4)
+    if preferred:
+        joined = ", ".join(preferred)
+        more = "…" if anchors and len(anchors) > len(preferred) else ""
         shown = f" 已掌握锚点：{joined}{more}。"
     return (
-        f"{LOCATE_BUDGET_MARKER}定位后已连续 {streak} 步仍只读（预算 {budget}）。{shown}"
-        "禁止无新问题对同一 path / 同一 path:line 再 fs_grep/fs_read 扫读；"
-        "下一步必须 fs_patch/fs_replace/fs_write，或 status=need_input/failed 说明缺什么。"
-        "定位成功 ≠ 还要继续找；核对原文最多一次定向小窗。"
+        f"{LOCATE_BUDGET_MARKER}定位后已连续 {streak} 步仍只读（软提示阈值 {budget}）。{shown}"
+        "多轮分片 fs_read 取证允许；优先提高读取效率（path:line 小窗、读 dump、收窄 pattern），"
+        "证据已够再 fs_patch/fs_replace；若读不到目标材料则 status=failed/need_input 说明缺口。"
+        "默认不因只读步数强制 mutate。"
+    )
+
+
+def format_locate_mutate_force_message(
+    *,
+    streak: int,
+    budget: int,
+    anchors: list[str] | None = None,
+) -> str:
+    """仅当显式开启 FAWAI_LOCATE_FORCE_STEPS 时使用的强制改写轮文案。"""
+    preferred = preferred_locate_anchors(anchors, limit=4)
+    paths = ""
+    if preferred:
+        shown = ", ".join(_anchor_path(a) or a for a in preferred)
+        paths = f" 已定位 path：{shown}。"
+    force_at = locate_force_threshold(budget=budget)
+    return (
+        f"{LOCATE_MUTATE_FORCE_MARKER}定位后已连续 {streak} 步只读"
+        f"（软提示 {budget} / 强制阈值 {force_at}，实验开关已开）。{paths}"
+        "本步须 fs_patch / fs_replace / fs_write，或 need_input / failed 说明读不到的材料；"
+        "若本轮仍只读成功，将 failed。默认产品路径应关闭本强制。"
     )
 
 
@@ -715,13 +1067,100 @@ def grep_fingerprints(actions: list[Action]) -> list[str]:
             continue
         args = action.args or {}
         path = str(args.get("path") or args.get("root") or "").strip().lower()
-        pattern = str(
-            args.get("pattern") or args.get("query") or args.get("q") or ""
-        ).strip().lower()
+        pattern = _action_grep_pattern(args).lower()
         fp = f"{kind}|{path}|{pattern}"
         if fp not in out:
             out.append(fp)
     return out
+
+
+def _action_grep_pattern(args: dict[str, Any] | None) -> str:
+    raw = args or {}
+    for key in ("pattern", "query", "q", "symbols_query"):
+        val = raw.get(key)
+        if val is not None and str(val).strip():
+            return str(val).strip()
+    queries = raw.get("queries")
+    if isinstance(queries, list):
+        parts = [str(q).strip() for q in queries if str(q).strip()]
+        if parts:
+            return " | ".join(parts[:4])
+    if isinstance(queries, str) and queries.strip():
+        return queries.strip()
+    return ""
+
+
+def _action_grep_context_span(args: dict[str, Any] | None) -> int:
+    raw = args or {}
+    try:
+        before = int(raw.get("context_before") or raw.get("B") or 0)
+    except (TypeError, ValueError):
+        before = 0
+    try:
+        after = int(raw.get("context_after") or raw.get("A") or 0)
+    except (TypeError, ValueError):
+        after = 0
+    return max(0, before) + max(0, after)
+
+
+def pattern_clearly_narrower(prev: str, new: str) -> bool:
+    """新 pattern 相对上次是否明显更特异。"""
+    p = (prev or "").strip().lower()
+    n = (new or "").strip().lower()
+    if not n:
+        return False
+    if len(n) >= 16 and len(n) > len(p):
+        return True
+    if len(n) >= len(p) + 8:
+        return True
+    if len(p) > 0 and len(n) >= max(8, int(len(p) * 1.5)):
+        return True
+    if p and p in n and len(n) >= len(p) + 4:
+        return True
+    return False
+
+
+def grep_call_is_narrowed(
+    args: dict[str, Any] | None,
+    *,
+    prev_pattern: str = "",
+) -> bool:
+    """本步检索是否已收窄（可放行，不按重复宽搜处罚）。"""
+    pattern = _action_grep_pattern(args)
+    ctx = _action_grep_context_span(args)
+    path = str((args or {}).get("path") or (args or {}).get("root") or "").strip()
+    if prev_pattern and pattern_clearly_narrower(prev_pattern, pattern):
+        return True
+    if len(pattern) >= 16:
+        return True
+    if ctx > 0 and len(pattern) >= 6:
+        return True
+    if looks_like_file_path(path) and len(pattern) >= 10 and ctx > 0:
+        return True
+    return False
+
+
+def _result_grep_hit_count(result: ExecResult, *, kind: str) -> int:
+    data = result.data or {}
+    hits = _grep_hit_rows(result)
+    n = len(hits)
+    count = data.get("count")
+    if isinstance(count, int):
+        n = max(n, count)
+    if kind == "explore_search" and n == 0:
+        # explore 顶层无 hits：取各 grep 通道最大 count
+        for block in data.get("results") or []:
+            if not isinstance(block, dict):
+                continue
+            if str(block.get("kind") or "").strip().lower() != "grep":
+                continue
+            c = block.get("count")
+            if isinstance(c, int):
+                n = max(n, c)
+            block_hits = block.get("hits")
+            if isinstance(block_hits, list):
+                n = max(n, len(block_hits))
+    return n
 
 
 def step_wide_grep_paths(
@@ -730,9 +1169,9 @@ def step_wide_grep_paths(
     *,
     hit_threshold: int | None = None,
 ) -> list[str]:
-    """本步命中过宽的检索 path（或 root）。"""
-    thr = wide_grep_hit_threshold() if hit_threshold is None else hit_threshold
-    if thr <= 0:
+    """本步命中过宽的检索 path（或 root）。单文件用更高阈值。"""
+    base = wide_grep_hit_threshold() if hit_threshold is None else hit_threshold
+    if base <= 0:
         return []
     out: list[str] = []
     for i, result in enumerate(results):
@@ -742,18 +1181,41 @@ def step_wide_grep_paths(
         kind = ((action.kind if action else "") or "").strip().lower()
         if kind not in {"fs_grep", "explore_search"}:
             continue
-        data = result.data or {}
-        hits = _grep_hit_rows(result)
-        count = data.get("count")
-        n = len(hits)
-        if isinstance(count, int):
-            n = max(n, count)
-        if n < thr:
-            continue
         args = (action.args if action else {}) or {}
         path = str(args.get("path") or args.get("root") or "").strip() or "(repo)"
+        thr = effective_wide_grep_threshold(path, hit_threshold=base)
+        if thr <= 0:
+            continue
+        n = _result_grep_hit_count(result, kind=kind)
+        if n < thr:
+            continue
         if path not in out:
             out.append(path)
+    return out
+
+
+def step_wide_grep_patterns(
+    actions: list[Action],
+    results: list[ExecResult],
+    *,
+    hit_threshold: int | None = None,
+) -> dict[str, str]:
+    """本步过宽检索的 path → pattern，供后续判断是否已收窄。"""
+    paths = set(step_wide_grep_paths(actions, results, hit_threshold=hit_threshold))
+    out: dict[str, str] = {}
+    if not paths:
+        return out
+    for action in actions:
+        kind = (action.kind or "").strip().lower()
+        if kind not in {"fs_grep", "explore_search"}:
+            continue
+        args = action.args or {}
+        path = str(args.get("path") or args.get("root") or "").strip() or "(repo)"
+        if path not in paths:
+            continue
+        pattern = _action_grep_pattern(args)
+        if pattern:
+            out[path] = pattern
     return out
 
 
@@ -765,22 +1227,81 @@ def format_wide_grep_message(
     shown = ", ".join(paths[:4]) if paths else "当前检索范围"
     more = "…" if len(paths) > 4 else ""
     return (
-        f"{WIDE_GREP_MARKER}检索命中过宽（≥{hit_threshold}）或观察已压缩：{shown}{more}。"
+        f"{WIDE_GREP_MARKER}检索命中过宽（目录≥{hit_threshold} / "
+        f"单文件≥{wide_grep_file_hit_threshold() or hit_threshold}）：{shown}{more}。"
         "下一步禁止对同一 path/范围用近似 pattern 再 grep；"
         "须收窄 pattern、加 context_before/after，或按已有 path:line 小窗 fs_read；"
         "已定位改点则直接 fs_patch/fs_replace。"
     )
 
 
+COMPRESSED_HITS_MARKER = "【检索观察压缩】"
+COMPRESSED_UNREAD_BAN_MARKER = "【压缩未读·禁宽搜】"
+
+
+def format_compressed_hits_message(*, paths: list[str]) -> str:
+    """hits 观察被压缩：须先小窗取证；同范围近似宽搜禁扫（进 ban 名单由闭环挂接）。"""
+    shown = ", ".join(paths[:4]) if paths else "当前检索"
+    more = "…" if len(paths) > 4 else ""
+    return (
+        f"{COMPRESSED_HITS_MARKER}hits 观察已压缩：{shown}{more}。"
+        "压缩摘要 ≠ 取证完成：下一步须按 path:line 小窗 fs_read（或读 observe dump）；"
+        "禁止同范围再发近似宽 grep；已收窄 pattern 且带 context 后方可再搜。"
+    )
+
+
+def format_compressed_unread_ban_message(*, dump_paths: list[str]) -> str:
+    """有压缩落盘且尚未 fs_read：硬禁宽搜，逼取证相位。
+
+    闭环在已对源码 path 小窗取证或已进入 mutate 后应抑制本注入（见
+    `should_suppress_compressed_unread_ban`），避免检索 hits 误压后拴死改写。
+    """
+    shown: list[str] = []
+    for raw in dump_paths:
+        p = str(raw or "").strip()
+        if p and p not in shown:
+            shown.append(p)
+        if len(shown) >= 3:
+            break
+    joined = "、".join(f"`{p}`" for p in shown) or "（observe 落盘）"
+    return (
+        f"{COMPRESSED_UNREAD_BAN_MARKER}工具结果已压缩且全文未读：{joined}。"
+        "本步禁止 fs_grep/explore_search 宽搜；必须先 fs_read 上述 dump 或已有 path:line 小窗取证，"
+        "再改写/作答；禁止用再搜一轮顶替取证；禁止 shell cat 代替 fs_read。"
+    )
+
+
+def step_has_search_actions(actions: list[Action] | None) -> bool:
+    """本步是否含仓检索类动作（宽搜空转检测用）。"""
+    for action in actions or []:
+        kind = (action.kind or "").strip().lower()
+        if kind in {"fs_grep", "explore_search"}:
+            return True
+    return False
+
+
 def step_repeats_banned_wide_grep(
     *,
     actions: list[Action],
     banned_paths: list[str] | None,
+    banned_patterns: dict[str, str] | None = None,
 ) -> bool:
-    """下一步是否又对刚降质的 path 做宽范围 grep。"""
+    """下一步是否又对刚降质的 path 做仍偏宽的 grep。
+
+    已明显收窄（更长/更特异 pattern，或带 context）则放行，与降质文案一致。
+    """
     banned = [str(p).strip() for p in (banned_paths or []) if str(p).strip()]
     if not banned:
         return False
+    patterns = {
+        str(k).strip(): str(v)
+        for k, v in dict(banned_patterns or {}).items()
+        if str(k).strip() and str(v).strip()
+    }
+
+    def _prev_for(path: str, ban: str) -> str:
+        return patterns.get(path) or patterns.get(ban) or ""
+
     for action in actions:
         kind = (action.kind or "").strip().lower()
         if kind not in {"fs_grep", "explore_search"}:
@@ -788,16 +1309,28 @@ def step_repeats_banned_wide_grep(
         args = action.args or {}
         path = str(args.get("path") or args.get("root") or "").strip()
         if not path:
-            # 全仓 explore 也算撞「(repo)」
-            if "(repo)" in banned:
+            # 全仓 explore：无 path 且仍宽才算撞「(repo)」
+            if "(repo)" in banned and not grep_call_is_narrowed(
+                args, prev_pattern=patterns.get("(repo)", "")
+            ):
                 return True
             continue
         for ban in banned:
             if ban == "(repo)":
+                # 显式全仓禁扫：任何未收窄的仓级检索
+                if path in {".", "(repo)"} and not grep_call_is_narrowed(
+                    args, prev_pattern=_prev_for(path, ban)
+                ):
+                    return True
                 continue
-            if path == ban or path.startswith(ban.rstrip("/") + "/") or ban.startswith(
-                path.rstrip("/") + "/"
-            ):
-                # 有 context 且 pattern 较长时仍算违规重复宽搜（降质后应定向）
-                return True
+            overlaps = (
+                path == ban
+                or path.startswith(ban.rstrip("/") + "/")
+                or ban.startswith(path.rstrip("/") + "/")
+            )
+            if not overlaps:
+                continue
+            if grep_call_is_narrowed(args, prev_pattern=_prev_for(path, ban)):
+                continue
+            return True
     return False

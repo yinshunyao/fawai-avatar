@@ -49,3 +49,60 @@ def title_from_plan_payload(data: dict | None, *, max_len: int = 24) -> str:
     if raw is None:
         raw = data.get("task_title")
     return normalize_task_title(str(raw or ""), max_len=max_len)
+
+
+def normalize_step_label(raw: str, *, max_len: int = 16) -> str:
+    """本步业务意图短名（簇头用；默认 ≤16 字）。"""
+    return normalize_task_title(raw, max_len=max_len)
+
+
+def step_label_from_plan_payload(data: dict | None, *, max_len: int = 16) -> str:
+    """从规划 JSON 取 step_label / step_name / intent。"""
+    if not isinstance(data, dict):
+        return ""
+    for key in ("step_label", "step_name", "intent"):
+        raw = data.get(key)
+        if raw is None:
+            continue
+        labeled = normalize_step_label(str(raw), max_len=max_len)
+        if labeled:
+            return labeled
+    return ""
+
+
+def resolve_step_label(
+    *,
+    step_label: str = "",
+    thought: str = "",
+    actions: list | None = None,
+    max_len: int = 16,
+) -> str:
+    """显式 step_label → thought 首句 → 动作种类 兜底。"""
+    labeled = normalize_step_label(step_label, max_len=max_len)
+    if labeled:
+        return labeled
+    thought_text = _WS_RE.sub(" ", (thought or "").strip())
+    if thought_text:
+        for sep in ("。", "；", ";", "\n", "！", "!", "？", "?"):
+            if sep in thought_text:
+                head = thought_text.split(sep, 1)[0].strip()
+                if head:
+                    thought_text = head
+                    break
+        from_thought = normalize_step_label(thought_text, max_len=max_len)
+        if from_thought:
+            return from_thought
+    kinds: list[str] = []
+    for item in actions or []:
+        kind = ""
+        if hasattr(item, "kind"):
+            kind = str(getattr(item, "kind") or "").strip()
+        elif isinstance(item, dict):
+            kind = str(item.get("kind") or item.get("type") or "").strip()
+        if kind and kind not in kinds:
+            kinds.append(kind)
+        if len(kinds) >= 3:
+            break
+    if kinds:
+        return normalize_step_label("、".join(kinds), max_len=max_len)
+    return ""

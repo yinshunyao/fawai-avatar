@@ -1,6 +1,7 @@
 # term:工作任务  doc:doc/议题/操作分身三层/结论.md
 # term:会话通道  doc:doc/功能/会话通道/说明.md
 # term:执行反省  doc:doc/功能/执行反省/说明.md
+# term:观察反省  doc:doc/功能/观察反省/说明.md
 # term:步骤重复  doc:doc/功能/步骤重复/说明.md
 # term:进程中断续跑  doc:doc/功能/进程中断续跑/说明.md
 # term:守规约束  doc:doc/功能/守规约束/说明.md
@@ -9,6 +10,8 @@
 # term:可见副作用闸门  doc:doc/功能/编码闭环/说明.md
 # term:任务统计  doc:doc/功能/任务统计/说明.md
 # term:执行中澄清  doc:doc/功能/执行中澄清/说明.md
+# term:步骤业务名  doc:doc/功能/会话通道/说明.md
+# term:脚本铲子生命周期  doc:doc/功能/脚本铲子生命周期/说明.md
 from __future__ import annotations
 
 import itertools
@@ -46,16 +49,25 @@ from fawai_avatar.brain.explore_progress import (
     extract_locate_anchors,
     format_explore_gate_message,
     format_locate_budget_message,
+    format_locate_mutate_force_message,
     format_mutate_force_message,
-    format_verify_read_message,
+    format_compressed_hits_message,
+    format_compressed_unread_ban_message,
     format_wide_grep_message,
     hot_repeated_paths,
+    is_explore_only_step,
+    locate_budget_should_abort_after_force,
+    locate_budget_should_force_mutate,
     locate_budget_should_inject,
     locate_budget_threshold,
+    locate_force_threshold,
     merge_locate_anchors,
     normalize_read_windows,
+    preferred_locate_anchors,
+    step_has_search_actions,
     step_repeats_banned_wide_grep,
     step_wide_grep_paths,
+    step_wide_grep_patterns,
     update_explore_only_streak,
     update_post_locate_streak,
     update_read_path_counts,
@@ -77,6 +89,13 @@ from fawai_avatar.brain.method_recovery import (
     remote_idle_gate_threshold,
     update_remote_idle_streak,
 )
+from fawai_avatar.brain.shovel_lifecycle import (
+    format_promote_hint_message,
+    format_search_gate_message,
+    hard_reject_invent_without_search,
+    should_inject_promote_hint,
+    should_inject_search_gate,
+)
 from fawai_avatar.brain.answer_effect import (
     answer_coverage_reject_reason,
     fail_message_for_answer_coverage,
@@ -84,7 +103,13 @@ from fawai_avatar.brain.answer_effect import (
     format_unread_dump_prompt,
     goal_needs_answer_coverage_gate,
     prefer_fs_read_path,
+    prune_hits_dumps_after_source_evidence,
+    should_suppress_compressed_unread_ban,
     unread_compressed_dumps,
+)
+from fawai_avatar.brain.necessary_paths import (
+    failed_needs_path_ledger_retry,
+    format_path_ledger_fail_prompt,
 )
 from fawai_avatar.brain.write_effect import (
     format_visible_effect_prompt,
@@ -94,19 +119,28 @@ from fawai_avatar.brain.write_effect import (
     thought_admits_no_visible_effect,
     thought_ok_for_visible_effect,
 )
-from fawai_avatar.brain.planner import Brain
+from fawai_avatar.brain.obs_reflect import (
+    format_obs_reflection_for_history,
+    obs_reflect_enabled,
+    run_obs_reflect,
+)
+from fawai_avatar.brain.delegate import (
+    fast_model_from_env,
+    format_delegate_feedback,
+    format_delegate_handoff,
+    plan_delegate,
+)
+from fawai_avatar.brain.planner import Brain, format_soft_fallback_history_message
 from fawai_avatar.brain.reflect import (
     abort_should_deliver_commands,
+    coerce_reflection_no_abort,
     failed_action_fingerprints,
-    failed_write_paths,
     format_abort_delivery,
     format_reflection_for_history,
     format_stagnation_for_history,
-    hard_abort_stagnation,
-    reflection_needs_verify_read,
     run_reflect,
     run_stagnation,
-    soften_abort_when_mutated_format_error,
+    plan_skips_step_repeat,
     step_fingerprint,
     step_repeat_enabled,
     step_repeat_threshold,
@@ -136,6 +170,45 @@ from fawai_avatar.types import Action, ExecResult, Observation, Plan
 
 # text, meta（含 phase）
 ProgressCallback = Callable[[str, dict[str, Any]], None]
+
+# 同批动作失败后仍继续：只读探仓/检索族。写/shell/GUI/带 write_resources 仍 fail-fast。
+# 避免「短词 grep 失败 → 同批多字 grep 未执行」这类误伤（见任务复盘 fail-fast 案例）。
+_BATCH_CONTINUE_ON_FAIL_KINDS = frozenset(
+    {
+        "fs_grep",
+        "fs_glob",
+        "fs_read",
+        "fs_read_many",
+        "explore_search",
+        "code_symbols",
+        "code_map",
+        "code_index_refresh",
+        "git_status",
+        "git_diff",
+        "version_list",
+        "version_get",
+        "skill_search",
+        "skill_get",
+        "lore_search",
+        "lore_get",
+        "lore_buffer_list",
+        "diff_list",
+        "platform_info",
+    }
+)
+
+
+def should_break_action_batch(action: Action, result: ExecResult) -> bool:
+    """本动作失败后是否掐掉同批后续动作。
+
+    只读失败 → 继续；写/前台/已报写清单/未知副作用 → 停。
+    """
+    if result.ok:
+        return False
+    if action.needs_foreground or list(action.write_resources or []):
+        return True
+    kind = (action.kind or "").strip().lower()
+    return kind not in _BATCH_CONTINUE_ON_FAIL_KINDS
 
 
 @dataclass
@@ -169,6 +242,9 @@ class WorkerLoop:
         self._current_task_id: str | None = None
         self._run_state: dict[str, Any] | None = None
         self._run_stats: dict[str, Any] = task_stats.empty_stats()
+        # 最近一次截屏帧（图内坐标 → 全局 click：origin + 尺寸 + Retina scale）
+        self._last_screen_origin: dict[str, float] | None = None
+        self._last_screen_frame: dict[str, float] | None = None
 
     def _step_indices(self, *, start: int = 0) -> Iterator[int]:
         start = max(0, int(start))
@@ -461,6 +537,41 @@ class WorkerLoop:
         except Exception:  # noqa: BLE001 — 进度出站不得打断任务
             pass
 
+    def _task_title_for_step(self, task_id: str) -> str:
+        """规划前簇头兜底：任务短标题。"""
+        from fawai_avatar.task.title import normalize_step_label
+
+        try:
+            task = self.supervisor.get_task(task_id)
+        except Exception:  # noqa: BLE001
+            return ""
+        if task is None:
+            return ""
+        meta = task.meta if isinstance(task.meta, dict) else {}
+        return normalize_step_label(str(meta.get("title") or ""))
+
+    def _resolve_progress_step_label(
+        self, task_id: str, plan: Plan | None = None
+    ) -> str:
+        """本步业务名：优先 plan.step_label，否则任务 title。"""
+        from fawai_avatar.task.title import resolve_step_label
+
+        if plan is not None:
+            labeled = resolve_step_label(
+                step_label=plan.step_label or "",
+                thought=plan.thought or "",
+                actions=list(plan.actions),
+            )
+            if labeled:
+                return labeled
+        return self._task_title_for_step(task_id)
+
+    def _step_label_extra(
+        self, task_id: str, plan: Plan | None = None
+    ) -> dict[str, str]:
+        labeled = self._resolve_progress_step_label(task_id, plan)
+        return {"step_label": labeled} if labeled else {}
+
     def _stats_progress_extra(self) -> dict[str, Any]:
         return {"stats": task_stats.summary_for_api(self._run_stats)}
 
@@ -578,6 +689,7 @@ class WorkerLoop:
             remote_idle_streak = int(resumed.get("remote_idle_streak") or 0)
             remote_method_forced = bool(resumed.get("remote_method_forced"))
             explore_mutate_forced = bool(resumed.get("explore_mutate_forced"))
+            explore_behavior_armed = bool(resumed.get("explore_behavior_armed"))
             raw_reads = resumed.get("read_path_counts") or {}
             read_path_counts = (
                 {str(k): int(v) for k, v in raw_reads.items()}
@@ -589,17 +701,29 @@ class WorkerLoop:
                 str(x) for x in (resumed.get("locate_anchors") or []) if str(x).strip()
             ]
             post_locate_streak = int(resumed.get("post_locate_streak") or 0)
+            locate_mutate_forced = bool(resumed.get("locate_mutate_forced"))
             wide_grep_ban_paths = [
                 str(x)
                 for x in (resumed.get("wide_grep_ban_paths") or [])
                 if str(x).strip()
             ]
+            raw_ban_patterns = resumed.get("wide_grep_ban_patterns") or {}
+            wide_grep_ban_patterns = (
+                {
+                    str(k).strip(): str(v)
+                    for k, v in raw_ban_patterns.items()
+                    if str(k).strip() and str(v).strip()
+                }
+                if isinstance(raw_ban_patterns, dict)
+                else {}
+            )
             awaiting_user_answer = bool(resumed.get("awaiting_user_answer"))
             weak_write_pending = bool(resumed.get("weak_write_pending"))
             visible_effect_retries = int(resumed.get("visible_effect_retries") or 0)
             answer_coverage_retries = int(
                 resumed.get("answer_coverage_retries") or 0
             )
+            path_ledger_retries = int(resumed.get("path_ledger_retries") or 0)
             unread_dump_forced = bool(resumed.get("unread_dump_forced"))
             compressed_dump_paths = [
                 str(x)
@@ -612,6 +736,9 @@ class WorkerLoop:
                 if str(x).strip()
             ]
             pending_observe_kinds = resumed.get("pending_observe_kinds")
+            pending_observe_args = resumed.get("pending_observe_args")
+            if not isinstance(pending_observe_args, dict):
+                pending_observe_args = None
             format_abort_softened = bool(resumed.get("format_abort_softened"))
             start_step = int(resumed.get("next_step") or 0)
             self._progress(
@@ -639,21 +766,26 @@ class WorkerLoop:
             saw_architecture_ok = False
             explore_only_streak = 0
             explore_mutate_forced = False
+            explore_behavior_armed = False
             remote_idle_streak = 0
             remote_method_forced = False
             read_path_counts = {}
             read_windows = {}
             locate_anchors = []
             post_locate_streak = 0
+            locate_mutate_forced = False
             wide_grep_ban_paths = []
+            wide_grep_ban_patterns: dict[str, str] = {}
             awaiting_user_answer = False
             weak_write_pending = False
             visible_effect_retries = 0
             answer_coverage_retries = 0
+            path_ledger_retries = 0
             unread_dump_forced = False
             compressed_dump_paths = []
             read_ok_paths = []
             pending_observe_kinds = None
+            pending_observe_args = None
             format_abort_softened = False
             # 追问不再并入 goal：新 run 把 meta.followups 注入 history，大脑仍能看到增量
             history = self._seed_followup_history(task, history)
@@ -686,21 +818,26 @@ class WorkerLoop:
                 saw_architecture_ok=saw_architecture_ok,
                 explore_only_streak=explore_only_streak,
                 explore_mutate_forced=explore_mutate_forced,
+                explore_behavior_armed=explore_behavior_armed,
                 remote_idle_streak=remote_idle_streak,
                 remote_method_forced=remote_method_forced,
                 read_path_counts=read_path_counts,
                 read_windows=read_windows,
                 locate_anchors=locate_anchors,
                 post_locate_streak=post_locate_streak,
+                locate_mutate_forced=locate_mutate_forced,
                 wide_grep_ban_paths=wide_grep_ban_paths,
+                wide_grep_ban_patterns=wide_grep_ban_patterns,
                 awaiting_user_answer=awaiting_user_answer,
                 weak_write_pending=weak_write_pending,
                 visible_effect_retries=visible_effect_retries,
                 answer_coverage_retries=answer_coverage_retries,
+                path_ledger_retries=path_ledger_retries,
                 unread_dump_forced=unread_dump_forced,
                 compressed_dump_paths=compressed_dump_paths,
                 read_ok_paths=read_ok_paths,
                 pending_observe_kinds=pending_observe_kinds,
+                pending_observe_args=pending_observe_args,
                 last_reflection=last_reflection,
                 format_abort_softened=format_abort_softened,
             )
@@ -753,6 +890,7 @@ class WorkerLoop:
                     status="continue",
                     raw=dict(plan_hint.raw or {}),
                     observe_kinds=list(plan_hint.observe_kinds),
+                    observe_args=dict(plan_hint.observe_args or {}),
                 )
             else:
                 actions = [crash_action]
@@ -824,6 +962,7 @@ class WorkerLoop:
                     prior_alternate_fps=prior_alternate_fps,
                     llm=None,
                 )
+            reflection = coerce_reflection_no_abort(reflection)
             reflect_count += 1
             last_reflection = reflection.to_dict()
             last_reflection["trigger"] = "step_crash"
@@ -837,15 +976,7 @@ class WorkerLoop:
                     "content": format_reflection_for_history(reflection),
                 }
             )
-            if reflection_needs_verify_read(reflection):
-                history.append(
-                    {
-                        "role": "user",
-                        "content": format_verify_read_message(
-                            paths=failed_write_paths(actions, results)
-                        ),
-                    }
-                )
+            # 【反省开读】/【开读须改写】硬闸已退役：不再注入禁定位标记
             self._report_safe(
                 task_id,
                 f"step_crash reflect: {reflection.decision}",
@@ -864,12 +995,11 @@ class WorkerLoop:
                 reflect_count=reflect_count,
                 **self._stats_progress_extra(),
             )
-            if reflection.decision == "abort" or not can_replan:
+            # 反省不再 abort：仅步数用尽时失败；止损由下一轮规划 status=failed
+            if not can_replan:
                 abort_msg = reflection.cause or err_msg
                 abort_thought = plan_for_reflect.thought
-                if reflection.decision == "abort" and abort_should_deliver_commands(
-                    reflection
-                ):
+                if abort_should_deliver_commands(reflection):
                     abort_msg = format_abort_delivery(
                         reflection, fallback=abort_msg
                     )
@@ -963,27 +1093,44 @@ class WorkerLoop:
                     step=step,
                     observe_methods=methods,
                     observe_label="、".join(observe_label(m) for m in methods),
+                    **self._step_label_extra(task_id),
                 )
                 t_obs = time.perf_counter()
-                obs = self._observe(task.goal, methods=methods)
+                obs = self._observe(
+                    task.goal,
+                    methods=methods,
+                    observe_args=pending_observe_args,
+                )
                 obs = self._attach_title_context(task_id, obs)
                 obs_ms = int((time.perf_counter() - t_obs) * 1000)
                 obs_meta = obs.meta or {}
+                done_methods = list(obs_meta.get("observe_methods") or methods)
                 self._progress(
                     progress_observe_text(
-                        list(obs_meta.get("observe_methods") or methods), pending=False
+                        done_methods,
+                        pending=False,
+                        preview=str(obs.summary or ""),
                     ),
                     phase="observe",
                     step=step,
                     elapsed_ms=obs_ms,
-                    observe_methods=obs_meta.get("observe_methods") or methods,
+                    observe_methods=done_methods,
                     observe_method=obs_meta.get("observe_method"),
                     observe_label=obs_meta.get("observe_label"),
                     paths=_paths_from_observation(obs),
+                    frontmost_app=obs_meta.get("frontmost_app"),
+                    frontmost_window=obs_meta.get("frontmost_window"),
+                    frontmost_ok=obs_meta.get("frontmost_ok"),
+                    **self._step_label_extra(task_id),
                 )
 
                 crash_phase = "plan"
-                self._progress("大脑规划中（等待模型）…", phase="plan", step=step)
+                self._progress(
+                    "大脑规划中（等待模型）…",
+                    phase="plan",
+                    step=step,
+                    **self._step_label_extra(task_id),
+                )
                 t_plan = time.perf_counter()
                 plan, plan_cancelled = self._call_cancellable(
                     task_id,
@@ -1015,7 +1162,10 @@ class WorkerLoop:
                         status="success" if plan.status != "failed" else "failed",
                         raw=plan.raw,
                         observe_kinds=list(plan.observe_kinds),
+                        observe_args=dict(plan.observe_args or {}),
                         title=plan.title or "",
+                        step_label=plan.step_label or "整理结论",
+                        delegate=None,
                     )
                 plan_write_paths = write_paths_from_plan(plan)
                 if architecture_paths_in(plan_write_paths) and plan_satisfies_architecture(
@@ -1028,6 +1178,9 @@ class WorkerLoop:
                     # 收尾 success 轮：用累计 write_set + 本步 doc_refs/skip
                     saw_architecture_ok = True
                 pending_observe_kinds = list(plan.observe_kinds) or None
+                pending_observe_args = (
+                    dict(plan.observe_args) if plan.observe_args else None
+                )
                 thought_preview = (plan.thought or "").strip()
                 if len(thought_preview) > 200:
                     thought_preview = thought_preview[:200] + "…"
@@ -1035,6 +1188,11 @@ class WorkerLoop:
                 if plan.observe_kinds:
                     labels = "、".join(observe_label(m) for m in plan.observe_kinds)
                     planned_text = f"{planned_text}；下一步观察：{labels}"
+                    st = (plan.observe_args or {}).get("obs_screen")
+                    if isinstance(st, dict) and st.get("screen_target"):
+                        planned_text = (
+                            f"{planned_text}（screen_target={st.get('screen_target')}）"
+                        )
                 if thought_preview:
                     planned_text = f"{planned_text}：{thought_preview}"
                 llm_meta = _llm_progress_meta(plan, fallback_elapsed_ms=plan_wall_ms)
@@ -1045,6 +1203,7 @@ class WorkerLoop:
                     step=step,
                     status=plan.status,
                     observe_kinds=list(plan.observe_kinds),
+                    **self._step_label_extra(task_id, plan),
                     **llm_meta,
                     **self._stats_progress_extra(),
                 )
@@ -1069,6 +1228,98 @@ class WorkerLoop:
                 if halted is not None:
                     return halted
 
+                # 主脑委派快模型：段内子闭环，摘要回灌后再由主脑规划
+                delegate_spec = plan_delegate(plan)
+                if delegate_spec is not None and not awaiting_user_answer:
+                    fast_model = fast_model_from_env()
+                    history.append(
+                        {
+                            "role": "assistant",
+                            "content": plan.thought or f"委派：{delegate_spec.goal}",
+                        }
+                    )
+                    traces.append(StepTrace(observation=obs, plan=plan, results=[]))
+                    if not fast_model:
+                        history.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "【委派未执行】未配置 FAWAI_LLM_FAST_MODEL。"
+                                    "请主脑自行规划 actions 完成子目标，勿再输出 delegate。"
+                                    f"原委派：{delegate_spec.goal}"
+                                ),
+                            }
+                        )
+                        self._progress(
+                            "委派跳过：未配置快模型",
+                            phase="delegate_skip",
+                            step=step,
+                        )
+                        persist(next_step=step + 1)
+                        step += 1
+                        continue
+                    history.append(
+                        {
+                            "role": "user",
+                            "content": format_delegate_handoff(
+                                delegate_spec, model=fast_model
+                            ),
+                        }
+                    )
+                    self._progress(
+                        f"委派快模型：{delegate_spec.goal[:80]}",
+                        phase="delegate_fast",
+                        step=step,
+                        model=fast_model,
+                        delegate=delegate_spec.to_dict(),
+                    )
+                    seg = self._run_fast_delegate(
+                        task_id,
+                        task_goal=task.goal,
+                        spec=delegate_spec,
+                        model=fast_model,
+                        history=history,
+                        traces=traces,
+                        write_set=write_set,
+                        start_step=step + 1,
+                        pending_observe_kinds=pending_observe_kinds,
+                        pending_observe_args=pending_observe_args,
+                        replan_count=replan_count,
+                        reflect_count=reflect_count,
+                        verify_results=verify_results,
+                        last_reflection=last_reflection,
+                        persist=persist,
+                    )
+                    history = seg["history"]
+                    traces = seg["traces"]
+                    write_set = seg["write_set"]
+                    step = int(seg["step"])
+                    pending_observe_kinds = seg.get("pending_observe_kinds")
+                    pending_observe_args = seg.get("pending_observe_args")
+                    if seg.get("halted") is not None:
+                        return seg["halted"]
+                    history.append(
+                        {
+                            "role": "user",
+                            "content": format_delegate_feedback(
+                                delegate_spec,
+                                outcome=str(seg.get("outcome") or "done"),
+                                summary=str(seg.get("summary") or ""),
+                                steps_used=int(seg.get("steps_used") or 0),
+                                model=fast_model,
+                            ),
+                        }
+                    )
+                    self._progress(
+                        f"快模型回灌主脑（{seg.get('outcome')}）",
+                        phase="delegate_done",
+                        step=step,
+                        **self._stats_progress_extra(),
+                    )
+                    persist(next_step=step + 1)
+                    step += 1
+                    continue
+
                 if plan.status == "need_input":
                     plan = normalize_need_input_plan(plan)
                     history.append(
@@ -1092,6 +1343,46 @@ class WorkerLoop:
                         stagnation_count=stagnation_count,
                     )
 
+                # 脚本铲子：写前软闸（未搜铲却造脚本 → 注入并重规划）
+                if should_inject_search_gate(
+                    history=history,
+                    actions=plan.actions,
+                    goal=task.goal,
+                ):
+                    gate_msg = format_search_gate_message()
+                    history.append({"role": "user", "content": gate_msg})
+                    self.supervisor.report(
+                        task_id,
+                        "shovel_lifecycle: search_gate",
+                        {"kinds": [a.kind for a in plan.actions]},
+                    )
+                    self._progress(
+                        gate_msg[:200],
+                        phase="shovel_gate",
+                        step=step,
+                        decision="inject_search",
+                    )
+                    persist(next_step=step + 1)
+                    continue
+                hard_msg = hard_reject_invent_without_search(
+                    history=history, actions=plan.actions
+                )
+                if hard_msg:
+                    history.append({"role": "user", "content": hard_msg})
+                    self.supervisor.report(
+                        task_id,
+                        "shovel_lifecycle: search_hard",
+                        {"message": hard_msg},
+                    )
+                    self._progress(
+                        hard_msg[:200],
+                        phase="shovel_gate",
+                        step=step,
+                        decision="hard_reject",
+                    )
+                    persist(next_step=step + 1)
+                    continue
+
                 if plan.actions:
                     act_extra = _actions_progress_meta(plan.actions)
                     self._progress(
@@ -1099,10 +1390,13 @@ class WorkerLoop:
                         phase="act",
                         step=step,
                         **act_extra,
+                        **self._step_label_extra(task_id, plan),
                     )
                 crash_phase = "act"
                 t_act = time.perf_counter()
-                results = self._execute_actions(task_id, plan.actions)
+                results = self._execute_actions(
+                    task_id, plan.actions, write_set=write_set
+                )
                 act_total_ms = int((time.perf_counter() - t_act) * 1000)
                 for action in plan.actions:
                     for p in action.write_resources:
@@ -1130,6 +1424,14 @@ class WorkerLoop:
                             p = str(raw or "").strip()
                             if p and p not in read_ok_paths:
                                 read_ok_paths.append(p)
+                # 源码小窗 / 已有写入：丢掉未读 hits dump，勿用禁宽搜拴住 mutate
+                compressed_dump_paths = prune_hits_dumps_after_source_evidence(
+                    compressed_dump_paths,
+                    write_set=write_set,
+                    read_ok_paths=read_ok_paths,
+                )
+                if is_explore_only_step(plan.actions, results) and not write_set:
+                    explore_behavior_armed = True
                 explore_only_streak = update_explore_only_streak(
                     explore_only_streak,
                     goal=task.goal,
@@ -1138,6 +1440,8 @@ class WorkerLoop:
                     read_path_counts=read_path_counts,
                     read_windows=read_windows,
                     results=results,
+                    locate_anchors=locate_anchors,
+                    behavior_armed=explore_behavior_armed,
                 )
                 remote_idle_streak = update_remote_idle_streak(
                     remote_idle_streak,
@@ -1162,27 +1466,54 @@ class WorkerLoop:
                     actions=plan.actions,
                     results=results,
                     wide_grep_ban_paths=wide_grep_ban_paths,
+                    wide_grep_ban_patterns=wide_grep_ban_patterns,
+                    behavior_armed=explore_behavior_armed,
                 )
+                if write_set:
+                    locate_mutate_forced = False
                 wide_paths = step_wide_grep_paths(
                     plan.actions, results, hit_threshold=wide_grep_n
                 )
                 pending_wide_grep_msg: str | None = None
                 pending_wide_grep_repeat = False
+                pending_compressed_hits_msg: str | None = None
+                pending_compressed_unread_msg: str | None = None
                 if wide_paths:
                     for p in wide_paths:
                         if p not in wide_grep_ban_paths:
                             wide_grep_ban_paths.append(p)
+                    for path_key, pattern in step_wide_grep_patterns(
+                        plan.actions, results, hit_threshold=wide_grep_n
+                    ).items():
+                        wide_grep_ban_patterns[path_key] = pattern
                     pending_wide_grep_msg = format_wide_grep_message(
                         paths=wide_paths, hit_threshold=wide_grep_n
                     )
                 elif wide_grep_ban_paths and step_repeats_banned_wide_grep(
-                    actions=plan.actions, banned_paths=wide_grep_ban_paths
+                    actions=plan.actions,
+                    banned_paths=wide_grep_ban_paths,
+                    banned_patterns=wide_grep_ban_patterns,
                 ):
                     pending_wide_grep_msg = format_wide_grep_message(
                         paths=list(wide_grep_ban_paths),
                         hit_threshold=wide_grep_n,
                     )
                     pending_wide_grep_repeat = True
+                # 压缩全文未读却仍仓检索：禁宽搜取证闸（优先于仅 hits 提示）
+                # 已源码小窗或 mutate 后不因 hits dump 再注入（压错对象时的误拦）
+                unread_before_obs = unread_compressed_dumps(
+                    compressed_dump_paths, read_ok_paths
+                )
+                if (
+                    unread_before_obs
+                    and step_has_search_actions(plan.actions)
+                    and not should_suppress_compressed_unread_ban(
+                        write_set=write_set, read_ok_paths=read_ok_paths
+                    )
+                ):
+                    pending_compressed_unread_msg = format_compressed_unread_ban_message(
+                        dump_paths=unread_before_obs
+                    )
                     post_locate_streak = int(post_locate_streak) + 1
                 # 文件态回证（窄场景：写成功后核对磁盘）
                 file_verifies = self._verify_file_state(plan.actions, results)
@@ -1190,6 +1521,21 @@ class WorkerLoop:
                 if any(not v.ok for v in file_verifies):
                     err = next(v.message for v in file_verifies if not v.ok)
                     results.append(ExecResult(ok=False, message=f"verify failed: {err}"))
+                # C3 界面回证：ui_type/type 成功后核对 AX；失败不得当验收通过
+                ui_verifies = self._verify_ui_ax(plan.actions, results)
+                verify_results.extend(ui_verifies)
+                if any(not v.ok for v in ui_verifies):
+                    err = next(v.message for v in ui_verifies if not v.ok)
+                    results.append(ExecResult(ok=False, message=f"ui_verify failed: {err}"))
+                    history.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"界面回证失败：{err}。"
+                                "请换 ref / 再 obs_ax，或 status=failed；禁止未回证 success。"
+                            ),
+                        }
+                    )
                 # 弱写入：有 mutate 成功但仅死 CSS 变量/空白 → 不得当作验收进展
                 weak_hit, weak_path, weak_reasons = results_have_weak_write(results)
                 if weak_hit:
@@ -1253,6 +1599,7 @@ class WorkerLoop:
                             pending_id=r.data.get("pending_id"),
                             path=r.data.get("path"),
                             **acted_extra,
+                            **self._step_label_extra(task_id, plan),
                         )
                     self._progress(
                         prefix + body[:1200],
@@ -1260,6 +1607,7 @@ class WorkerLoop:
                         step=step,
                         ok=r.ok,
                         **acted_extra,
+                        **self._step_label_extra(task_id, plan),
                     )
                 traces.append(StepTrace(observation=obs, plan=plan, results=results))
                 self._stats_note_step(task_id, plan.actions)
@@ -1269,6 +1617,7 @@ class WorkerLoop:
                         "content": plan.thought or plan.status,
                     }
                 )
+                tool_feedback_for_obs = ""
                 if plan.actions or results:
                     self._progress(
                         progress_tool_observe_text(pending=True),
@@ -1287,6 +1636,7 @@ class WorkerLoop:
                     from fawai_avatar.channel.redact import redact_secrets
 
                     tool_feedback = redact_secrets(tool_feedback or "")
+                    tool_feedback_for_obs = tool_feedback
                     for part in tool_meta.get("parts") or []:
                         if not isinstance(part, dict):
                             continue
@@ -1316,18 +1666,15 @@ class WorkerLoop:
                         ],
                     )
                     history.append({"role": "user", "content": tool_feedback})
-                    # 命中观察被压缩也视为宽检索：补 path 到禁扫并灌降质
-                    if (
-                        not pending_wide_grep_msg
-                        and wide_grep_n > 0
-                        and any(
-                            isinstance(part, dict)
-                            and part.get("compressed")
-                            and str(part.get("label") or "") == "hits"
-                            for part in (tool_meta.get("parts") or [])
-                        )
-                    ):
-                        grep_paths = []
+                    # hits/stdout 等观察压缩：提示取证，并把检索 path 纳入宽搜禁扫
+                    hits_compressed = any(
+                        isinstance(part, dict)
+                        and part.get("compressed")
+                        and str(part.get("label") or "") == "hits"
+                        for part in (tool_meta.get("parts") or [])
+                    )
+                    grep_paths: list[str] = []
+                    if hits_compressed or tool_meta.get("compressed"):
                         for action in plan.actions:
                             kind = (action.kind or "").strip().lower()
                             if kind not in {"fs_grep", "explore_search"}:
@@ -1339,18 +1686,41 @@ class WorkerLoop:
                             ).strip() or "(repo)"
                             if p not in grep_paths:
                                 grep_paths.append(p)
-                        for p in grep_paths:
                             if p not in wide_grep_ban_paths:
                                 wide_grep_ban_paths.append(p)
-                        pending_wide_grep_msg = format_wide_grep_message(
-                            paths=grep_paths or list(wide_grep_ban_paths),
-                            hit_threshold=wide_grep_n,
+                            pat = str((action.args or {}).get("pattern") or "").strip()
+                            if pat and p not in wide_grep_ban_patterns:
+                                wide_grep_ban_patterns[p] = pat
+                        if hits_compressed and not pending_wide_grep_msg:
+                            pending_compressed_hits_msg = format_compressed_hits_message(
+                                paths=grep_paths
+                            )
+                    compressed_dump_paths = prune_hits_dumps_after_source_evidence(
+                        compressed_dump_paths,
+                        write_set=write_set,
+                        read_ok_paths=read_ok_paths,
+                    )
+                    unread_after_obs = unread_compressed_dumps(
+                        compressed_dump_paths, read_ok_paths
+                    )
+                    if (
+                        unread_after_obs
+                        and not pending_compressed_unread_msg
+                        and not should_suppress_compressed_unread_ban(
+                            write_set=write_set, read_ok_paths=read_ok_paths
+                        )
+                    ):
+                        pending_compressed_unread_msg = (
+                            format_compressed_unread_ban_message(
+                                dump_paths=unread_after_obs
+                            )
                         )
                 else:
+                    soft_fmt = format_soft_fallback_history_message(plan)
                     history.append(
                         {
                             "role": "user",
-                            "content": "执行结果：本步无动作。",
+                            "content": soft_fmt or "执行结果：本步无动作。",
                         }
                     )
                 if pending_wide_grep_msg:
@@ -1374,6 +1744,40 @@ class WorkerLoop:
                         step=step,
                         decision="repeat" if pending_wide_grep_repeat else "degrade",
                     )
+                elif pending_compressed_unread_msg:
+                    history.append(
+                        {
+                            "role": "user",
+                            "content": pending_compressed_unread_msg,
+                        }
+                    )
+                    self.supervisor.report(
+                        task_id,
+                        "wide_grep: compressed_unread",
+                        {"preview": pending_compressed_unread_msg[:120]},
+                    )
+                    self._progress(
+                        pending_compressed_unread_msg[:200],
+                        phase="wide_grep",
+                        step=step,
+                        decision="compressed_unread",
+                    )
+                elif pending_compressed_hits_msg:
+                    history.append(
+                        {"role": "user", "content": pending_compressed_hits_msg}
+                    )
+                    self.supervisor.report(
+                        task_id,
+                        "wide_grep: compressed_hits",
+                        {"preview": pending_compressed_hits_msg[:120]},
+                    )
+                    self._progress(
+                        pending_compressed_hits_msg[:200],
+                        phase="wide_grep",
+                        step=step,
+                        decision="compressed_hits",
+                    )
+                # 【开读须改写】硬闸已退役：不再因只读步强制 mutate / 禁定位
                 # 动作间隙取消：不要走进反省/重规划空转
                 if _results_indicate_stop(results) or self._task_control(task_id) != "ok":
                     halted = self._halt_if_stopped(
@@ -1427,29 +1831,9 @@ class WorkerLoop:
                             prior_alternate_fps=prior_alternate_fps,
                             llm=None,
                         )
+                    # 反省不再 abort；兼容旧模型若仍输出 abort → alternate
+                    reflection = coerce_reflection_no_abort(reflection)
                     reflect_count += 1
-                    # D：已有写入 + 纯参数格式失败 → 降 abort 为 alternate（每 run 至多一次）
-                    if (
-                        reflection.decision == "abort"
-                        and write_set
-                        and not format_abort_softened
-                    ):
-                        softened = soften_abort_when_mutated_format_error(
-                            reflection,
-                            write_set=write_set,
-                            results=results,
-                        )
-                        if softened.decision != "abort":
-                            reflection = softened
-                            format_abort_softened = True
-                            self.supervisor.report(
-                                task_id,
-                                "reflect: soften_format_abort",
-                                {
-                                    "write_set": list(write_set)[:8],
-                                    "reflection": reflection.to_dict(),
-                                },
-                            )
                     last_reflection = reflection.to_dict()
                     self._stats_note_reflection(task_id, reflection)
                     if reflection.decision == "alternate" and primary_fp:
@@ -1474,27 +1858,7 @@ class WorkerLoop:
                             step=step,
                             reflect_count=reflect_count,
                         )
-                    # patch miss / 缺 path / 截断锚点：临时放开定向只读，避免 mutate 面挡住补读后直接 failed
-                    if reflection_needs_verify_read(reflection):
-                        verify_msg = format_verify_read_message(
-                            paths=failed_write_paths(plan.actions, results)
-                        )
-                        history.append({"role": "user", "content": verify_msg})
-                        self.supervisor.report(
-                            task_id,
-                            "reflect: verify_read",
-                            {
-                                "paths": failed_write_paths(plan.actions, results)[:8],
-                                "decision": reflection.decision,
-                            },
-                        )
-                        self._progress(
-                            verify_msg[:200],
-                            phase="reflect",
-                            step=step,
-                            decision="verify_read",
-                            reflect_count=reflect_count,
-                        )
+                    # 【反省开读】/【开读须改写】硬闸已退役：失败后仍可 fs_glob/fs_grep 纠路径
                     self.supervisor.report(
                         task_id,
                         f"reflect: {reflection.decision}",
@@ -1513,12 +1877,11 @@ class WorkerLoop:
                         **self._stats_progress_extra(),
                     )
 
-                    if reflection.decision == "abort" or not can_replan:
+                    # 反省不再 abort：仅步数用尽时失败；止损由规划 status=failed
+                    if not can_replan:
                         abort_msg = reflection.cause or err
                         abort_thought = plan.thought
-                        if reflection.decision == "abort" and abort_should_deliver_commands(
-                            reflection
-                        ):
+                        if abort_should_deliver_commands(reflection):
                             abort_msg = format_abort_delivery(
                                 reflection, fallback=abort_msg
                             )
@@ -1586,6 +1949,74 @@ class WorkerLoop:
                     )
                     persist(next_step=step + 1)
                     continue
+
+                # 成功路径：工具结果观察后轻量思考反省（软建议；≠ 执行反省）
+                if (
+                    obs_reflect_enabled()
+                    and plan.actions
+                    and results
+                    and all(r.ok for r in results)
+                    and not awaiting_user_answer
+                ):
+                    self._progress(
+                        "观察反省中…",
+                        phase="obs_reflect",
+                        step=step,
+                        **self._step_label_extra(task_id, plan),
+                    )
+                    obs_reflect_fn = getattr(self.brain, "obs_reflect", None)
+                    obs_data_dir = str(self.supervisor.data_dir)
+                    if callable(obs_reflect_fn):
+                        obs_reflection = obs_reflect_fn(
+                            task.goal,
+                            plan.actions,
+                            results,
+                            tool_feedback=tool_feedback_for_obs,
+                            data_dir=obs_data_dir,
+                        )
+                    else:
+                        obs_reflection = run_obs_reflect(
+                            task.goal,
+                            plan.actions,
+                            results,
+                            tool_feedback=tool_feedback_for_obs,
+                            data_dir=obs_data_dir,
+                            llm=None,
+                        )
+                    history.append(
+                        {
+                            "role": "user",
+                            "content": format_obs_reflection_for_history(
+                                obs_reflection
+                            ),
+                        }
+                    )
+                    self.supervisor.report(
+                        task_id,
+                        f"obs_reflect: {obs_reflection.progress}",
+                        {"obs_reflection": obs_reflection.to_dict()},
+                    )
+                    obs_extra: dict[str, Any] = {}
+                    obs_raw = getattr(obs_reflection, "raw", None) or {}
+                    if isinstance(obs_raw, dict):
+                        usage = obs_raw.get("usage")
+                        if isinstance(usage, dict) and usage:
+                            obs_extra["tokens"] = usage
+                        thinking = obs_raw.get("thinking")
+                        if isinstance(thinking, dict) and thinking:
+                            obs_extra["thinking"] = thinking
+                        if obs_raw.get("model"):
+                            obs_extra["model"] = obs_raw.get("model")
+                    self._progress(
+                        f"观察反省：{obs_reflection.progress} — "
+                        f"{(obs_reflection.thought or '')[:160]}",
+                        phase="obs_reflect",
+                        step=step,
+                        progress=obs_reflection.progress,
+                        **obs_extra,
+                        **self._step_label_extra(task_id, plan),
+                        **self._stats_progress_extra(),
+                    )
 
                 # 成功路径：改文件目标连续只读探索过久 → 注入 / 强制改写 / 止损
                 repeated_paths = hot_repeated_paths(read_path_counts)
@@ -1812,13 +2243,109 @@ class WorkerLoop:
                             decision="inject",
                         )
 
+                # 已定位锚点：注入 / 强制改写 / 止损（不依赖 goal 启发式）
+                locate_force_n = locate_force_threshold(budget=locate_budget_n)
+                prefer_anchors = preferred_locate_anchors(locate_anchors, limit=8)
+                if locate_budget_should_abort_after_force(
+                    streak=post_locate_streak,
+                    budget=locate_budget_n,
+                    write_set=write_set,
+                    mutate_forced=locate_mutate_forced,
+                    actions=plan.actions,
+                    results=results,
+                ):
+                    abort_msg = format_locate_mutate_force_message(
+                        streak=post_locate_streak,
+                        budget=locate_budget_n,
+                        anchors=prefer_anchors,
+                    )
+                    abort_msg = abort_msg + " 已给过定位强制改写轮仍无写入，止损。"
+                    history.append({"role": "user", "content": abort_msg})
+                    self.supervisor.report(
+                        task_id,
+                        "locate_budget: abort",
+                        {
+                            "post_locate_streak": post_locate_streak,
+                            "budget": locate_budget_n,
+                            "force_at": locate_force_n,
+                            "anchors": prefer_anchors,
+                            "mutate_forced": locate_mutate_forced,
+                        },
+                    )
+                    self._progress(
+                        abort_msg[:200],
+                        phase="locate_budget",
+                        step=step,
+                        post_locate_streak=post_locate_streak,
+                        decision="abort",
+                    )
+                    if self._task_control(task_id) == "cancelled":
+                        return self._finish(
+                            task_id,
+                            ok=False,
+                            error="cancelled",
+                            traces=traces,
+                            replan_count=replan_count,
+                            reflect_count=reflect_count,
+                            verify_results=verify_results,
+                            final_thought=plan.thought,
+                            last_reflection=last_reflection,
+                            write_set=write_set,
+                            stagnation_count=stagnation_count,
+                        )
+                    self.supervisor.fail(task_id, message=abort_msg)
+                    return self._finish(
+                        task_id,
+                        ok=False,
+                        error=abort_msg,
+                        traces=traces,
+                        replan_count=replan_count,
+                        reflect_count=reflect_count,
+                        verify_results=verify_results,
+                        final_thought=plan.thought,
+                        last_reflection=last_reflection,
+                        write_set=write_set,
+                        stagnation_count=stagnation_count,
+                    )
+                if locate_budget_should_force_mutate(
+                    streak=post_locate_streak,
+                    budget=locate_budget_n,
+                    write_set=write_set,
+                    mutate_forced=locate_mutate_forced,
+                ):
+                    force_msg = format_locate_mutate_force_message(
+                        streak=post_locate_streak,
+                        budget=locate_budget_n,
+                        anchors=prefer_anchors,
+                    )
+                    history.append({"role": "user", "content": force_msg})
+                    locate_mutate_forced = True
+                    self.supervisor.report(
+                        task_id,
+                        "locate_budget: force_mutate",
+                        {
+                            "post_locate_streak": post_locate_streak,
+                            "budget": locate_budget_n,
+                            "force_at": locate_force_n,
+                            "anchors": prefer_anchors,
+                        },
+                    )
+                    self._progress(
+                        force_msg[:200],
+                        phase="locate_budget",
+                        step=step,
+                        post_locate_streak=post_locate_streak,
+                        decision="force_mutate",
+                    )
+                    persist(next_step=step + 1)
+                    continue
                 if locate_budget_should_inject(
                     streak=post_locate_streak, budget=locate_budget_n
                 ):
                     locate_msg = format_locate_budget_message(
                         streak=post_locate_streak,
                         budget=locate_budget_n,
-                        anchors=locate_anchors,
+                        anchors=prefer_anchors,
                     )
                     history.append({"role": "user", "content": locate_msg})
                     self.supervisor.report(
@@ -1827,7 +2354,7 @@ class WorkerLoop:
                         {
                             "post_locate_streak": post_locate_streak,
                             "budget": locate_budget_n,
-                            "anchors": locate_anchors[:8],
+                            "anchors": prefer_anchors,
                         },
                     )
                     self._progress(
@@ -1865,11 +2392,15 @@ class WorkerLoop:
                     )
 
                 # 成功路径：步骤重复守卫（零 LLM 判定；命中再裁决）
+                # 规划可声明 allow_repeat / skip_step_repeat：本步豁免计数与裁决
                 if (
                     step_repeat_enabled()
                     and plan.actions
                     and results
                     and all(r.ok for r in results)
+                    and not plan_skips_step_repeat(
+                        plan.actions, plan_raw=getattr(plan, "raw", None) or {}
+                    )
                 ):
                     step_fp = step_fingerprint(
                         plan.actions, observe_methods=list(methods)
@@ -1877,47 +2408,47 @@ class WorkerLoop:
                     if step_fp:
                         step_fp_counts[step_fp] += 1
                         hit_count = int(step_fp_counts[step_fp])
-                        force_hard = step_fp in prior_judged_step_fps
-                        should_judge = force_hard or hit_count >= step_repeat_n
+                        prior_judged = step_fp in prior_judged_step_fps
+                        # 判决后再撞同指纹：仍回灌大脑裁决，不由代码硬 abort
+                        should_judge = prior_judged or hit_count >= step_repeat_n
                         if should_judge:
-                            if force_hard:
-                                reflection = hard_abort_stagnation(
-                                    step_fp, hit_count=hit_count
+                            self._progress(
+                                "检测到步骤重复，裁决中…",
+                                phase="stagnation",
+                                step=step,
+                                fingerprint=step_fp,
+                                hit_count=hit_count,
+                                prior_judged=prior_judged,
+                            )
+                            stag_fn = getattr(self.brain, "stagnation", None)
+                            stag_kwargs = {
+                                "fingerprint": step_fp,
+                                "hit_count": hit_count,
+                                "history": history,
+                                "prior_judged": prior_judged,
+                                "locate_anchors": locate_anchors,
+                            }
+                            if callable(stag_fn):
+                                reflection = stag_fn(
+                                    task.goal,
+                                    plan.actions,
+                                    results,
+                                    **stag_kwargs,
                                 )
                             else:
-                                self._progress(
-                                    "检测到步骤重复，裁决中…",
-                                    phase="stagnation",
-                                    step=step,
-                                    fingerprint=step_fp,
-                                    hit_count=hit_count,
+                                reflection = run_stagnation(
+                                    task.goal,
+                                    plan.actions,
+                                    results,
+                                    llm=None,
+                                    **stag_kwargs,
                                 )
-                                stag_fn = getattr(self.brain, "stagnation", None)
-                                if callable(stag_fn):
-                                    reflection = stag_fn(
-                                        task.goal,
-                                        plan.actions,
-                                        results,
-                                        fingerprint=step_fp,
-                                        hit_count=hit_count,
-                                        history=history,
-                                    )
-                                else:
-                                    reflection = run_stagnation(
-                                        task.goal,
-                                        plan.actions,
-                                        results,
-                                        fingerprint=step_fp,
-                                        hit_count=hit_count,
-                                        history=history,
-                                        llm=None,
-                                    )
+                            reflection = coerce_reflection_no_abort(reflection)
                             stagnation_count += 1
                             self._run_stagnation_count = stagnation_count
                             last_reflection = reflection.to_dict()
                             last_reflection["trigger"] = "step_repeat"
-                            if not force_hard:
-                                self._stats_note_reflection(task_id, reflection)
+                            self._stats_note_reflection(task_id, reflection)
                             prior_judged_step_fps.add(step_fp)
                             history.append(
                                 {
@@ -1944,37 +2475,7 @@ class WorkerLoop:
                                 forced=bool(reflection.forced),
                                 **self._stats_progress_extra(),
                             )
-                            if reflection.decision == "abort":
-                                abort_msg = reflection.cause or "step repeat abort"
-                                if self._task_control(task_id) == "cancelled":
-                                    return self._finish(
-                                        task_id,
-                                        ok=False,
-                                        error="cancelled",
-                                        traces=traces,
-                                        replan_count=replan_count,
-                                        reflect_count=reflect_count,
-                                        verify_results=verify_results,
-                                        final_thought=plan.thought,
-                                        last_reflection=last_reflection,
-                                        write_set=write_set,
-                                        stagnation_count=stagnation_count,
-                                    )
-                                self.supervisor.fail(task_id, message=abort_msg)
-                                return self._finish(
-                                    task_id,
-                                    ok=False,
-                                    error=abort_msg,
-                                    traces=traces,
-                                    replan_count=replan_count,
-                                    reflect_count=reflect_count,
-                                    verify_results=verify_results,
-                                    final_thought=plan.thought,
-                                    last_reflection=last_reflection,
-                                    write_set=write_set,
-                                    stagnation_count=stagnation_count,
-                                )
-                            # continue / alternate：注入约束后进入下一轮规划
+                            # continue / alternate：注入约束后进入下一轮；止损由规划 failed
                             replan_count += 1
                             awaiting_user_answer = False
                             persist(next_step=step + 1)
@@ -1996,6 +2497,85 @@ class WorkerLoop:
                                 write_set=write_set,
                                 stagnation_count=stagnation_count,
                             )
+                        # 兜底：JSON/空内容格式失败不得整任务 Failed（Brain 应已软降级）
+                        thought_fmt = (plan.thought or "").strip()
+                        if self._can_continue(step) and any(
+                            thought_fmt.startswith(p)
+                            for p in ("无法解析 JSON：", "LLM 返回空内容")
+                        ):
+                            soft_plan = Plan(
+                                thought=thought_fmt,
+                                actions=[],
+                                done=False,
+                                status="continue",
+                                raw={
+                                    "format_soft_fallback": True,
+                                    "format_fail_excerpt": thought_fmt[:400],
+                                },
+                            )
+                            history.append(
+                                {
+                                    "role": "assistant",
+                                    "content": thought_fmt[:1500],
+                                }
+                            )
+                            history.append(
+                                {
+                                    "role": "user",
+                                    "content": format_soft_fallback_history_message(
+                                        soft_plan
+                                    )
+                                    or (
+                                        "规划输出格式异常，请只输出一个 JSON 对象后继续。"
+                                    ),
+                                }
+                            )
+                            self._progress(
+                                "规划格式异常，已跳过本步并重试（未中断）",
+                                phase="planned",
+                                step=step,
+                                decision="format_soft_fallback",
+                            )
+                            replan_count += 1
+                            awaiting_user_answer = False
+                            persist(next_step=step + 1)
+                            continue
+                        # 必要路径台账：分项/交付未兑现则回灌一轮
+                        if (
+                            path_ledger_retries < 1
+                            and self._can_continue(step)
+                            and failed_needs_path_ledger_retry(
+                                goal=task.goal, thought=plan.thought or ""
+                            )
+                        ):
+                            path_ledger_retries += 1
+                            history.append(
+                                {
+                                    "role": "user",
+                                    "content": format_path_ledger_fail_prompt(
+                                        goal=task.goal,
+                                        thought=plan.thought or "",
+                                    ),
+                                }
+                            )
+                            self._progress(
+                                "必要路径收尾未过，请按台账分项或交付命令后重写…",
+                                phase="path_ledger",
+                                step=step,
+                                decision="retry_fail_thought",
+                                path_ledger_retries=path_ledger_retries,
+                            )
+                            self.supervisor.report(
+                                task_id,
+                                "path_ledger: retry_fail_thought",
+                                {
+                                    "path_ledger_retries": path_ledger_retries,
+                                    "thought": (plan.thought or "")[:240],
+                                },
+                            )
+                            awaiting_user_answer = False
+                            persist(next_step=step + 1)
+                            continue
                         self.supervisor.fail(task_id, message=plan.thought or "brain failed")
                         return self._finish(
                             task_id,
@@ -2044,6 +2624,26 @@ class WorkerLoop:
                                     f"已改路径：{', '.join(write_set)}"
                                 ),
                             }
+                        )
+                        awaiting_user_answer = False
+                        persist(next_step=step + 1)
+                        continue
+                    # 脚本铲子：临时脚本成功后软提示提炼（不阻断最终 success）
+                    if should_inject_promote_hint(
+                        history=history, status=plan.status or ""
+                    ):
+                        hint = format_promote_hint_message()
+                        history.append({"role": "user", "content": hint})
+                        self.supervisor.report(
+                            task_id,
+                            "shovel_lifecycle: promote_hint",
+                            {},
+                        )
+                        self._progress(
+                            hint[:200],
+                            phase="shovel_gate",
+                            step=step,
+                            decision="promote_hint",
                         )
                         awaiting_user_answer = False
                         persist(next_step=step + 1)
@@ -2515,6 +3115,7 @@ class WorkerLoop:
             "verifies": [v.to_dict() for v in verify_results],
             "write_set": list(write_set or []),
             "steps": steps,
+            "final_thought": thought,
         }
         if last_reflection:
             out["reflection"] = last_reflection
@@ -2589,16 +3190,26 @@ class WorkerLoop:
         )
 
     def _observe(
-        self, goal: str, *, methods: list[str] | None = None
+        self,
+        goal: str,
+        *,
+        methods: list[str] | None = None,
+        observe_args: dict[str, Any] | None = None,
     ) -> Observation:
         chosen = methods or choose_observe_methods(goal, capture=self.capture)
         store = getattr(self.controller, "system_log", None)
 
-        def _screen_observe() -> Observation:
+        def _screen_observe(
+            *,
+            screen_target: str | None = None,
+            displays: list[dict[str, Any]] | None = None,
+        ) -> Observation:
             from fawai_avatar.observe.screen import observe as screen_observe
 
             try:
-                obs = screen_observe()
+                obs = screen_observe(
+                    screen_target=screen_target, displays=displays
+                )
             except Exception as exc:  # noqa: BLE001 — 记日志后抛回
                 if store is not None and hasattr(store, "log_screenshot"):
                     try:
@@ -2627,12 +3238,44 @@ class WorkerLoop:
                     pass
             return obs
 
-        return collect_observation(
+        obs = collect_observation(
             chosen,
             screen_observe=_screen_observe,
             goal=goal,
             capture=self.capture,
+            observe_args=observe_args,
         )
+        meta = obs.meta or {}
+        if obs.image_path and (
+            meta.get("origin_x") is not None or meta.get("origin_y") is not None
+        ):
+            frame: dict[str, float] = {
+                "origin_x": float(meta.get("origin_x") or 0),
+                "origin_y": float(meta.get("origin_y") or 0),
+            }
+            for key in (
+                "image_width",
+                "image_height",
+                "capture_width",
+                "capture_height",
+                "coord_scale_x",
+                "coord_scale_y",
+            ):
+                if meta.get(key) is not None:
+                    try:
+                        frame[key] = float(meta[key])
+                    except (TypeError, ValueError):
+                        pass
+            if obs.width is not None and "image_width" not in frame:
+                frame["image_width"] = float(obs.width)
+            if obs.height is not None and "image_height" not in frame:
+                frame["image_height"] = float(obs.height)
+            self._last_screen_frame = frame
+            self._last_screen_origin = {
+                "origin_x": frame["origin_x"],
+                "origin_y": frame["origin_y"],
+            }
+        return obs
 
     def _verify_file_state(
         self, actions: list[Action], results: list[ExecResult]
@@ -2644,7 +3287,271 @@ class WorkerLoop:
 
         return verify_actions_file_state(bg.fs.work_root, actions, results)
 
-    def _execute_actions(self, task_id: str, actions: list[Action]) -> list[ExecResult]:
+    def _verify_ui_ax(
+        self, actions: list[Action], results: list[ExecResult]
+    ) -> list[ExecResult]:
+        from fawai_avatar.observe.verify import verify_actions_ui_ax
+
+        if getattr(self.controller, "dry_run", False):
+            return []
+        try:
+            return verify_actions_ui_ax(actions, results)
+        except Exception as exc:  # noqa: BLE001
+            return [
+                ExecResult(
+                    ok=False,
+                    message=f"ui_verify exception: {exc}",
+                    data={"error": str(exc)},
+                )
+            ]
+
+    def _run_fast_delegate(
+        self,
+        task_id: str,
+        *,
+        task_goal: str,
+        spec: Any,
+        model: str,
+        history: list[dict[str, Any]],
+        traces: list[StepTrace],
+        write_set: list[str],
+        start_step: int,
+        pending_observe_kinds: list[str] | None,
+        replan_count: int,
+        reflect_count: int,
+        verify_results: list[Any],
+        last_reflection: dict[str, Any] | None,
+        persist: Callable[..., None],
+        pending_observe_args: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """快模型子闭环：观察→规划→执行；失败/收束立刻回灌主脑（不做段内反省换道）。"""
+        from fawai_avatar.brain.delegate import DelegateSpec
+
+        assert isinstance(spec, DelegateSpec)
+        sub_goal = (
+            f"{task_goal}\n\n【委派子目标】{spec.goal}\n"
+            f"【停条件】{spec.stop_when or '子目标完成或无法继续'}"
+        )
+        step = int(start_step)
+        steps_used = 0
+        last_summary = ""
+        outcome = "max_steps"
+        pending = list(pending_observe_kinds) if pending_observe_kinds else None
+        pending_args = (
+            dict(pending_observe_args) if isinstance(pending_observe_args, dict) else None
+        )
+
+        for _ in range(int(spec.max_steps)):
+            halted = self._halt_if_stopped(
+                task_id,
+                step=step,
+                traces=traces,
+                replan_count=replan_count,
+                reflect_count=reflect_count,
+                verify_results=verify_results,
+                last_reflection=last_reflection,
+                write_set=write_set,
+            )
+            if halted is not None:
+                return {
+                    "history": history,
+                    "traces": traces,
+                    "write_set": write_set,
+                    "step": step,
+                    "pending_observe_kinds": pending,
+                    "pending_observe_args": pending_args,
+                    "outcome": "halted",
+                    "summary": last_summary or "任务已停止",
+                    "steps_used": steps_used,
+                    "halted": halted,
+                }
+            if not self._can_continue(step):
+                outcome = "max_steps"
+                last_summary = last_summary or "达到全局步数上限"
+                break
+
+            methods = resolve_observe_methods(
+                sub_goal,
+                capture=self.capture,
+                requested=pending,
+            )
+            self._progress(
+                progress_observe_text(methods, pending=True),
+                phase="observe",
+                step=step,
+                observe_methods=methods,
+                observe_label="、".join(observe_label(m) for m in methods),
+                delegate_tier="fast",
+            )
+            t_obs = time.perf_counter()
+            obs = self._observe(
+                sub_goal, methods=methods, observe_args=pending_args
+            )
+            obs = self._attach_title_context(task_id, obs)
+            obs_ms = int((time.perf_counter() - t_obs) * 1000)
+            obs_meta = obs.meta or {}
+            done_methods = list(obs_meta.get("observe_methods") or methods)
+            self._progress(
+                progress_observe_text(
+                    done_methods,
+                    pending=False,
+                    preview=str(obs.summary or ""),
+                ),
+                phase="observe",
+                step=step,
+                elapsed_ms=obs_ms,
+                observe_methods=done_methods,
+                observe_method=obs_meta.get("observe_method"),
+                observe_label=obs_meta.get("observe_label"),
+                paths=_paths_from_observation(obs),
+                frontmost_app=obs_meta.get("frontmost_app"),
+                frontmost_window=obs_meta.get("frontmost_window"),
+                frontmost_ok=obs_meta.get("frontmost_ok"),
+                delegate_tier="fast",
+            )
+
+            self._progress(
+                "快模型规划中…",
+                phase="plan",
+                step=step,
+                model=model,
+                delegate_tier="fast",
+            )
+            plan, plan_cancelled = self._call_cancellable(
+                task_id,
+                lambda: self.brain.plan(
+                    sub_goal,
+                    obs,
+                    history=history,
+                    model=model,
+                    planner_role="fast",
+                ),
+                label="plan_fast",
+            )
+            if plan_cancelled:
+                return {
+                    "history": history,
+                    "traces": traces,
+                    "write_set": write_set,
+                    "step": step,
+                    "pending_observe_kinds": pending,
+                    "pending_observe_args": pending_args,
+                    "outcome": "cancelled",
+                    "summary": "cancelled",
+                    "steps_used": steps_used,
+                    "halted": self._finish(
+                        task_id,
+                        ok=False,
+                        error="cancelled",
+                        traces=traces,
+                        replan_count=replan_count,
+                        reflect_count=reflect_count,
+                        verify_results=verify_results,
+                        final_thought=None,
+                        last_reflection=last_reflection,
+                        write_set=write_set,
+                    ),
+                }
+            assert plan is not None
+            steps_used += 1
+            self._stats_note_plan(task_id, plan)
+            pending = list(plan.observe_kinds) or None
+            pending_args = dict(plan.observe_args) if plan.observe_args else None
+            last_summary = (plan.thought or "").strip()
+            history.append(
+                {
+                    "role": "assistant",
+                    "content": f"[fast] {plan.thought or plan.status}",
+                }
+            )
+
+            if plan.status in {"success", "failed"}:
+                traces.append(StepTrace(observation=obs, plan=plan, results=[]))
+                outcome = plan.status
+                persist(next_step=step + 1)
+                step += 1
+                break
+
+            if plan.status == "need_input":
+                # 快模型不应澄清；升为主脑处理
+                traces.append(StepTrace(observation=obs, plan=plan, results=[]))
+                outcome = "escalated"
+                last_summary = last_summary or "快模型遇到歧义，交回主脑"
+                persist(next_step=step + 1)
+                step += 1
+                break
+
+            if not plan.actions:
+                traces.append(StepTrace(observation=obs, plan=plan, results=[]))
+                outcome = "empty"
+                last_summary = last_summary or "快模型空 actions，交回主脑"
+                persist(next_step=step + 1)
+                step += 1
+                break
+
+            self._progress(
+                _format_act_progress(plan.actions),
+                phase="act",
+                step=step,
+                delegate_tier="fast",
+                **_actions_progress_meta(plan.actions),
+            )
+            results = self._execute_actions(
+                task_id, plan.actions, write_set=write_set
+            )
+            for action in plan.actions:
+                for p in action.write_resources:
+                    if p not in write_set:
+                        write_set.append(p)
+            tool_obs, _tool_meta = format_tool_observation(
+                plan.actions, results, goal=sub_goal
+            )
+            history.append(
+                {
+                    "role": "user",
+                    "content": f"执行结果（工具结果观察·快模型）：\n{tool_obs}",
+                }
+            )
+            traces.append(StepTrace(observation=obs, plan=plan, results=results))
+            if any(not r.ok for r in results):
+                fail_msgs = "; ".join(
+                    (r.message or "fail")[:160] for r in results if not r.ok
+                )
+                outcome = "action_failed"
+                last_summary = (
+                    f"{last_summary}\n动作失败：{fail_msgs}".strip()
+                    if last_summary
+                    else f"动作失败：{fail_msgs}"
+                )
+                persist(next_step=step + 1)
+                step += 1
+                break
+            persist(next_step=step + 1)
+            step += 1
+        else:
+            outcome = "max_steps"
+            last_summary = last_summary or f"快模型已用满 {spec.max_steps} 步"
+
+        return {
+            "history": history,
+            "traces": traces,
+            "write_set": write_set,
+            "step": step,
+            "pending_observe_kinds": pending,
+            "pending_observe_args": pending_args,
+            "outcome": outcome,
+            "summary": last_summary,
+            "steps_used": steps_used,
+            "halted": None,
+        }
+
+    def _execute_actions(
+        self,
+        task_id: str,
+        actions: list[Action],
+        *,
+        write_set: list[str] | None = None,
+    ) -> list[ExecResult]:
         results: list[ExecResult] = []
         for action in actions:
             # 动作间隙协作停步：取消后不再开新动作（当前正在跑的 shell 仍可能跑完）
@@ -2684,6 +3591,51 @@ class WorkerLoop:
                             ExecResult(ok=False, message="cannot claim resource_lease")
                         )
                         break
+            kind = (action.kind or "").strip().lower()
+            # 空 code_check：用本任务已写路径回填，避免「写后空调 check」假失败
+            if kind == "code_check":
+                from fawai_avatar.workspace.check import fill_code_check_args
+
+                filled = fill_code_check_args(action.args, write_set=write_set)
+                if filled != dict(action.args or {}):
+                    action = Action(
+                        kind=action.kind,
+                        args=filled,
+                        needs_foreground=action.needs_foreground,
+                        write_resources=list(action.write_resources),
+                    )
+            # click 族：注入最近截屏 origin / 尺寸 / Retina scale（图内 → 全局）
+            if kind in {"click", "double_click", "right_click"}:
+                args = dict(action.args or {})
+                space = str(
+                    args.get("coord_space") or args.get("coords") or "image"
+                ).strip().lower()
+                frame = self._last_screen_frame or self._last_screen_origin
+                if (
+                    space not in {"global", "screen", "absolute", "desktop"}
+                    and frame
+                ):
+                    injected = dict(args)
+                    if injected.get("origin_x") is None and injected.get("origin_y") is None:
+                        injected["origin_x"] = frame.get("origin_x", 0)
+                        injected["origin_y"] = frame.get("origin_y", 0)
+                    for key in (
+                        "image_width",
+                        "image_height",
+                        "capture_width",
+                        "capture_height",
+                        "coord_scale_x",
+                        "coord_scale_y",
+                    ):
+                        if injected.get(key) is None and frame.get(key) is not None:
+                            injected[key] = frame[key]
+                    if injected != args:
+                        action = Action(
+                            kind=action.kind,
+                            args=injected,
+                            needs_foreground=action.needs_foreground,
+                            write_resources=list(action.write_resources),
+                        )
             # confirm 模式 / 会话 Diff 需要 task_id
             if "task_id" not in (action.args or {}):
                 action = Action(
@@ -2697,7 +3649,7 @@ class WorkerLoop:
                 bg.task_id = task_id
             result = self.controller.execute(action, task_id=task_id)
             results.append(result)
-            if not result.ok:
+            if should_break_action_batch(action, result):
                 break
         return results
 
@@ -2748,6 +3700,9 @@ def _llm_progress_meta(plan: Plan, *, fallback_elapsed_ms: int) -> dict[str, Any
     meta["elapsed_ms"] = int(elapsed if elapsed is not None else fallback_elapsed_ms)
     if raw.get("model"):
         meta["model"] = raw.get("model")
+    thinking = raw.get("thinking")
+    if isinstance(thinking, dict) and thinking:
+        meta["thinking"] = thinking
     return meta
 
 

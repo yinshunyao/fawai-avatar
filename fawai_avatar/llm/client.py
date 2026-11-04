@@ -6,6 +6,11 @@ from typing import Any
 
 from fawai_avatar.config import LlmConfig
 from fawai_avatar.llm.router import route_model
+from fawai_avatar.llm.thinking import (
+    resolve_thinking,
+    thinking_extra_body,
+    thinking_meta,
+)
 
 
 class LlmClient:
@@ -22,6 +27,9 @@ class LlmClient:
         model: str | None = None,
         tool_choice: str | dict[str, Any] | None = "auto",
         force_multimodal: bool | None = None,
+        thinking_role: str | None = None,
+        enable_thinking: bool | None = None,
+        thinking_budget: int | None = None,
     ) -> dict[str, Any]:
         if not self.config.api_key:
             return {
@@ -52,11 +60,26 @@ class LlmClient:
             "model": chosen,
             "messages": messages,
         }
-        kwargs.update(self.config.chat_sampling_kwargs())
+        kwargs.update(self.config.chat_sampling_kwargs(chosen))
         if tools:
             kwargs["tools"] = tools
             if tool_choice is not None:
                 kwargs["tool_choice"] = tool_choice
+
+        thinking = self._resolve_thinking_for_model(
+            chosen,
+            thinking_role=thinking_role,
+            enable_thinking=enable_thinking,
+            thinking_budget=thinking_budget,
+        )
+        extra = thinking_extra_body(
+            thinking,
+            base_url=self.config.base_url,
+            model=chosen,
+        )
+        if extra:
+            kwargs["extra_body"] = extra
+
         try:
             resp = client.chat.completions.create(**kwargs)
         except Exception as exc:  # noqa: BLE001 — 对上层返回可行动错误
@@ -67,6 +90,7 @@ class LlmClient:
                 "tool_calls": [],
                 "model": chosen,
                 "route": route_kind,
+                "thinking": thinking_meta(thinking),
             }
 
         msg = resp.choices[0].message
@@ -89,7 +113,30 @@ class LlmClient:
             "model": chosen,
             "route": route_kind,
             "usage": _usage_dict(getattr(resp, "usage", None)),
+            "thinking": thinking_meta(thinking),
         }
+
+    def _resolve_thinking_for_model(
+        self,
+        model: str,
+        *,
+        thinking_role: str | None,
+        enable_thinking: bool | None,
+        thinking_budget: int | None,
+    ) -> dict[str, Any]:
+        from fawai_avatar.llm.model_profiles import load_profile, thinking_profile_params
+
+        profile = load_profile(model)
+        tp = thinking_profile_params(
+            profile.get("params") if isinstance(profile, dict) else None
+        )
+        return resolve_thinking(
+            thinking_role=thinking_role,
+            enable_thinking=enable_thinking,
+            thinking_budget=thinking_budget,
+            profile_enable=tp.get("enable_thinking"),
+            profile_budget=tp.get("thinking_budget"),
+        )
 
     def embed(
         self,
@@ -140,6 +187,9 @@ def chat(
     model: str | None = None,
     tool_choice: str | dict[str, Any] | None = "auto",
     force_multimodal: bool | None = None,
+    thinking_role: str | None = None,
+    enable_thinking: bool | None = None,
+    thinking_budget: int | None = None,
 ) -> dict[str, Any]:
     return LlmClient().chat(
         messages,
@@ -147,6 +197,9 @@ def chat(
         model=model,
         tool_choice=tool_choice,
         force_multimodal=force_multimodal,
+        thinking_role=thinking_role,
+        enable_thinking=enable_thinking,
+        thinking_budget=thinking_budget,
     )
 
 
@@ -220,5 +273,14 @@ if __name__ == "__main__":
     print("text route", route_model(text_msgs, cfg))
     print("vision route", route_model(vision_msgs, cfg))
     if not CHECK_ROUTE_ONLY:
-        r = LlmClient(cfg).chat(text_msgs)
-        print({"ok": r.get("ok"), "model": r.get("model"), "route": r.get("route"), "content": (r.get("content") or "")[:80], "error": r.get("error")})
+        r = LlmClient(cfg).chat(text_msgs, thinking_role="main")
+        print(
+            {
+                "ok": r.get("ok"),
+                "model": r.get("model"),
+                "route": r.get("route"),
+                "thinking": r.get("thinking"),
+                "content": (r.get("content") or "")[:80],
+                "error": r.get("error"),
+            }
+        )

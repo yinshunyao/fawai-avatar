@@ -1,5 +1,6 @@
 # term:观察  doc:doc/功能/观察/说明.md
-"""窄场景回证：文件态 / 观察截图是否可用（不做 OCR/VLM 定位）。"""
+# term:界面回证  doc:doc/功能/自主操控/说明.md
+"""窄场景回证：文件态 / 观察截图可用 / AX 界面态（不做 OCR/VLM 定位）。"""
 
 from __future__ import annotations
 
@@ -9,6 +10,25 @@ from typing import Any
 from fawai_avatar.types import Action, ExecResult, Observation
 from fawai_avatar.workspace.fs import WorkspaceFs
 from fawai_avatar.workspace.paths import WorkspacePathError
+
+_UI_TYPE_KINDS = frozenset({"ui_type", "type"})
+_UI_ACT_KINDS = frozenset(
+    {
+        "ui_click",
+        "ui_type",
+        "ui_verify",
+        "click",
+        "type",
+        "double_click",
+        "right_click",
+        "hotkey",
+        "press",
+        "scroll",
+        "app_focus",
+    }
+)
+# ui_verify 仅 AX；显式 method=ocr/vlm 须硬失败，禁止静默改走 AX 造成假归因
+_UI_VERIFY_AX_METHODS = frozenset({"", "ax", "ui_ax", "accessibility"})
 
 
 def verify_observation_usable(obs: Observation) -> ExecResult:
@@ -63,6 +83,119 @@ def verify_fs_write(
             data={"path": path, "got": raw[:200]},
         )
     return ExecResult(ok=True, message=f"verified {path}", data={"path": path})
+
+
+def ui_verify_method_supported(method: str | None) -> bool:
+    """ui_verify 是否支持该 method（仅 ax；ocr/vlm 等一律否）。"""
+    return str(method or "").strip().lower() in _UI_VERIFY_AX_METHODS
+
+
+def verify_ui_ax(*, contains: str | None = None, refresh: bool = True) -> ExecResult:
+    """界面回证：AX 扁平文本须包含 contains（空 contains 仅检查采到节点）。
+
+    refresh 失败时须报告「AX 不可用」及原因，禁止在空树上冒充「未找到某串」
+    （否则模型会把键入成功误判成内容未入框）。
+    """
+    from fawai_avatar.observe import ax_tree
+
+    flat = ""
+    if refresh:
+        obs = ax_tree.observe_ax()
+        meta = obs.meta or {}
+        if not meta.get("ok"):
+            detail = (
+                str(meta.get("error") or "").strip()
+                or str(obs.summary or "").strip()
+                or str(meta.get("reason") or "ax_failed")
+            )
+            return ExecResult(
+                ok=False,
+                message=f"ui_ax 不可用：{detail}",
+                data={
+                    "ax_ok": False,
+                    "reason": meta.get("reason"),
+                    "error": meta.get("error"),
+                    "summary": obs.summary,
+                    "contains": contains,
+                },
+            )
+        flat = ax_tree.ax_flat_text()
+    if not flat:
+        flat = ax_tree.ax_flat_text()
+    nodes = ax_tree.list_ax_nodes()
+    if contains is None or str(contains) == "":
+        if nodes or flat.strip():
+            return ExecResult(
+                ok=True,
+                message="ui_ax ok（有节点/文本）",
+                data={"nodes": len(nodes), "flat_len": len(flat)},
+            )
+        return ExecResult(ok=False, message="ui_ax 空：无节点且无扁平文本")
+    needle = str(contains)
+    if needle in flat:
+        return ExecResult(
+            ok=True,
+            message=f"ui_ax 含 {needle!r}",
+            data={"contains": needle, "nodes": len(nodes)},
+        )
+    # 再扫节点 value/title
+    for n in nodes:
+        blob = f"{n.get('title') or ''} {n.get('value') or ''}"
+        if needle in blob:
+            return ExecResult(
+                ok=True,
+                message=f"ui_ax 节点含 {needle!r}",
+                data={"contains": needle, "ref": n.get("ref")},
+            )
+    # 有树仍找不到：真「未找到」。无树且未 refresh：与空 registry 一致，避免假「未找到」。
+    if not nodes and not flat.strip():
+        return ExecResult(
+            ok=False,
+            message="ui_ax 不可用：无节点且无扁平文本（请先 obs_ax；缺 pyobjc 时用当前解释器 pip install -e '.[gui]'）",
+            data={"contains": needle, "nodes": 0, "ax_ok": False},
+        )
+    return ExecResult(
+        ok=False,
+        message=f"ui_ax 未找到 {needle!r}",
+        data={"contains": needle, "flat_preview": flat[:240], "nodes": len(nodes)},
+    )
+
+
+def verify_actions_ui_ax(
+    actions: list[Action],
+    results: list[ExecResult],
+) -> list[ExecResult]:
+    """对已成功的 ui_type/type（带 text）与显式 ui_verify 做 AX 回证。"""
+    out: list[ExecResult] = []
+    for i, result in enumerate(results):
+        if not result.ok or i >= len(actions):
+            continue
+        action = actions[i]
+        kind = (action.kind or "").strip().lower()
+        args = action.args or {}
+        if kind == "ui_verify":
+            method = args.get("method")
+            if not ui_verify_method_supported(
+                str(method) if method is not None else None
+            ):
+                # 执行器应已拒；此处不再静默改走 AX
+                continue
+            contains = args.get("contains") or args.get("text") or args.get("expect")
+            out.append(verify_ui_ax(contains=str(contains) if contains is not None else None))
+            continue
+        if kind in _UI_TYPE_KINDS:
+            text = args.get("text")
+            if text is None or str(text) == "":
+                continue
+            # 显式 skip_verify 可跳过
+            if args.get("skip_verify"):
+                continue
+            out.append(verify_ui_ax(contains=str(text)))
+    return out
+
+
+def plan_used_gui_actions(actions: list[Action]) -> bool:
+    return any((a.kind or "").strip().lower() in _UI_ACT_KINDS for a in actions)
 
 
 def verify_actions_file_state(

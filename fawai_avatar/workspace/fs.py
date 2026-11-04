@@ -25,8 +25,38 @@ from fawai_avatar.workspace.paths import (
 
 _BRACE_RE = re.compile(r"\{([^{}]+)\}")
 SKIP_DIR_NAMES_OUTSIDE: frozenset[str] = frozenset(
-    {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache"}
+    {
+        ".git",
+        ".venv",
+        "__pycache__",
+        "node_modules",
+        ".pytest_cache",
+        "mybak",
+        "other3rd",
+        ".Trash",
+        "Library",
+        "Applications",
+        "DerivedData",
+    }
 )
+
+
+def _glob_root_too_broad(base: Path, pattern: str) -> str | None:
+    """path=/ 且 pattern 几乎无字面量时拒扫，避免整盘空转。"""
+    try:
+        resolved = base.resolve()
+    except OSError:
+        return None
+    if resolved != Path("/"):
+        return None
+    lit = re.sub(r"[*?{}\[\]]", "", (pattern or "").replace("**", ""))
+    lit = lit.strip("/.")
+    if len(lit) < 2:
+        return (
+            "fs_glob path=/ 时 pattern 过宽；请把 path 收到具体目录，"
+            "或让 pattern 含明确文件名片段（≥2 字面字符）"
+        )
+    return None
 
 
 def expand_glob_braces(pattern: str) -> list[str]:
@@ -198,6 +228,106 @@ def patch_anchor_quality_error(
     return None
 
 
+_OLD_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}|[\u4e00-\u9fff]{2,}")
+_OLD_HINT_MAX_CHARS = 520
+# 单条命中行正文硬顶：防超长行把一次 grep 打到数十万字符；观察侧默认不压缩
+_HIT_LINE_MAX_CHARS = 500
+
+
+def _clip_hit_text(text: str, *, max_chars: int = _HIT_LINE_MAX_CHARS) -> str:
+    raw = text if isinstance(text, str) else str(text or "")
+    if max_chars <= 0 or len(raw) <= max_chars:
+        return raw
+    return raw[: max_chars - 1] + "…"
+
+
+def _old_search_tokens(old: str, *, limit: int = 8) -> list[str]:
+    """从臆造/错位的 old 里抽出可检索记号（标识符与中文词）。"""
+    seen: set[str] = set()
+    out: list[str] = []
+    for tok in _OLD_TOKEN_RE.findall(old or ""):
+        if tok in seen:
+            continue
+        # 过泛停用词跳过
+        if tok.lower() in {
+            "return",
+            "true",
+            "false",
+            "none",
+            "self",
+            "this",
+            "from",
+            "import",
+            "def",
+            "class",
+            "status",
+            "message",
+        }:
+            continue
+        seen.add(tok)
+        out.append(tok)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def suggest_exact_old_window(file_text: str, old: str, *, context: int = 2) -> str | None:
+    """当 old 不在文件中时，按记号命中行给出可复制的原文小窗（含 1-based 行号）。"""
+    lines = (file_text or "").splitlines()
+    if not lines:
+        return None
+    tokens = _old_search_tokens(old)
+    if not tokens:
+        return None
+    scores: list[tuple[int, int]] = []
+    lower_lines = [ln.lower() for ln in lines]
+    tok_l = [t.lower() for t in tokens]
+    for i, ln in enumerate(lower_lines):
+        hit = sum(1 for t in tok_l if t in ln)
+        if hit:
+            scores.append((hit, i))
+    if not scores:
+        return None
+    scores.sort(key=lambda x: (-x[0], x[1]))
+    best_hit, best_i = scores[0]
+    # 取同分命中的最小行号簇，扩成连续窗
+    peers = [i for h, i in scores if h == best_hit][:12]
+    lo = max(0, min(peers) - context)
+    hi = min(len(lines), max(peers) + context + 1)
+    # 窗不要过大
+    if hi - lo > 16:
+        lo = max(0, best_i - context)
+        hi = min(len(lines), best_i + context + 1)
+    numbered = [f"{idx + 1}:{lines[idx]}" for idx in range(lo, hi)]
+    block = "\n".join(numbered)
+    if len(block) > _OLD_HINT_MAX_CHARS:
+        block = block[: _OLD_HINT_MAX_CHARS - 1] + "…"
+    return (
+        f"文件中与 old 记号最接近的原文小窗（须逐字作 old，勿改写）：\n{block}"
+    )
+
+
+def format_old_not_found_message(
+    rel: str,
+    old: str,
+    file_text: str,
+    *,
+    label: str = "old",
+) -> str:
+    """old 未命中：钉死「未接地/臆造」拒因，并附可复制原文窗。"""
+    head = (
+        f"{label} not found in {rel}；"
+        "【补丁锚点未接地】禁止按目标意图编造 old（仓内不存在的闸门/文案一律无效）；"
+        "须从小窗 fs_read / 下方原文窗逐字复制后再 fs_patch/fs_replace"
+    )
+    hint = suggest_exact_old_window(file_text, old)
+    if hint:
+        return f"{head}\n{hint}"
+    return (
+        f"{head}；若无提示窗：先 fs_grep 钉 path:line，再对该行附近 fs_read 后复制 exact 片段"
+    )
+
+
 def resolve_patch_ops(
     *,
     hunks: Any = None,
@@ -262,25 +392,162 @@ class WorkspaceFs:
     def read_roots(self) -> list[Path]:
         return list(self._read_roots)
 
-    def glob(self, pattern: str, *, head_limit: int = 100) -> list[str]:
-        pattern = (pattern or "*").strip()
+    def glob(
+        self,
+        pattern: str,
+        *,
+        path: str = ".",
+        head_limit: int = 100,
+    ) -> list[str]:
+        """按 glob 列路径。
+
+        - 默认 ``path=.``：只扫 work_root（与历史行为一致）。
+        - 传入 ``path``：经 ``resolve_for_read``（可在 FAWAI_READ_ROOTS 下）后从该目录扫；
+          **禁止**静默忽略 path 仍只扫 work_root。
+        - 命中：work_root 内返回相对路径，否则返回绝对路径。
+        """
+        pattern = (pattern or "*").strip() or "*"
+        limit = max(1, int(head_limit))
+        base = resolve_for_read(self._root, path or ".", read_roots=self._read_roots)
+        broad = _glob_root_too_broad(base, pattern)
+        if broad:
+            raise ValueError(broad)
+        if base.is_file():
+            shown = display_path(base, self._root)
+            rel_to_base = base.name
+            if path_matches_glob(rel_to_base, pattern) or path_matches_glob(shown, pattern):
+                return [shown]
+            return []
+        if not base.is_dir():
+            raise FileNotFoundError(display_path(base, self._root))
+
+        in_work = path_under_any(base, [self._root])
+        # 仓外树大：优先 rg --files；仓内保持 walk，避免 rg glob 语义与 path_matches_glob 不一致
+        if not in_work:
+            via_rg = self._glob_ripgrep(
+                pattern, base=base, head_limit=limit, in_work=False
+            )
+            if via_rg is not None:
+                return via_rg
+        return self._glob_walk(
+            pattern, base=base, head_limit=limit, in_work=in_work
+        )
+
+    def _glob_ripgrep(
+        self,
+        pattern: str,
+        *,
+        base: Path,
+        head_limit: int,
+        in_work: bool,
+    ) -> list[str] | None:
+        """用 rg --files 加速；不可用则返回 None 走 walk。"""
+        if not shutil.which("rg"):
+            return None
+        pats = expand_glob_braces(pattern)
+        cmd: list[str] = [
+            "rg",
+            "--files",
+            "--color",
+            "never",
+            "--hidden",
+            "--no-messages",
+        ]
+        for d in sorted(SKIP_DIR_NAMES_OUTSIDE):
+            cmd.extend(["-g", f"!{d}/**"])
+        for pat in pats:
+            cmd.extend(["-g", pat])
+            # 仅文件名模式时也匹配任意深度
+            if "/" not in pat.rstrip("/"):
+                cmd.extend(["-g", f"**/{pat}"])
+        cmd.append(str(base.resolve()))
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        lines = [ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip()]
+        # 0=有命中 1=无命中；2=部分权限错误但仍可能有 stdout —— 有输出则用，勿退回慢 walk
+        if proc.returncode not in (0, 1, 2):
+            return None
+        if proc.returncode == 2 and not lines:
+            return None
         out: list[str] = []
-        for dirpath, dirnames, filenames in os.walk(self._root, topdown=True):
-            rel_dir = rel_posix(Path(dirpath), self._root)
-            if rel_dir != "." and is_skipped_rel(rel_dir):
-                dirnames.clear()
+        for raw in lines:
+            try:
+                # 勿 resolve：仓外大树上 resolve 可能极慢；rg 已给绝对/相对可用路径
+                file_p = Path(raw)
+                if not file_p.is_absolute():
+                    file_p = (base / raw)
+            except OSError:
                 continue
-            dirnames[:] = [
-                d
-                for d in sorted(dirnames)
-                if not should_prune_dir("" if rel_dir == "." else rel_dir, d)
-            ]
-            for name in sorted(filenames):
-                rel = name if rel_dir == "." else f"{rel_dir}/{name}"
-                if is_skipped_rel(rel):
+            shown = display_path(file_p, self._root)
+            if in_work and is_skipped_rel(shown):
+                continue
+            if shown not in out:
+                out.append(shown)
+            if len(out) >= head_limit:
+                break
+        return out
+
+    def _glob_walk(
+        self,
+        pattern: str,
+        *,
+        base: Path,
+        head_limit: int,
+        in_work: bool,
+    ) -> list[str]:
+        out: list[str] = []
+        base_resolved = base.resolve()
+        for dirpath, dirnames, filenames in os.walk(base_resolved, topdown=True):
+            dir_p = Path(dirpath)
+            if in_work:
+                try:
+                    rel_dir = rel_posix(dir_p, self._root)
+                except ValueError:
+                    dirnames.clear()
                     continue
-                if path_matches_glob(rel, pattern):
-                    out.append(rel)
+                if rel_dir != "." and is_skipped_rel(rel_dir):
+                    dirnames.clear()
+                    continue
+                dirnames[:] = [
+                    d
+                    for d in sorted(dirnames)
+                    if not should_prune_dir("" if rel_dir == "." else rel_dir, d)
+                ]
+            else:
+                try:
+                    rel_dir = dir_p.relative_to(base_resolved).as_posix()
+                except ValueError:
+                    rel_dir = "."
+                dirnames[:] = [
+                    d
+                    for d in sorted(dirnames)
+                    if d not in SKIP_DIR_NAMES_OUTSIDE and not d.startswith("._")
+                ]
+            for name in sorted(filenames):
+                if name.startswith("._"):
+                    continue
+                file_p = dir_p / name
+                if in_work:
+                    rel = name if rel_dir == "." else f"{rel_dir}/{name}"
+                    if is_skipped_rel(rel):
+                        continue
+                    match_key = rel
+                    shown = rel
+                else:
+                    match_key = name if rel_dir == "." else f"{rel_dir}/{name}"
+                    shown = display_path(file_p, self._root)
+                if path_matches_glob(match_key, pattern) or path_matches_glob(
+                    Path(match_key).name, pattern
+                ):
+                    out.append(shown)
                     if len(out) >= head_limit:
                         return out
         return out
@@ -403,7 +670,9 @@ class WorkspaceFs:
         text = file_path.read_text(encoding="utf-8", errors="replace")
         if old not in text:
             raise WorkspacePathError(
-                f"substring not found in {rel}；请先 fs_read 核对 exact old，禁止臆造片段"
+                format_old_not_found_message(
+                    rel, str(old), text, label="substring"
+                )
             )
         replacements = min(text.count(old), count)
         updated = text.replace(old, new, count)
@@ -430,7 +699,9 @@ class WorkspaceFs:
             count = updated.count(o)
             if count == 0:
                 raise WorkspacePathError(
-                    f"hunk {i}: old not found in {rel}；请先 fs_read 核对原文后再 patch"
+                    format_old_not_found_message(
+                        rel, o, updated, label=f"hunk {i}: old"
+                    )
                 )
             if require_unique and count > 1:
                 raise WorkspacePathError(
@@ -591,7 +862,9 @@ class WorkspaceFs:
                     pending = None
                     continue
                 line_no = int((data.get("line_number") or 0))
-                text = str((data.get("lines") or {}).get("text") or "").rstrip("\n")
+                text = _clip_hit_text(
+                    str((data.get("lines") or {}).get("text") or "").rstrip("\n")
+                )
                 pending = {
                     "path": path,
                     "line": line_no,
@@ -601,7 +874,9 @@ class WorkspaceFs:
                 }
             elif typ == "context" and pending is not None:
                 line_no = int((data.get("line_number") or 0))
-                text = str((data.get("lines") or {}).get("text") or "").rstrip("\n")
+                text = _clip_hit_text(
+                    str((data.get("lines") or {}).get("text") or "").rstrip("\n")
+                )
                 if line_no < int(pending["line"]):
                     pending["before"].append({"line": line_no, "text": text})
                 else:
@@ -642,18 +917,18 @@ class WorkspaceFs:
             for i, line in enumerate(lines, start=1):
                 if rx.search(line):
                     before = [
-                        {"line": j, "text": lines[j - 1]}
+                        {"line": j, "text": _clip_hit_text(lines[j - 1])}
                         for j in range(max(1, i - context_before), i)
                     ]
                     after = [
-                        {"line": j, "text": lines[j - 1]}
+                        {"line": j, "text": _clip_hit_text(lines[j - 1])}
                         for j in range(i + 1, min(len(lines), i + context_after) + 1)
                     ]
                     hits.append(
                         {
                             "path": shown,
                             "line": i,
-                            "text": line,
+                            "text": _clip_hit_text(line),
                             "before": before,
                             "after": after,
                         }

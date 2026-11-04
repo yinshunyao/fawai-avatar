@@ -123,6 +123,85 @@ def display_path(path: Path, work_root: Path) -> str:
         return resolved.as_posix()
 
 
+def format_file_missing_message(
+    shown: str | Path | BaseException,
+    *,
+    work_root: Path | None = None,
+) -> str:
+    """LLM 可读的「文件不存在」拒因：与沙箱越界分码，并按父目录是否存在分流建议。
+
+    - 父目录已在：路径闸已放行、仅缺该文件 → 禁止当成拼接错误空读重试
+    - 父目录也不在 / 相对路径：才提示核对拼接或用 basename/hits 纠路径
+    """
+    if isinstance(shown, BaseException):
+        fn = getattr(shown, "filename", None)
+        raw = str(fn).strip() if fn else str(shown).strip()
+    else:
+        raw = str(shown or "").strip()
+    # 剥常见前缀 / errno 外壳，避免叠字
+    low = raw.lower()
+    for prefix in (
+        "not found (file missing):",
+        "not found:",
+    ):
+        if low.startswith(prefix):
+            raw = raw[len(prefix) :].strip(" :'\"")
+            low = raw.lower()
+            break
+    if "no such file or directory:" in low:
+        raw = raw.split(":", 1)[-1].strip(" '\"")
+        low = raw.lower()
+    elif low.startswith("[errno"):
+        # [Errno 2] No such file or directory: 'path'
+        parts = raw.split(":", 1)
+        raw = parts[-1].strip(" '\"") if len(parts) > 1 else raw
+
+    candidate: Path | None = None
+    looks_abs = raw.startswith("/") or raw.startswith("~")
+    try:
+        if looks_abs:
+            candidate = Path(raw).expanduser()
+        elif work_root is not None and raw:
+            candidate = Path(work_root).expanduser().resolve() / raw
+    except OSError:
+        candidate = None
+
+    parent_exists = False
+    parent_shown = ""
+    if candidate is not None:
+        try:
+            parent = candidate.parent
+            parent_exists = parent.is_dir()
+            parent_shown = parent.as_posix()
+        except OSError:
+            parent_exists = False
+
+    head = f"not found (file missing): {raw or shown}"
+    if parent_exists:
+        return (
+            f"{head}；"
+            f"≠ 沙箱越界/禁读：路径闸已放行，父目录存在（{parent_shown}），仅该文件名缺失。"
+            "勿当作路径拼接错误反复纠 path；"
+            "改查其它已证实落点（部署说明/配置文档/lore），"
+            f"或 fs_glob path={parent_shown} 看目录实有哪些文件；禁止同 path 空读重试"
+        )
+    if looks_abs:
+        return (
+            f"{head}；"
+            "≠ 沙箱越界/禁读：路径闸已放行，但路径上的目录也不存在。"
+            "先核对目录层级是否拼错；"
+            "再用 fs_glob path=<已知存在的上级> 或 fs_grep basename；"
+            "禁止同 path 空读重试"
+        )
+    return (
+        f"{head}；"
+        "≠ 沙箱越界/禁读。相对路径相对 work_root；"
+        "若来自文档链接请核对相对仓库/work_root 的拼接，"
+        "或 fs_grep basename / 用 hits 绝对 path 再 fs_read；"
+        "fs_glob 可传 path=只读根下目录"
+    )
+
+
 def rel_posix(path: Path, work_root: Path) -> str:
     return path.resolve().relative_to(work_root.resolve()).as_posix()
 

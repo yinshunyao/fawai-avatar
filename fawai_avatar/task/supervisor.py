@@ -159,8 +159,7 @@ class Supervisor:
         out: list[str] = []
         for status in sorted(RECOVER_STATUSES):
             for t in self.list_tasks(status=status, limit=limit, archived=False):
-                if should_skip_auto_recover(t):
-                    continue
+                # 移除澄清/复盘等待跳过限制，允许取消任务复盘追加执行
                 out.append(t.task_id)
         return out
 
@@ -184,10 +183,6 @@ class Supervisor:
         if task is None:
             return False
         if task.status == "running":
-            return False
-        if task.status == "archived":
-            return False
-        if task.status in {"completed", "failed", "cancelled"} and not reopen:
             return False
         self._release_all_leases(task_id)
         note = "reopened for follow-up" if reopen and task.status in _TERMINAL else "requeued for follow-up"

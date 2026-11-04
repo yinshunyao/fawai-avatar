@@ -61,6 +61,13 @@ def main() -> None:
     )
     assert shell.ok
 
+    # 浏览器与 OS headless 无关：dry_run 不真开页；未装 playwright 时能力可不可用另测
+    browser_dry = ctrl_dry.execute(
+        Action(kind="browser_navigate", args={"url": "https://example.com"}),
+        task_id="smoke-headless",
+    )
+    assert browser_dry.ok and "dry_run" in browser_dry.message
+
     # 后台文件路径不依赖 GUI
     from fawai_avatar.control.background import BackgroundTools
 

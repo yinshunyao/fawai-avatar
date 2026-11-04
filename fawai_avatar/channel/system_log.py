@@ -30,6 +30,7 @@ LOG_CATALOG: dict[str, dict[str, Any]] = {
             "pause": "暂停",
             "resume": "恢复",
             "recover": "进程恢复续跑",
+            "resume_from_step": "从步骤恢复",
         },
     },
     "file": {
@@ -57,6 +58,14 @@ LOG_CATALOG: dict[str, dict[str, Any]] = {
             "click": "点击",
             "type": "键入",
             "hotkey": "热键",
+            "app_focus": "应用前台",
+            "ui_click": "控件点击",
+            "ui_type": "控件键入",
+            "ui_verify": "界面回证",
+            "double_click": "双击",
+            "right_click": "右键",
+            "scroll": "滚动",
+            "press": "单键",
             "screenshot": "截屏",
         },
     },
@@ -71,6 +80,7 @@ _KIND_TO_LOG: dict[str, tuple[str, str]] = {
     "pause": ("task", "pause"),
     "resume": ("task", "resume"),
     "recover": ("task", "recover"),
+    "resume_from_step": ("task", "resume_from_step"),
     "fs_read": ("file", "read"),
     "fs_read_many": ("file", "read"),
     "fs_glob": ("file", "read"),
@@ -85,9 +95,20 @@ _KIND_TO_LOG: dict[str, tuple[str, str]] = {
     "code_map": ("code", "run"),
     "code_index_refresh": ("code", "run"),
     "explore_search": ("code", "run"),
+    "py_write": ("code", "run"),
+    "py_pip": ("code", "run"),
+    "py_run": ("code", "run"),
     "click": ("mouse", "click"),
     "type": ("mouse", "type"),
     "hotkey": ("mouse", "hotkey"),
+    "app_focus": ("mouse", "app_focus"),
+    "ui_click": ("mouse", "ui_click"),
+    "ui_type": ("mouse", "ui_type"),
+    "ui_verify": ("mouse", "ui_verify"),
+    "double_click": ("mouse", "double_click"),
+    "right_click": ("mouse", "right_click"),
+    "scroll": ("mouse", "scroll"),
+    "press": ("mouse", "press"),
     "screenshot": ("mouse", "screenshot"),
 }
 
@@ -253,7 +274,16 @@ def build_action_detail(action: Action, result: ExecResult | None = None) -> dic
             detail["cmd"] = str(cmd)
         if data.get("returncode") is not None:
             detail["returncode"] = data.get("returncode")
-    elif kind in {"code_check", "code_symbols", "code_map", "code_index_refresh", "explore_search"}:
+    elif kind in {
+        "code_check",
+        "code_symbols",
+        "code_map",
+        "code_index_refresh",
+        "explore_search",
+        "py_write",
+        "py_pip",
+        "py_run",
+    }:
         if args.get("path"):
             detail["path"] = str(args.get("path"))
         if args.get("paths"):
@@ -264,6 +294,17 @@ def build_action_detail(action: Action, result: ExecResult | None = None) -> dic
             detail["query"] = str(args.get("query") or args.get("q"))
         if args.get("queries") and isinstance(args.get("queries"), list):
             detail["queries"] = [str(q) for q in args["queries"]]
+        if kind == "py_pip" and args.get("packages") is not None:
+            detail["packages"] = args.get("packages")
+        if kind == "py_run":
+            if args.get("script"):
+                detail["script"] = str(args.get("script"))
+            if args.get("module"):
+                detail["module"] = str(args.get("module"))
+            if data.get("run_dir"):
+                detail["run_dir"] = data.get("run_dir")
+            if data.get("returncode") is not None:
+                detail["returncode"] = data.get("returncode")
     elif kind == "click":
         detail["x"] = args.get("x", data.get("x"))
         detail["y"] = args.get("y", data.get("y"))

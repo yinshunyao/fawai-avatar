@@ -99,6 +99,39 @@ def main() -> None:
         bad_ellip.message,
     )
 
+    invented = tools.execute(
+        Action(
+            kind="fs_patch",
+            args={
+                "path": "notes/coding_sample.py",
+                "old": (
+                    '    if any(t.status == "cancelled" for t in sources):\n'
+                    '        return {"ok": False, "message": "已取消的任务不支持复盘"}'
+                ),
+                "new": "    pass\n",
+            },
+            write_resources=["notes/coding_sample.py"],
+        )
+    )
+    _ok(
+        "fs_patch reject ungrounded old",
+        (not invented.ok)
+        and "补丁锚点未接地" in invented.message
+        and "old not found" in invented.message,
+        invented.message,
+    )
+    from fawai_avatar.workspace.fs import suggest_exact_old_window
+
+    sample_text = (root / "notes" / "coding_sample.py").read_text(encoding="utf-8")
+    hint = suggest_exact_old_window(
+        sample_text, 'def hello() -> str:\n    return "hello-patched"'
+    )
+    _ok(
+        "fs_patch old hint window",
+        bool(hint) and "原文小窗" in (hint or "") and "hello" in (hint or ""),
+        hint or "",
+    )
+
     # 弱写入：仅新增未引用 CSS 变量 → data.weak_write
     ui = root / "notes" / "ui.html"
     ui.write_text(
@@ -171,6 +204,37 @@ def main() -> None:
     check = tools.execute(Action(kind="code_check", args={"path": "notes/coding_sample.py"}))
     _ok("code_check", check.ok, check.message)
 
+    alias_check = tools.execute(
+        Action(kind="code_check", args={"file": "notes/coding_sample.py"})
+    )
+    _ok("code_check file alias", alias_check.ok, alias_check.message)
+
+    empty_check = tools.execute(Action(kind="code_check", args={}))
+    _ok(
+        "code_check empty fails",
+        (not empty_check.ok) and "requires path/paths or command" in (empty_check.message or ""),
+        empty_check.message,
+    )
+
+    from fawai_avatar.brain.capabilities import apply_capability_defaults
+    from fawai_avatar.workspace.check import fill_code_check_args
+
+    coerced_check = apply_capability_defaults(
+        Action(kind="code_check", args={"file": "notes/coding_sample.py"})
+    )
+    _ok(
+        "code_check coerce defaults",
+        coerced_check.args.get("path") == "notes/coding_sample.py"
+        and "file" not in coerced_check.args,
+        str(coerced_check.args),
+    )
+    filled = fill_code_check_args({}, write_set=["notes/coding_sample.py", "notes/readme.md"])
+    _ok(
+        "code_check fill write_set",
+        filled.get("paths") == ["notes/coding_sample.py"],
+        str(filled),
+    )
+
     # bad syntax
     sample.write_text("def broken(\n", encoding="utf-8")
     bad = tools.execute(Action(kind="code_check", args={"path": "notes/coding_sample.py"}))
@@ -203,6 +267,28 @@ def main() -> None:
         Action(kind="explore_search", args={"queries": ["return"], "path": "notes", "head_limit": 10})
     )
     _ok("explore_search", ex.ok and ex.data.get("results"))
+    ex_pat = tools.execute(
+        Action(kind="explore_search", args={"pattern": "return", "path": "notes", "head_limit": 10})
+    )
+    _ok("explore_search pattern alias", ex_pat.ok and ex_pat.data.get("results"), ex_pat.message)
+    ex_str = tools.execute(
+        Action(kind="explore_search", args={"queries": "return", "path": "notes", "head_limit": 10})
+    )
+    _ok("explore_search string queries", ex_str.ok and ex_str.data.get("results"), ex_str.message)
+    ex_empty = tools.execute(Action(kind="explore_search", args={"path": "notes"}))
+    _ok(
+        "explore_search empty fails",
+        (not ex_empty.ok) and "requires queries" in (ex_empty.message or ""),
+        ex_empty.message,
+    )
+    coerced_act = apply_capability_defaults(
+        Action(kind="explore_search", args={"pattern": "helper", "path": "notes"})
+    )
+    _ok(
+        "explore_search coerce defaults",
+        coerced_act.args.get("queries") == ["helper"] and "pattern" not in coerced_act.args,
+        str(coerced_act.args),
+    )
 
     # P1 git (init temp repo)
     subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)

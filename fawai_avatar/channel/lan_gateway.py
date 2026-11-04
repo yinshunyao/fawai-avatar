@@ -146,7 +146,14 @@ def create_app(
         index_path = STATIC_DIR / "index.html"
         if not index_path.is_file():
             raise HTTPException(status_code=404, detail="PWA missing")
-        return FileResponse(index_path)
+        # HTML 入口常被浏览器强缓存；改 compose 等静态页后须立刻拿到新稿
+        return FileResponse(
+            index_path,
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+            },
+        )
 
     @app.get("/manifest.webmanifest")
     async def manifest() -> FileResponse:
@@ -182,6 +189,7 @@ def create_app(
         store = _releases()
         slog = getattr(hub, "system_log", None)
         slog_status = slog.status() if slog is not None and hasattr(slog, "status") else {}
+        from fawai_avatar.runtime.code_watch import code_reload_enabled
         from fawai_avatar.runtime.console_log import last_crash_path, console_log_path
 
         data_dir = str(hub.supervisor.data_dir)
@@ -190,6 +198,7 @@ def create_app(
             {
                 "ok": True,
                 **store.status(),
+                "code_reload": code_reload_enabled(),
                 "degraded": not bool(slog_status.get("available", True)),
                 "system_log": slog_status,
                 "console_log_path": str(console_log_path(data_dir)),
@@ -364,17 +373,77 @@ def create_app(
         clear_raw = body.get("clear") or []
         clear_list = [str(x) for x in clear_raw] if isinstance(clear_raw, list) else []
         scope = str(body.get("scope") or "all")
-        result = update_settings(values=values, clear=clear_list, scope=scope)
+        profiles = body.get("model_profiles") if isinstance(body.get("model_profiles"), dict) else None
+        result = update_settings(
+            values=values,
+            clear=clear_list,
+            scope=scope,
+            model_profiles=profiles,
+        )
         if not result.get("ok", True) and result.get("errors"):
             raise HTTPException(status_code=400, detail={"errors": result["errors"]})
         return JSONResponse(result)
 
+    @app.get("/api/llm/models")
+    async def llm_models_list(
+        kind: str = "all",
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        """在线拉取模型列表。``kind``=text|vlm|asr|embed|all；DashScope 走原生目录。"""
+        _check_token(x_fawai_token)
+        from fawai_avatar.llm.model_profiles import list_remote_models
+
+        return JSONResponse(list_remote_models(kind=kind))
+
+    @app.get("/api/llm/model-profile")
+    async def llm_model_profile_get(
+        model: str = "",
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        mid = (model or "").strip()
+        if not mid:
+            raise HTTPException(status_code=400, detail="model required")
+        from fawai_avatar.llm.model_profiles import PARAM_SCHEMA, ensure_profile
+
+        try:
+            profile = ensure_profile(mid)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return JSONResponse({"ok": True, "param_schema": list(PARAM_SCHEMA), "profile": profile})
+
+    @app.put("/api/llm/model-profile")
+    async def llm_model_profile_put(
+        payload: dict[str, Any] | None = Body(default=None),
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        body = payload or {}
+        mid = str(body.get("model") or "").strip()
+        if not mid:
+            raise HTTPException(status_code=400, detail="model required")
+        params = body.get("params") if isinstance(body.get("params"), dict) else body
+        if not isinstance(params, dict):
+            raise HTTPException(status_code=400, detail="params required")
+        from fawai_avatar.llm.model_profiles import PARAM_SCHEMA, save_profile
+
+        try:
+            profile = save_profile(mid, params)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return JSONResponse({"ok": True, "param_schema": list(PARAM_SCHEMA), "profile": profile})
+
     @app.get("/api/session")
     async def session_info(x_fawai_token: str | None = Header(default=None)) -> JSONResponse:
         _check_token(x_fawai_token)
+        listed = list(hub.supervisor.list_tasks(limit=80, archived=False))
         tasks = [
-            _task_summary(t)
-            for t in hub.supervisor.list_tasks(limit=20, archived=False)
+            _task_summary(t, supervisor=hub.supervisor)
+            for t in listed
+            if not _is_hidden_plan_child(t)
+        ][:20]
+        hidden_plan_children = [
+            t.task_id for t in listed if _is_hidden_plan_child(t)
         ]
         # 仅引导近段；打开线程时再按任务拉齐执行时间线（见 GET /api/tasks/{id}/history）
         history = [m.to_dict() for m in hub.history[-120:]]
@@ -384,7 +453,15 @@ def create_app(
                 "keeper": release_store.status()["keeper"],
                 "active": release_store.read_active(),
             }
-        return JSONResponse({"ok": True, "tasks": tasks, "history": history, "runtime": runtime})
+        return JSONResponse(
+            {
+                "ok": True,
+                "tasks": tasks,
+                "history": history,
+                "runtime": runtime,
+                "hidden_plan_children": hidden_plan_children,
+            }
+        )
 
     def _resolve_task(task_id: str):
         task = hub.supervisor.get_task(task_id)
@@ -687,13 +764,20 @@ def create_app(
             arch_flag = True
         elif raw in {"all", "*"}:
             arch_flag = None
+        # 多取再滤监管脑子任务，保证侧栏/管理页只见父计划会话
+        fetch_n = min(200, max(limit * 3, limit + 20))
         tasks = hub.supervisor.list_tasks(
             status=status or None,
             q=q,
-            limit=limit,
+            limit=fetch_n,
             archived=arch_flag,
         )
-        return JSONResponse({"ok": True, "tasks": [_task_summary(t) for t in tasks]})
+        visible = [
+            _task_summary(t, supervisor=hub.supervisor)
+            for t in tasks
+            if not _is_hidden_plan_child(t)
+        ]
+        return JSONResponse({"ok": True, "tasks": visible[:limit]})
 
     @app.post("/api/tasks/{task_id}/archive")
     async def archive_task_api(
@@ -768,7 +852,9 @@ def create_app(
         task = _resolve_task(task_id)
         if task is None:
             raise HTTPException(status_code=404, detail="unknown task")
-        return JSONResponse({"ok": True, "task": _task_detail(task)})
+        return JSONResponse(
+            {"ok": True, "task": _task_detail(task, supervisor=hub.supervisor)}
+        )
 
     @app.get("/api/tasks/{task_id}/history")
     async def get_task_history_api(
@@ -799,6 +885,18 @@ def create_app(
         task = _resolve_task(task_id)
         if task is None:
             raise HTTPException(status_code=404, detail="unknown task")
+        # 父计划停止时先停监管脑子任务，再停父任务本身
+        child_cancelled: list[str] = []
+        try:
+            from fawai_avatar.brain.plan_scheduler import (
+                cancel_plan_children,
+                is_orchestrator_task,
+            )
+
+            if is_orchestrator_task(task.meta):
+                child_cancelled = cancel_plan_children(hub.supervisor, task.task_id)
+        except Exception:  # noqa: BLE001
+            child_cancelled = []
         ok = hub.supervisor.cancel(task.task_id)
         updated = hub.supervisor.get_task(task.task_id)
         status = updated.status if updated else None
@@ -809,17 +907,33 @@ def create_app(
             ok=ok,
             task_id=task.task_id,
             actor="api",
-            detail={"status": status},
+            detail={"status": status, "plan_children_cancelled": child_cancelled},
         )
+        worker_alive = hub.has_live_worker(task.task_id) if ok else False
+        if ok and child_cancelled:
+            for cid in child_cancelled:
+                if hub.has_live_worker(cid):
+                    worker_alive = True
+                    break
         if ok:
-            # 立刻推到会话：否则 LLM 规划等待期间页面像「点了没反应」
-            await hub.publish(
-                Message.progress(
-                    "正在停止任务…",
-                    task_id=task.task_id,
-                    meta={"phase": "cancelling", "status": "cancelled"},
+            # 有存活 Worker：先推「正在停止」，由闭环收束后再推 cancelled / 终态卡。
+            # 无 Worker：状态已是 cancelled，直接推终态进度，避免步骤卡在「正在停止」。
+            if worker_alive:
+                await hub.publish(
+                    Message.progress(
+                        "正在停止任务…",
+                        task_id=task.task_id,
+                        meta={"phase": "cancelling", "status": "cancelled"},
+                    )
                 )
-            )
+            else:
+                await hub.publish(
+                    Message.progress(
+                        "任务已取消，停止执行",
+                        task_id=task.task_id,
+                        meta={"phase": "cancelled", "status": "cancelled"},
+                    )
+                )
         elif status == "archived":
             raise HTTPException(status_code=409, detail="已归档任务无法停止，请先取消归档")
         elif not ok:
@@ -830,8 +944,65 @@ def create_app(
                 "task_id": task.task_id,
                 "status": status,
                 "message": msg,
+                "worker_alive": worker_alive,
             }
         )
+
+    @app.post("/api/tasks/{task_id}/resume-from-step")
+    async def resume_from_step_api(
+        task_id: str,
+        x_fawai_token: str | None = Header(default=None),
+        body: dict[str, Any] | None = Body(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        task = _resolve_task(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="unknown task")
+        payload = body if isinstance(body, dict) else {}
+        raw_step = payload.get("step")
+        if raw_step is None:
+            raise HTTPException(status_code=400, detail="missing step")
+        try:
+            step = int(raw_step)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="invalid step") from exc
+        result = await hub.resume_from_step(task.task_id, step)
+        if not result.get("ok"):
+            detail = str(result.get("message") or "resume failed")
+            code = 409 if "执行中" in detail or "归档" in detail else 400
+            raise HTTPException(status_code=code, detail=detail)
+        return JSONResponse(result)
+
+    @app.post("/api/tasks/{task_id}/plan/retry-nodes")
+    async def retry_plan_nodes_api(
+        task_id: str,
+        x_fawai_token: str | None = Header(default=None),
+        body: dict[str, Any] | None = Body(default=None),
+    ) -> JSONResponse:
+        """重试计划失败节点（保留已完成上游）；body.node_ids 可空=全部 failed。"""
+        _check_token(x_fawai_token)
+        task = _resolve_task(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="unknown task")
+        from fawai_avatar.brain.plan_scheduler import is_orchestrator_task
+
+        if not is_orchestrator_task(task.meta):
+            raise HTTPException(status_code=400, detail="not a plan orchestrator task")
+        payload = body if isinstance(body, dict) else {}
+        raw_ids = payload.get("node_ids")
+        node_ids: list[str] | None = None
+        if isinstance(raw_ids, list):
+            node_ids = [str(x).strip() for x in raw_ids if str(x).strip()]
+        reason = str(payload.get("reason") or "重试失败节点").strip()[:200]
+        result = await hub.retry_plan_nodes(
+            task.task_id,
+            node_ids=node_ids,
+            reason=reason or "重试失败节点",
+        )
+        if not result.get("ok"):
+            detail = str(result.get("message") or "retry failed")
+            raise HTTPException(status_code=400, detail=detail)
+        return JSONResponse(result)
 
     @app.delete("/api/tasks/{task_id}")
     async def delete_task_api(
@@ -949,19 +1120,28 @@ def create_app(
         _check_token(x_fawai_token)
         msg = Message.from_dict({**payload, "role": "user"})
         out = await hub.handle_inbound(msg)
-        return JSONResponse({"ok": True, "echo": out.to_dict() if out else None})
+        return JSONResponse(
+            {
+                "ok": True,
+                "echo": out.to_dict() if out else None,
+                # 与 upload 对齐：带回落盘入站，供 PWA 用稳定 message_id 合并乐观气泡
+                "inbound": msg.to_dict(),
+            }
+        )
 
     @app.post("/api/upload")
     async def upload_image(
         x_fawai_token: str | None = Header(default=None),
         text: str = Form(default=""),
         task_id: str = Form(default=""),
+        message_id: str = Form(default=""),
         file: UploadFile = File(...),
     ) -> JSONResponse:
         _check_token(x_fawai_token)
         suffix = Path(file.filename or "upload.png").suffix or ".png"
         dest = media_dir / f"in_{secrets.token_hex(8)}{suffix}"
         dest.write_bytes(await file.read())
+        mid = (message_id or "").strip()
         msg = Message(
             kind="image",
             role="user",
@@ -969,6 +1149,7 @@ def create_app(
             media_path=str(dest),
             media_url=f"/media/{dest.name}",
             task_id=(task_id or "").strip() or None,
+            message_id=mid or secrets.token_hex(16),
         )
         out = await hub.handle_inbound(msg)
         return JSONResponse(
@@ -1046,17 +1227,30 @@ def create_app(
             await websocket.close(code=4401)
             return
         await manager.connect(websocket)
+
+        async def _run_inbound(msg: Message) -> None:
+            """入站异步跑：不堵 receive 循环，路由 LLM 时仍可收下一条 / 推回执。"""
+            try:
+                await hub.handle_inbound(msg)
+            except Exception as exc:  # noqa: BLE001 — 单条失败不拆连接
+                logger.exception("ws inbound failed")
+                try:
+                    err = Message.error(f"处理失败: {exc}")
+                    await manager.broadcast(err)
+                except Exception:  # noqa: BLE001
+                    pass
+
         try:
             # 近段历史由 /api/session；线程内再拉 /api/tasks/{id}/history；此处只推实时出站
             while True:
                 data = await websocket.receive_json()
                 try:
                     msg = Message.from_dict({**data, "role": "user"})
-                    await hub.handle_inbound(msg)
+                    asyncio.create_task(_run_inbound(msg))
                 except WebSocketDisconnect:
                     raise
-                except Exception as exc:  # noqa: BLE001 — 单条失败不拆连接
-                    logger.exception("ws inbound failed")
+                except Exception as exc:  # noqa: BLE001 — 解析失败不拆连接
+                    logger.exception("ws inbound parse failed")
                     try:
                         err = Message.error(f"处理失败: {exc}")
                         await websocket.send_json(err.to_dict())
@@ -1097,7 +1291,13 @@ def _task_stats_summary(meta: dict[str, Any] | None) -> dict[str, Any] | None:
     return None
 
 
-def _task_summary(t: Any) -> dict[str, Any]:
+def _is_hidden_plan_child(t: Any) -> bool:
+    """监管脑子任务不进侧栏/任务列表（进度已归并到父计划会话）。"""
+    meta = getattr(t, "meta", None) or {}
+    return str(meta.get("plan_role") or "") == "supervisor"
+
+
+def _task_summary(t: Any, *, supervisor: Any = None) -> dict[str, Any]:
     from fawai_avatar.task.title import normalize_task_title, suggest_task_title
 
     meta = getattr(t, "meta", None) or {}
@@ -1115,14 +1315,39 @@ def _task_summary(t: Any) -> dict[str, Any]:
         "has_steps": bool(meta.get("steps")),
         "final_thought": str(meta.get("final_thought") or "")[:200],
     }
-    stats = _task_stats_summary(meta if isinstance(meta, dict) else {})
+    plan_role = str(meta.get("plan_role") or "")
+    if plan_role:
+        out["plan_role"] = plan_role
+    if meta.get("plan_id"):
+        out["plan_id"] = str(meta.get("plan_id"))
+    if plan_role == "orchestrator" and isinstance(meta.get("plan_graph"), dict):
+        out["plan_mode"] = True
+        nodes = meta["plan_graph"].get("nodes") or []
+        out["plan_node_count"] = len(nodes) if isinstance(nodes, list) else 0
+    if plan_role == "supervisor":
+        parent = str(meta.get("plan_parent_task_id") or "").strip()
+        if parent:
+            out["plan_parent_task_id"] = parent
+        node_id = str(meta.get("plan_node_id") or "").strip()
+        if node_id:
+            out["plan_node_id"] = node_id
+    stats = None
+    if plan_role == "orchestrator" and supervisor is not None:
+        try:
+            from fawai_avatar.brain.plan_scheduler import plan_parent_stats_summary
+
+            stats = plan_parent_stats_summary(supervisor, t.task_id)
+        except Exception:  # noqa: BLE001
+            stats = None
+    if stats is None:
+        stats = _task_stats_summary(meta if isinstance(meta, dict) else {})
     if stats is not None:
         out["stats"] = stats
     return out
 
 
-def _task_detail(t: Any) -> dict[str, Any]:
-    data = _task_summary(t)
+def _task_detail(t: Any, *, supervisor: Any = None) -> dict[str, Any]:
+    data = _task_summary(t, supervisor=supervisor)
     meta = dict(getattr(t, "meta", None) or {})
     detail_meta: dict[str, Any] = {
         "title": meta.get("title") or data.get("title"),
@@ -1133,10 +1358,16 @@ def _task_detail(t: Any) -> dict[str, Any]:
         "replan_count": meta.get("replan_count"),
         "steps": meta.get("steps") or [],
         "last_review": meta.get("last_review"),
-        "stats": meta.get("stats"),
+        "stats": data.get("stats") if data.get("stats") is not None else meta.get("stats"),
         "kind": meta.get("kind"),
         "review_phase": meta.get("review_phase"),
     }
+    if str(meta.get("plan_role") or "") == "orchestrator" and isinstance(
+        meta.get("plan_graph"), dict
+    ):
+        detail_meta["plan_graph"] = meta["plan_graph"]
+        detail_meta["plan_id"] = meta.get("plan_id")
+        detail_meta["plan_role"] = "orchestrator"
     if meta.get("kind") == "review" and meta.get("review_phase") == "awaiting_apply":
         from fawai_avatar.skills.review import items_for_ui
 
@@ -1350,7 +1581,8 @@ def main() -> None:
     from fawai_avatar.config import RuntimeConfig, load_dotenv
     from fawai_avatar.control.permissions_mac import ensure_startup_permissions, is_macos
 
-    load_dotenv()
+    # 磁盘 .env 覆盖进程环境：与 Web 写盘一致；避免壳层/保活父进程旧 FAWAI_* 盖住
+    load_dotenv(override=True)
     _raise_nofile_soft_limit()
 
     # 已在保活子进程内，或显式关闭保活 → 直接跑网关

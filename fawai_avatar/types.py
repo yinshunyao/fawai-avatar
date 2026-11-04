@@ -52,11 +52,17 @@ class Plan:
     raw: dict[str, Any] = field(default_factory=dict)
     # 下一步环境观察方式（经硬闸门求交）；不含 obs_tool
     observe_kinds: list[str] = field(default_factory=list)
+    # 观察参数：如 {"obs_screen": {"screen_target": "frontmost"|"main"|"index:2"|"all"}}
+    observe_args: dict[str, Any] = field(default_factory=dict)
     # 任务短标题（首轮命名；可空）
     title: str = ""
+    # 本步业务意图（步骤簇头；≠ title）
+    step_label: str = ""
+    # 主脑委派：{"tier":"fast","goal":"...","stop_when":"...","max_steps":N}；空=不委派
+    delegate: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "thought": self.thought,
             "actions": [a.to_dict() for a in self.actions],
             "done": self.done,
@@ -64,7 +70,13 @@ class Plan:
             "raw": self.raw,
             "observe_kinds": list(self.observe_kinds),
             "title": self.title,
+            "step_label": self.step_label,
         }
+        if self.observe_args:
+            out["observe_args"] = dict(self.observe_args)
+        if self.delegate:
+            out["delegate"] = dict(self.delegate)
+        return out
 
 
 @dataclass

@@ -1,4 +1,4 @@
-# term:进程中断续跑  doc:doc/测试/进程中断续跑/说明.md
+# term:进程中断续跑  doc:doc/测试/系统/进程中断续跑/说明.md
 """回归：检查点续跑 — 模拟进程死后从断点继续，不整任务重开。"""
 from __future__ import annotations
 

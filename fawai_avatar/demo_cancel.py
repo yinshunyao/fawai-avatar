@@ -1,4 +1,4 @@
-# term:任务与事件管理  doc:doc/测试/取消停步/说明.md
+# term:任务与事件管理  doc:doc/测试/系统/取消停步/说明.md
 """回归：执行中取消后，工作任务须停止后续动作，状态保持 cancelled。"""
 
 from __future__ import annotations

@@ -16,6 +16,16 @@ from fawai_avatar.workspace.paths import (
     resolve_under_root,
 )
 
+_PATH_ALIASES = ("file", "target", "filepath", "filename")
+_PATHS_ALIASES = ("files", "targets")
+_COMMAND_ALIASES = ("cmd",)
+_CHECKABLE_SUFFIXES = {".py", ".json"}
+
+_MISSING_ARGS_MSG = (
+    "code_check requires path/paths or command "
+    "(aliases: file/filepath/target → path; files/targets → paths; cmd → command)"
+)
+
 
 def default_check_for(path: str) -> dict[str, Any] | None:
     """返回 {mode, ...}；未知后缀返回 None。"""
@@ -25,6 +35,91 @@ def default_check_for(path: str) -> dict[str, Any] | None:
     if suffix in {".json"}:
         return {"mode": "json_load"}
     return None
+
+
+def coerce_code_check_args(args: dict[str, Any] | None) -> dict[str, Any]:
+    """归一 code_check 参数：path / paths / command。
+
+    兼容模型常见误写：file / filepath / target → path；files / targets → paths；cmd → command。
+    规划 apply_capability_defaults 与执行侧共用。
+    """
+    src = dict(args or {})
+    out = dict(src)
+
+    path = str(src.get("path") or "").strip()
+    if not path:
+        for key in _PATH_ALIASES:
+            cand = str(src.get(key) or "").strip()
+            if cand:
+                path = cand
+                break
+    if path:
+        out["path"] = path
+
+    path_list: list[str] = []
+    raw_paths = src.get("paths")
+    if isinstance(raw_paths, list):
+        for item in raw_paths:
+            s = str(item).strip()
+            if s and s not in path_list:
+                path_list.append(s)
+    elif isinstance(raw_paths, str) and raw_paths.strip():
+        path_list.append(raw_paths.strip())
+    if not path_list:
+        for key in _PATHS_ALIASES:
+            raw = src.get(key)
+            if isinstance(raw, list):
+                for item in raw:
+                    s = str(item).strip()
+                    if s and s not in path_list:
+                        path_list.append(s)
+            elif isinstance(raw, str) and raw.strip():
+                if raw.strip() not in path_list:
+                    path_list.append(raw.strip())
+            if path_list:
+                break
+    if path_list:
+        out["paths"] = path_list
+
+    command = str(src.get("command") or "").strip()
+    if not command:
+        for key in _COMMAND_ALIASES:
+            cand = str(src.get(key) or "").strip()
+            if cand:
+                command = cand
+                break
+    if command:
+        out["command"] = command
+
+    for key in _PATH_ALIASES + _PATHS_ALIASES + _COMMAND_ALIASES:
+        out.pop(key, None)
+    return out
+
+
+def fill_code_check_args(
+    args: dict[str, Any] | None,
+    *,
+    write_set: list[str] | None = None,
+) -> dict[str, Any]:
+    """coerce 后若仍无检查目标，则用本任务 write_set 回填 paths。
+
+    优先回填 .py/.json；若无已知后缀则回填全部已写路径。无 write_set 则原样返回。
+    """
+    out = coerce_code_check_args(args)
+    has_path = bool(str(out.get("path") or "").strip())
+    raw_paths = out.get("paths")
+    has_paths = isinstance(raw_paths, list) and any(str(p).strip() for p in raw_paths)
+    has_cmd = bool(str(out.get("command") or "").strip())
+    if has_path or has_paths or has_cmd:
+        return out
+    candidates = [str(p).strip() for p in (write_set or []) if str(p).strip()]
+    if not candidates:
+        return out
+    checkable = [
+        p for p in candidates if Path(p).suffix.lower() in _CHECKABLE_SUFFIXES
+    ]
+    out["paths"] = checkable or list(candidates)
+    return out
 
 
 def run_code_check(
@@ -40,7 +135,7 @@ def run_code_check(
     if path and path.strip():
         targets.insert(0, path.strip())
     if not targets and not command:
-        raise ValueError("code_check requires path/paths or command")
+        raise ValueError(_MISSING_ARGS_MSG)
 
     results: list[dict[str, Any]] = []
     if command:

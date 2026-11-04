@@ -44,7 +44,16 @@ _MAX_BACKOFF = 30.0
 
 
 def _child_env() -> dict[str, str]:
+    """子进程环境：复制外层后用磁盘 ``.env`` 覆盖。
+
+    Web「模型配置 / 系统配置」只热更**子进程**并写盘；外层 ``os.environ``
+    仍可能停留在启动旧值。若不覆盖，重启后子进程会继承旧模型等键，
+    表现为「设成 qwen3.7 重启又变回 qwen3.8」。
+    """
+    from fawai_avatar.config import overlay_dotenv
+
     env = os.environ.copy()
+    overlay_dotenv(env)
     env["FAWAI_KEEPER"] = "1"
     # 确保工程根在 path
     root = str(package_root())
@@ -124,7 +133,6 @@ def run_keeper(
     data_root = str(Path(cfg_data).expanduser().resolve())
     configure_logging(data_dir=data_root)
     store = releases_from_env(data_root)
-    reload_on = code_reload_enabled()
     reclaim_on = port_reclaim_enabled()
     listen_port = gateway_port_from_env()
     cprint("=" * 60)
@@ -134,13 +142,15 @@ def run_keeper(
     cprint(f"  网关端口: {listen_port}（FAWAI_GATEWAY_PORT）")
     cprint(f"  后台日志: {data_root}/runtime/console.log")
     cprint("  子进程崩溃或主动重启后会自动拉起；Ctrl+C 停止外层。")
-    if reload_on:
+    if code_reload_enabled():
         cprint(
             f"  代码热重载: 开（监视 {package_dir()} 下 .py/.html/.js/.css；"
-            "执行中任务延后；关：FAWAI_CODE_RELOAD=0）"
+            "执行中任务延后；Web「服务与版本」或 FAWAI_CODE_RELOAD 可关）"
         )
     else:
-        cprint("  代码热重载: 关（FAWAI_CODE_RELOAD=0）")
+        cprint(
+            "  代码热重载: 关（默认；Web「服务与版本」可开，或 FAWAI_CODE_RELOAD=1）"
+        )
     if reclaim_on:
         cprint("  端口回收: 开（拉起前清理占用端口的本产品野进程；关：FAWAI_PORT_RECLAIM=0）")
     else:
@@ -211,6 +221,11 @@ def run_keeper(
         nonlocal defer_log_at, reload_stop_sent
         if stopping:
             return
+        if not code_reload_enabled():
+            # 开关关闭：丢弃待生效命中，避免之后再开立刻误重启
+            code_reload_hit.clear()
+            reload_stop_sent = False
+            return
         code_reload_hit.set()
         if has_active_executing_tasks(data_root):
             reload_stop_sent = False
@@ -232,6 +247,8 @@ def run_keeper(
     def _on_code_change(paths: list[str]) -> None:
         if stopping:
             return
+        if not code_reload_enabled():
+            return
         sample = paths[0] if paths else "?"
         more = f" 等 {len(paths)} 个文件" if len(paths) > 1 else ""
         _apply_code_reload_stop(reason=f"检测到代码变更: {sample}{more}")
@@ -242,6 +259,10 @@ def run_keeper(
         while not watch_stop.wait(_RELOAD_DEFER_POLL_S):
             if stopping:
                 return
+            if not code_reload_enabled():
+                code_reload_hit.clear()
+                reload_stop_sent = False
+                continue
             if not code_reload_hit.is_set():
                 reload_stop_sent = False
                 continue
@@ -263,13 +284,14 @@ def run_keeper(
     signal.signal(signal.SIGINT, _on_signal)
     signal.signal(signal.SIGTERM, _on_signal)
 
-    if reload_on:
-        start_code_watch([package_dir()], _on_code_change, stop_event=watch_stop)
-        threading.Thread(
-            target=_deferred_reload_loop,
-            name="fawai-reload-defer",
-            daemon=True,
-        ).start()
+    # 始终挂监视；是否真重启由 code_reload_enabled() 实时读 .env / 环境决定
+    # （Web「服务与版本」开关即时生效，不必重启保活外层）
+    start_code_watch([package_dir()], _on_code_change, stop_event=watch_stop)
+    threading.Thread(
+        target=_deferred_reload_loop,
+        name="fawai-reload-defer",
+        daemon=True,
+    ).start()
 
     while not stopping:
         started = time.monotonic()
@@ -371,7 +393,7 @@ def run_keeper(
 def main() -> None:
     from fawai_avatar.config import RuntimeConfig, load_dotenv
 
-    load_dotenv()
+    load_dotenv(override=True)
     cfg = RuntimeConfig.from_env()
     run_keeper(data_dir=cfg.data_dir)
 

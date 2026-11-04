@@ -66,6 +66,7 @@ def dump_checkpoint(state: dict[str, Any]) -> dict[str, Any]:
         "saw_architecture_ok": bool(state.get("saw_architecture_ok")),
         "explore_only_streak": int(state.get("explore_only_streak") or 0),
         "explore_mutate_forced": bool(state.get("explore_mutate_forced")),
+        "explore_behavior_armed": bool(state.get("explore_behavior_armed")),
         "remote_idle_streak": int(state.get("remote_idle_streak") or 0),
         "remote_method_forced": bool(state.get("remote_method_forced")),
         "read_path_counts": {
@@ -77,11 +78,23 @@ def dump_checkpoint(state: dict[str, Any]) -> dict[str, Any]:
             str(x) for x in (state.get("locate_anchors") or []) if str(x).strip()
         ][:24],
         "post_locate_streak": int(state.get("post_locate_streak") or 0),
+        "locate_mutate_forced": bool(state.get("locate_mutate_forced")),
         "wide_grep_ban_paths": [
             str(x) for x in (state.get("wide_grep_ban_paths") or []) if str(x).strip()
         ][:16],
+        "wide_grep_ban_patterns": {
+            str(k).strip(): str(v)[:200]
+            for k, v in dict(state.get("wide_grep_ban_patterns") or {}).items()
+            if str(k).strip() and str(v).strip()
+        },
         "awaiting_user_answer": bool(state.get("awaiting_user_answer")),
         "pending_observe_kinds": list(state.get("pending_observe_kinds") or []) or None,
+        "pending_observe_args": (
+            dict(state.get("pending_observe_args") or {})
+            if isinstance(state.get("pending_observe_args"), dict)
+            and state.get("pending_observe_args")
+            else None
+        ),
         "last_reflection": state.get("last_reflection"),
     }
 
@@ -99,6 +112,96 @@ def clear_checkpoint_from_meta(meta: dict[str, Any]) -> dict[str, Any]:
     out = dict(meta or {})
     out.pop(CHECKPOINT_KEY, None)
     return out
+
+
+def history_from_step_dicts(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """由 traces / meta.steps 粗合成规划 history（步骤恢复用）。"""
+    history: list[dict[str, Any]] = []
+    for i, raw in enumerate(steps):
+        if not isinstance(raw, dict):
+            continue
+        plan = raw.get("plan") if isinstance(raw.get("plan"), dict) else {}
+        thought = str(plan.get("thought") or "").strip()
+        if thought:
+            history.append(
+                {
+                    "role": "assistant",
+                    "content": f"[step {i}] {thought}"[:_HISTORY_CONTENT_MAX],
+                }
+            )
+        for r in raw.get("results") or []:
+            if not isinstance(r, dict):
+                continue
+            ok = bool(r.get("ok"))
+            msg = str(r.get("message") or "").strip()
+            line = f"工具结果：{'成功' if ok else '失败'}"
+            if msg:
+                line = f"{line} {msg}"
+            history.append({"role": "user", "content": line[:_HISTORY_CONTENT_MAX]})
+    return history
+
+
+def prepare_resume_from_step(meta: dict[str, Any] | None, *, step: int) -> dict[str, Any]:
+    """构造从步骤 `step` 继续的 run_checkpoint。
+
+    优先截断已有检查点；否则用 meta.steps（终态落盘、最多尾部若干步）粗合成。
+    """
+    import uuid
+
+    step_n = max(0, int(step))
+    existing = load_checkpoint(meta)
+    if existing is not None:
+        traces_raw = [t for t in (existing.get("traces") or []) if isinstance(t, dict)]
+        kept = traces_raw[:step_n]
+        state = dict(existing)
+        state["next_step"] = step_n
+        state["traces"] = kept
+        state["history"] = history_from_step_dicts(kept) or list(
+            existing.get("history") or []
+        )
+        state["awaiting_user_answer"] = False
+        state["pending_observe_kinds"] = None
+        if not state.get("run_id"):
+            state["run_id"] = uuid.uuid4().hex
+        return dump_checkpoint(state)
+
+    steps = [s for s in ((meta or {}).get("steps") or []) if isinstance(s, dict)]
+    # meta.steps 为尾部裁剪：步号超出长度时仍用全部作先验，next_step 用用户指定值
+    prior = steps[:step_n] if step_n <= len(steps) else steps
+    return dump_checkpoint(
+        {
+            "run_id": uuid.uuid4().hex,
+            "next_step": step_n,
+            "history": history_from_step_dicts(prior),
+            "traces": prior,
+            "replan_count": 0,
+            "reflect_count": 0,
+            "stagnation_count": 0,
+            "fingerprint_fails": {},
+            "prior_alternate_fps": [],
+            "step_fp_counts": {},
+            "prior_judged_step_fps": [],
+            "verify_results": [],
+            "write_set": list((meta or {}).get("write_set") or []),
+            "saw_code_check_ok": False,
+            "saw_architecture_ok": False,
+            "explore_only_streak": 0,
+            "explore_mutate_forced": False,
+            "explore_behavior_armed": False,
+            "remote_idle_streak": 0,
+            "remote_method_forced": False,
+            "read_path_counts": {},
+            "read_windows": {},
+            "locate_anchors": [],
+            "post_locate_streak": 0,
+            "locate_mutate_forced": False,
+            "wide_grep_ban_paths": [],
+            "wide_grep_ban_patterns": {},
+            "awaiting_user_answer": False,
+            "pending_observe_kinds": None,
+            "last_reflection": None,
+        }
+    )
 
 
 def restore_runtime_state(raw: dict[str, Any]) -> dict[str, Any]:
@@ -143,6 +246,7 @@ def restore_runtime_state(raw: dict[str, Any]) -> dict[str, Any]:
         "saw_architecture_ok": bool(raw.get("saw_architecture_ok")),
         "explore_only_streak": int(raw.get("explore_only_streak") or 0),
         "explore_mutate_forced": bool(raw.get("explore_mutate_forced")),
+        "explore_behavior_armed": bool(raw.get("explore_behavior_armed")),
         "remote_idle_streak": int(raw.get("remote_idle_streak") or 0),
         "remote_method_forced": bool(raw.get("remote_method_forced")),
         "read_path_counts": {
@@ -154,11 +258,23 @@ def restore_runtime_state(raw: dict[str, Any]) -> dict[str, Any]:
             str(x) for x in (raw.get("locate_anchors") or []) if str(x).strip()
         ][:24],
         "post_locate_streak": int(raw.get("post_locate_streak") or 0),
+        "locate_mutate_forced": bool(raw.get("locate_mutate_forced")),
         "wide_grep_ban_paths": [
             str(x) for x in (raw.get("wide_grep_ban_paths") or []) if str(x).strip()
         ][:16],
+        "wide_grep_ban_patterns": {
+            str(k).strip(): str(v)
+            for k, v in dict(raw.get("wide_grep_ban_patterns") or {}).items()
+            if str(k).strip() and str(v).strip()
+        },
         "awaiting_user_answer": bool(raw.get("awaiting_user_answer")),
         "pending_observe_kinds": pending_kinds,
+        "pending_observe_args": (
+            dict(raw.get("pending_observe_args") or {})
+            if isinstance(raw.get("pending_observe_args"), dict)
+            and raw.get("pending_observe_args")
+            else None
+        ),
         "last_reflection": raw.get("last_reflection")
         if isinstance(raw.get("last_reflection"), dict)
         else None,
@@ -250,15 +366,20 @@ def _clip_trace(tr: Any) -> dict[str, Any]:
                         else getattr(a, "needs_foreground", False)
                     ),
                     "write_resources": list(
-                        a.get("write_resources")
-                        if isinstance(a, dict)
-                        else getattr(a, "write_resources", [])
+                        (
+                            a.get("write_resources")
+                            if isinstance(a, dict)
+                            else getattr(a, "write_resources", None)
+                        )
                         or []
                     ),
                 }
                 for a in (plan.get("actions") or [])
             ],
             "observe_kinds": list(plan.get("observe_kinds") or []),
+            "observe_args": dict(plan.get("observe_args") or {})
+            if isinstance(plan.get("observe_args"), dict)
+            else {},
         }
     obs_d = None
     if isinstance(obs, dict):
@@ -309,13 +430,24 @@ def _plan_from_dict(data: Any) -> Plan | None:
     for a in data.get("actions") or []:
         if isinstance(a, dict):
             actions.append(Action.from_dict(a))
+    raw_delegate = data.get("delegate")
+    delegate = dict(raw_delegate) if isinstance(raw_delegate, dict) else None
+    observe_args = (
+        dict(data.get("observe_args") or {})
+        if isinstance(data.get("observe_args"), dict)
+        else {}
+    )
     return Plan(
         thought=str(data.get("thought") or ""),
         actions=actions,
         done=bool(data.get("done")),
         status=str(data.get("status") or "continue"),
-        raw={},
+        raw=dict(data.get("raw") or {}) if isinstance(data.get("raw"), dict) else {},
         observe_kinds=[str(x) for x in (data.get("observe_kinds") or [])],
+        observe_args=observe_args,
+        title=str(data.get("title") or ""),
+        step_label=str(data.get("step_label") or ""),
+        delegate=delegate,
     )
 
 

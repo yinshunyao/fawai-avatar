@@ -11,9 +11,34 @@ from fawai_avatar.brain.capabilities import (
     looks_like_file_goal,
 )
 
-ProfileId = str  # vision | fs | gui | full
+ProfileId = str  # vision | fs | gui | browser | full
 
-_GUI_KINDS = frozenset({"click", "type", "hotkey"})
+_GUI_KINDS = frozenset(
+    {
+        "click",
+        "type",
+        "hotkey",
+        "app_focus",
+        "ui_click",
+        "ui_type",
+        "ui_verify",
+        "double_click",
+        "right_click",
+        "scroll",
+        "press",
+    }
+)
+
+_BROWSER_KINDS = frozenset(
+    {
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_click",
+        "browser_type",
+        "browser_press",
+        "browser_close",
+    }
+)
 
 _VISION_KINDS = frozenset(
     {
@@ -38,6 +63,10 @@ _FS_EXTRA_KINDS = frozenset(
         "fs_patch",
         "code_check",
         "shell_verify",
+        "py_write",
+        "py_pip",
+        "py_run",
+        "shovel_search",
         "git_status",
         "git_diff",
         "git_commit",
@@ -66,6 +95,14 @@ _GUI_PROFILE_KINDS = frozenset(
         "click",
         "type",
         "hotkey",
+        "app_focus",
+        "ui_click",
+        "ui_type",
+        "ui_verify",
+        "double_click",
+        "right_click",
+        "scroll",
+        "press",
         "shell",
         "wait",
         "done",
@@ -74,6 +111,20 @@ _GUI_PROFILE_KINDS = frozenset(
         "fs_read",
         "explore_search",
     }
+    | _BROWSER_KINDS
+)
+
+_BROWSER_PROFILE_KINDS = frozenset(
+    {
+        "shell",
+        "wait",
+        "done",
+        "fs_glob",
+        "fs_grep",
+        "fs_read",
+        "explore_search",
+    }
+    | _BROWSER_KINDS
 )
 
 _GUI_GOAL_HINTS = (
@@ -87,14 +138,55 @@ _GUI_GOAL_HINTS = (
     "打开 app",
     "打开应用",
     "微信",
-    "浏览器里点",
     "桌面",
     "屏幕上",
     "GUI",
+    "gui",
+    "操作界面",
+    "操控界面",
+    "操作 cursor",
+    "操作Cursor",
+    "Cursor界面",
+    "cursor界面",
+    "点一下",
+    "键入",
+    "双击",
+    "右键",
+    "滚动",
+    "app_focus",
+    "ui_click",
+    "ui_type",
+    "obs_ax",
+    "文本编辑",
+    "TextEdit",
+    "记事本",
 )
 
+_BROWSER_GOAL_HINTS = (
+    "打开网页",
+    "打开网站",
+    "访问网址",
+    "访问 url",
+    "访问URL",
+    "http://",
+    "https://",
+    "browser_navigate",
+    "browser_snapshot",
+    "browser_click",
+    "browser_type",
+    "无头浏览器",
+    "playwright",
+    "网页里",
+    "网页上",
+    "在网页",
+    "浏览网页",
+    "打开百度",
+    "打开 google",
+    "打开Google",
+)
+
+# 明确「改前端/网页代码」——不含单独的「界面」（避免误伤桌面操控）
 _FS_WEB_HINTS = (
-    "页面",
     "前端",
     "html",
     "markdown",
@@ -114,9 +206,8 @@ _FS_WEB_HINTS = (
     "布局",
     "样式",
     "窄屏",
-    "手机",
-    "ui ",
-    "界面",
+    "onpaste",
+    "datatransfer",
 )
 
 _TOOL_HISTORY_MARKERS = (
@@ -150,7 +241,7 @@ class PromptProfile:
 def profile_vision() -> PromptProfile:
     return PromptProfile(
         id="vision",
-        kind_allow=_VISION_KINDS,
+        kind_allow=frozenset(_VISION_KINDS | _BROWSER_KINDS),
         attach_user_images=True,
         include_coding_context=False,
         compact_capabilities=True,
@@ -159,7 +250,7 @@ def profile_vision() -> PromptProfile:
 
 
 def profile_fs(*, coding: bool) -> PromptProfile:
-    kinds = frozenset(_VISION_KINDS | _FS_EXTRA_KINDS)
+    kinds = frozenset(_VISION_KINDS | _FS_EXTRA_KINDS | _BROWSER_KINDS)
     return PromptProfile(
         id="fs",
         kind_allow=kinds,
@@ -175,6 +266,17 @@ def profile_gui() -> PromptProfile:
         id="gui",
         kind_allow=_GUI_PROFILE_KINDS,
         attach_user_images=True,
+        include_coding_context=False,
+        compact_capabilities=True,
+        short_rules=True,
+    )
+
+
+def profile_browser() -> PromptProfile:
+    return PromptProfile(
+        id="browser",
+        kind_allow=_BROWSER_PROFILE_KINDS,
+        attach_user_images=False,
         include_coding_context=False,
         compact_capabilities=True,
         short_rules=True,
@@ -206,14 +308,55 @@ def looks_like_fs_web_goal(goal: str) -> bool:
     return any(h.lower() in text for h in _FS_WEB_HINTS)
 
 
+def looks_like_browser_goal(goal: str) -> bool:
+    text = (goal or "").lower()
+    if not text:
+        return False
+    if any(h.lower() in text for h in _BROWSER_GOAL_HINTS):
+        return True
+    # 「打开 xxx.com / 访问站点」弱启发
+    if ("打开" in text or "访问" in text) and (
+        ".com" in text or ".cn" in text or ".org" in text or "网站" in text or "网址" in text
+    ):
+        return True
+    return False
+
+
 def looks_like_gui_goal(goal: str) -> bool:
     text = goal or ""
     if not text:
         return False
-    # 纯「页面/前端改码」不算 GUI 操控
-    if looks_like_fs_web_goal(text) and not any(h in text for h in ("点击", "鼠标", "热键", "快捷键")):
+    # 纯「改前端/网页代码」不算 GUI 操控；但含明确键鼠词仍算 GUI
+    gui_hit = any(h.lower() in text.lower() for h in _GUI_GOAL_HINTS)
+    if not gui_hit:
         return False
-    return any(h.lower() in text.lower() for h in _GUI_GOAL_HINTS)
+    if looks_like_fs_web_goal(text) and not any(
+        h in text for h in ("点击", "鼠标", "热键", "快捷键", "ui_click", "操作界面", "操控")
+    ):
+        # 前端改码目标里偶然出现「窗口」等弱词时，仍判非 GUI
+        weak_only = gui_hit and not any(
+            h in text
+            for h in (
+                "点击",
+                "鼠标",
+                "热键",
+                "快捷键",
+                "操作界面",
+                "操控界面",
+                "Cursor界面",
+                "操作Cursor",
+                "操作 cursor",
+                "ui_click",
+                "ui_type",
+                "obs_ax",
+                "键入",
+                "双击",
+                "右键",
+            )
+        )
+        if weak_only:
+            return False
+    return True
 
 
 def history_has_tool_rounds(history: list[dict[str, Any]] | None) -> bool:
@@ -241,27 +384,34 @@ def infer_prompt_profile(
         or looks_like_fs_web_goal(goal)
         or coding
     )
+    browser_like = looks_like_browser_goal(goal)
     gui_like = looks_like_gui_goal(goal)
     has_img = goal_has_user_image(goal)
     tools_done = history_has_tool_rounds(history)
 
-    # 已进入工具闭环的文件/前端任务：卸图走 fs（编码上下文仅真正 coding 目标）
-    if tools_done and (file_like or not gui_like):
-        if gui_like and observation_has_screen:
+    # 网页内操作优先于桌面点浏览器；不进 fs（避免剔除 browser_*）
+    if browser_like and not gui_like:
+        return profile_browser()
+
+    # 桌面操控优先：不得进 fs（否则能力清单剔除键鼠，出现「未提供 GUI」假失败）
+    if gui_like:
+        return profile_gui()
+
+    # 已进入工具闭环的文件/前端任务：卸图走 fs
+    if tools_done and file_like:
+        if observation_has_screen:
             return profile_gui()
         return profile_fs(coding=coding)
 
     # 首轮附图：精简 VLM 看图定位
     if has_img and not tools_done:
-        if gui_like and not file_like:
-            return profile_gui()
         return profile_vision()
-
-    if gui_like and not file_like:
-        return profile_gui()
 
     if file_like:
         return profile_fs(coding=coding)
+
+    if browser_like:
+        return profile_browser()
 
     return profile_full(coding=coding)
 

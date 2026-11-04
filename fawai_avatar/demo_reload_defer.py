@@ -1,4 +1,4 @@
-# term:服务保活  doc:doc/测试/热重载延后/说明.md
+# term:服务保活  doc:doc/测试/系统/热重载延后/说明.md
 """回归：热重载闸门 — running/blocked 挡重载；waiting/取消后放行。"""
 from __future__ import annotations
 

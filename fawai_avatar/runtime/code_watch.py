@@ -22,10 +22,47 @@ _SKIP_DIR_NAMES = frozenset(
 )
 
 
+def _env_file_path() -> Path:
+    """仓库根 ``.env``（与 ``system_settings.env_file_path`` 一致）。"""
+    return Path(__file__).resolve().parents[2] / ".env"
+
+
+def _read_dotenv_key(key: str) -> str | None:
+    """从磁盘 .env 读单键；无文件/无键返回 None。"""
+    path = _env_file_path()
+    if not path.is_file():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        if k.strip() != key:
+            continue
+        return v.strip().strip("'").strip('"')
+    return None
+
+
 def code_reload_enabled() -> bool:
-    """默认开启；FAWAI_CODE_RELOAD=0 关闭。"""
-    raw = (os.environ.get("FAWAI_CODE_RELOAD") or "1").strip().lower()
-    return raw not in {"0", "false", "no", "off"}
+    """代码热重载是否开启。
+
+    默认**关闭**。优先读磁盘 ``.env``（Web「服务与版本」开关写入处），
+    以便保活外层进程立即感知，而不依赖启动时一次性读入的环境变量。
+    仅当 ``.env`` 无该键时，才回落进程环境；都没有则关。
+    """
+    disk = _read_dotenv_key("FAWAI_CODE_RELOAD")
+    if disk is not None:
+        raw = disk
+    elif "FAWAI_CODE_RELOAD" in os.environ:
+        # 回落环境：便于无 .env 的调试启动；有磁盘键时绝不以旧环境覆盖
+        raw = os.environ.get("FAWAI_CODE_RELOAD") or ""
+    else:
+        raw = "0"
+    return raw.strip().lower() not in {"0", "false", "no", "off", ""}
 
 
 def is_code_path(path: Path) -> bool:

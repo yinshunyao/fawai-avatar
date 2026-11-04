@@ -153,6 +153,54 @@ def summary_for_api(stats: dict[str, Any] | None, *, now: float | None = None) -
     }
 
 
+def add_stats_counters(target: dict[str, Any], source: dict[str, Any] | None) -> None:
+    """把 source 的 token / 轮次 / LLM / 工具计数累加进 target；不合并墙钟。"""
+    if not isinstance(source, dict):
+        return
+    s = normalize_stats(source)
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens", "rounds", "llm_calls"):
+        target[key] = int(target.get(key) or 0) + int(s.get(key) or 0)
+    tools = dict(target.get("tools") or {})
+    for kind, count in (s.get("tools") or {}).items():
+        tools[kind] = int(tools.get(kind) or 0) + int(count or 0)
+    target["tools"] = tools
+
+
+def session_span_elapsed_ms(
+    *,
+    created_at: float | None,
+    updated_at: float | None,
+    status: str | None,
+    now: float | None = None,
+) -> int:
+    """会话墙钟：任务创建 → 结束（终态用 updated_at，否则用 now）。"""
+    try:
+        start = float(created_at or 0)
+    except (TypeError, ValueError):
+        start = 0.0
+    if start <= 0:
+        return 0
+    terminal = str(status or "") in {"completed", "failed", "cancelled", "archived"}
+    end = float(now if now is not None else time.time())
+    if terminal:
+        try:
+            end_u = float(updated_at or 0)
+        except (TypeError, ValueError):
+            end_u = 0.0
+        if end_u > start:
+            end = end_u
+    return max(0, int((end - start) * 1000))
+
+
+def summary_with_elapsed(
+    stats: dict[str, Any] | None, *, elapsed_ms: int
+) -> dict[str, Any]:
+    """API 摘要，但 elapsed_ms 由调用方指定（如父计划会话跨度）。"""
+    out = summary_for_api(stats, now=None)
+    out["elapsed_ms"] = max(0, int(elapsed_ms or 0))
+    return out
+
+
 def backfill_from_steps(steps: Any) -> dict[str, Any]:
     """从 meta.steps 尽力回填（截断后可能无 token）。"""
     stats = empty_stats()

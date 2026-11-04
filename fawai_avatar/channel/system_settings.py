@@ -26,15 +26,27 @@ class SettingField:
     hint: str = ""
     options: tuple[str, ...] = ()
     step: str = ""  # float 输入步进（前端提示）
+    model_kind: str = ""  # text|vlm|asr|embed；配合 model_pick 在线列表过滤
+    supports_params: bool = False  # chat 类可挂生成参数
 
 
 # 模型配置页（导航「模型配置」）；其余属系统配置页
-MODEL_GROUP_IDS: frozenset[str] = frozenset({"llm_provider", "llm_models", "llm_params"})
+# 生成参数不在 .env：按模型落盘 data/llm_models/{model}.json
+MODEL_GROUP_IDS: frozenset[str] = frozenset({"llm_provider", "llm_models"})
+MODEL_ROUTE_KEYS: frozenset[str] = frozenset(
+    {
+        "FAWAI_LLM_TEXT_MODEL",
+        "FAWAI_LLM_VLM_MODEL",
+        "FAWAI_LLM_FAST_MODEL",
+        "FAWAI_LLM_ASR_MODEL",
+        "FAWAI_LORE_EMBED_MODEL",
+        "FAWAI_LLM_MODEL",
+    }
+)
 
 GROUPS: tuple[tuple[str, str], ...] = (
     ("llm_provider", "接入凭证"),
     ("llm_models", "模型路由"),
-    ("llm_params", "生成参数"),
     ("runtime", "运行与大脑"),
     ("gateway", "网关与保活"),
     ("frp", "frp 穿透"),
@@ -74,7 +86,9 @@ FIELDS: tuple[SettingField, ...] = (
         "文本模型",
         "str",
         default="qwen3.7-plus",
-        hint="无图消息走此模型",
+        hint="无图消息走此模型；下拉为在线拉取的文本生成列表",
+        model_kind="text",
+        supports_params=True,
     ),
     SettingField(
         "FAWAI_LLM_VLM_MODEL",
@@ -82,7 +96,18 @@ FIELDS: tuple[SettingField, ...] = (
         "多模态模型",
         "str",
         default="qwen3-vl-plus",
-        hint="消息含图像时走此模型",
+        hint="消息含图像时走此模型；下拉为在线视觉理解列表",
+        model_kind="vlm",
+        supports_params=True,
+    ),
+    SettingField(
+        "FAWAI_LLM_FAST_MODEL",
+        "llm_models",
+        "快模型（委派）",
+        "str",
+        hint="主脑委派子目标时使用；留空则关闭委派（主脑自行执行）",
+        model_kind="text",
+        supports_params=True,
     ),
     SettingField(
         "FAWAI_LLM_ASR_MODEL",
@@ -90,7 +115,9 @@ FIELDS: tuple[SettingField, ...] = (
         "语音转写模型",
         "str",
         default="qwen3-asr-flash",
-        hint="对话框语音输入；OpenAI 兼容 input_audio",
+        hint="对话框语音输入；下拉为在线 ASR 列表",
+        model_kind="asr",
+        supports_params=False,
     ),
     SettingField(
         "FAWAI_LORE_EMBED_MODEL",
@@ -98,7 +125,9 @@ FIELDS: tuple[SettingField, ...] = (
         "嵌入模型",
         "str",
         default="text-embedding-v3",
-        hint="个人知识库向量索引；OpenAI 兼容 embeddings",
+        hint="个人知识库向量索引；下拉为在线嵌入列表",
+        model_kind="embed",
+        supports_params=False,
     ),
     SettingField(
         "FAWAI_LLM_MODEL",
@@ -106,46 +135,8 @@ FIELDS: tuple[SettingField, ...] = (
         "强制模型（可选）",
         "str",
         hint="有值时覆盖文本/多模态智能路由；不覆盖 ASR",
-    ),
-    SettingField(
-        "FAWAI_LLM_TEMPERATURE",
-        "llm_params",
-        "Temperature",
-        "float",
-        hint="空=接口默认；越高越随机（常见 0～2）",
-        step="0.1",
-    ),
-    SettingField(
-        "FAWAI_LLM_TOP_P",
-        "llm_params",
-        "Top P",
-        "float",
-        hint="空=接口默认；核采样阈值（常见 0～1）",
-        step="0.05",
-    ),
-    SettingField(
-        "FAWAI_LLM_MAX_TOKENS",
-        "llm_params",
-        "Max Tokens",
-        "int",
-        default="0",
-        hint="单次补全上限；0=不限制（由服务商默认）",
-    ),
-    SettingField(
-        "FAWAI_LLM_PRESENCE_PENALTY",
-        "llm_params",
-        "Presence Penalty",
-        "float",
-        hint="空=不传；降低重复话题倾向（常见 -2～2）",
-        step="0.1",
-    ),
-    SettingField(
-        "FAWAI_LLM_FREQUENCY_PENALTY",
-        "llm_params",
-        "Frequency Penalty",
-        "float",
-        hint="空=不传；降低重复用词倾向（常见 -2～2）",
-        step="0.1",
+        model_kind="text",
+        supports_params=True,
     ),
     SettingField("FAWAI_DRY_RUN", "runtime", "干跑", "bool", default="0", hint="1=不真点键鼠/shell"),
     SettingField("FAWAI_DATA_DIR", "runtime", "数据目录", "str", default="data"),
@@ -178,16 +169,16 @@ FIELDS: tuple[SettingField, ...] = (
         "runtime",
         "探索进度闸门",
         "int",
-        default="8",
-        hint="连续只读探索注入约束；0=关",
+        default="0",
+        hint="连续只读软提示阈值；默认 0=关（不因只读步数逼写）",
     ),
     SettingField(
         "FAWAI_EXPLORE_ONLY_ABORT",
         "runtime",
-        "探索闸门中止",
+        "探索改写强制",
         "str",
         default="",
-        hint="空=2×GATE；0=只注入不止损；填整数覆盖",
+        hint="空/0=关；填整数才启用实验性强制改写轮",
     ),
     SettingField(
         "FAWAI_GATEWAY_HOST",
@@ -229,8 +220,8 @@ FIELDS: tuple[SettingField, ...] = (
         "gateway",
         "代码热重载",
         "bool",
-        default="1",
-        needs_restart=True,
+        default="0",
+        hint="默认关；服务与版本页可开关；有执行中任务时延后重启",
     ),
     SettingField(
         "FAWAI_PORT_RECLAIM",
@@ -315,6 +306,13 @@ FIELDS: tuple[SettingField, ...] = (
     ),
     SettingField("FAWAI_TOOL_OBS_SOFT_CHARS", "tool_obs", "软压缩字符", "int", default="4000"),
     SettingField("FAWAI_TOOL_OBS_HARD_CHARS", "tool_obs", "硬压缩字符", "int", default="12000"),
+    SettingField(
+        "FAWAI_TOOL_OBS_HITS_SOFT_CHARS",
+        "tool_obs",
+        "检索 hits 软压缩字符",
+        "int",
+        default="16000",
+    ),
     SettingField("FAWAI_TOOL_OBS_HEAD_LINES", "tool_obs", "头行数", "int", default="40"),
     SettingField("FAWAI_TOOL_OBS_TAIL_LINES", "tool_obs", "尾行数", "int", default="80"),
     SettingField("FAWAI_TOOL_OBS_KEYWORD_HITS", "tool_obs", "关键字命中数", "int", default="40"),
@@ -464,6 +462,24 @@ def _group_in_scope(group_id: str, scope: str) -> bool:
     return is_model if scope == "model" else not is_model
 
 
+def _selected_route_models(disk: dict[str, str] | None = None) -> list[str]:
+    disk = disk if disk is not None else read_dotenv_map()
+    models: list[str] = []
+    seen: set[str] = set()
+    for key in (
+        "FAWAI_LLM_TEXT_MODEL",
+        "FAWAI_LLM_VLM_MODEL",
+        "FAWAI_LLM_FAST_MODEL",
+        "FAWAI_LLM_MODEL",
+    ):
+        mid = effective_value(key, disk=disk).strip()
+        if not mid or mid in seen:
+            continue
+        seen.add(mid)
+        models.append(mid)
+    return models
+
+
 def get_settings_payload(*, scope: str = "all") -> dict[str, Any]:
     scope_n = normalize_scope(scope)
     disk = read_dotenv_map()
@@ -490,6 +506,9 @@ def get_settings_payload(*, scope: str = "all") -> dict[str, Any]:
             "hint": field.hint,
             "options": list(field.options),
             "step": field.step,
+            "model_pick": field.key in MODEL_ROUTE_KEYS,
+            "model_kind": field.model_kind,
+            "supports_params": bool(field.supports_params),
         }
         fields_out.append(item)
         if field.secret:
@@ -504,7 +523,7 @@ def get_settings_payload(*, scope: str = "all") -> dict[str, Any]:
                 "value": eff,
                 "display": eff,
             }
-    return {
+    payload: dict[str, Any] = {
         "ok": True,
         "scope": scope_n,
         "env_path": str(env_file_path()),
@@ -512,6 +531,21 @@ def get_settings_payload(*, scope: str = "all") -> dict[str, Any]:
         "fields": fields_out,
         "values": values,
     }
+    if scope_n in {"model", "all"}:
+        from fawai_avatar.llm.model_profiles import (
+            PARAM_SCHEMA,
+            models_dir,
+            profiles_payload_for_models,
+        )
+
+        selected = _selected_route_models(disk)
+        payload["model_profiles"] = {
+            "dir": str(models_dir()),
+            "param_schema": list(PARAM_SCHEMA),
+            "selected_models": selected,
+            "profiles": profiles_payload_for_models(selected, ensure=True),
+        }
+    return payload
 
 
 def update_settings(
@@ -519,13 +553,15 @@ def update_settings(
     clear: list[str] | None = None,
     *,
     scope: str = "all",
+    model_profiles: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
-    写入 .env 并热更进程环境。
+    写入 .env 并热更进程环境；模型页还可写入按模型档案。
 
     - ``values``：键 → 字符串；secret 键仅在提供非空串时更新
     - ``clear``：显式清空的键（从 .env 删除并 pop 进程环境）
     - ``scope``：只允许改对应页的字段（``system`` / ``model`` / ``all``）
+    - ``model_profiles``：``{ model_id: { params: {...} } }``，落盘到 ``data/llm_models/``
     """
     try:
         scope_n = normalize_scope(scope)
@@ -537,6 +573,7 @@ def update_settings(
     updates: dict[str, str | None] = {}
     changed_restart = False
     errors: list[str] = []
+    profile_saved: list[str] = []
 
     disk = read_dotenv_map()
 
@@ -609,18 +646,45 @@ def update_settings(
         if field.needs_restart:
             changed_restart = True
 
+    if model_profiles is not None:
+        if scope_n not in {"model", "all"}:
+            errors.append(f"model_profiles not allowed in scope {scope_n}")
+        elif not isinstance(model_profiles, dict):
+            errors.append("model_profiles must be an object")
+        else:
+            from fawai_avatar.llm.model_profiles import save_profile
+
+            for mid, body in model_profiles.items():
+                model_id = str(mid).strip()
+                if not model_id:
+                    errors.append("empty model id in model_profiles")
+                    continue
+                params = body.get("params") if isinstance(body, dict) else None
+                if params is None and isinstance(body, dict):
+                    params = body
+                if not isinstance(params, dict):
+                    errors.append(f"invalid params for model {model_id}")
+                    continue
+                try:
+                    save_profile(model_id, params)
+                    profile_saved.append(model_id)
+                except ValueError as exc:
+                    errors.append(str(exc))
+
     if errors:
         return {"ok": False, "errors": errors, "needs_restart": False}
 
-    if not updates:
+    if not updates and not profile_saved:
         payload = get_settings_payload(scope=scope_n)
         payload["needs_restart"] = False
         payload["updated"] = []
+        payload["profiles_saved"] = []
         return payload
 
-    path = env_file_path()
-    merge_dotenv_file(path, updates)
-    apply_process_env(updates)
+    if updates:
+        path = env_file_path()
+        merge_dotenv_file(path, updates)
+        apply_process_env(updates)
 
     if "FAWAI_HEADLESS" in updates:
         try:
@@ -630,7 +694,14 @@ def update_settings(
         except Exception:
             pass
 
+    # 路由模型变更后，确保对应档案存在
+    if scope_n in {"model", "all"}:
+        from fawai_avatar.llm.model_profiles import ensure_profiles
+
+        ensure_profiles(_selected_route_models())
+
     payload = get_settings_payload(scope=scope_n)
     payload["needs_restart"] = changed_restart
     payload["updated"] = sorted(updates.keys())
+    payload["profiles_saved"] = sorted(set(profile_saved))
     return payload

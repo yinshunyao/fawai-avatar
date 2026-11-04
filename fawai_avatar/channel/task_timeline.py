@@ -64,6 +64,13 @@ def rebuild_timeline_from_task(task: TaskRecord) -> list[Message]:
         actions = plan.get("actions") if isinstance(plan.get("actions"), list) else []
         thought = _redact(str(plan.get("thought") or "").strip())
         status = str(plan.get("status") or "").strip() or "continue"
+        from fawai_avatar.task.title import resolve_step_label
+
+        step_label = resolve_step_label(
+            step_label=str(plan.get("step_label") or ""),
+            thought=thought,
+            actions=plan.get("actions") if isinstance(plan.get("actions"), list) else [],
+        )
         # 步骤时间摊在 created→updated 之间，便于与真实追问气泡交错
         step_ts = base_ts + span * ((i + 1) / (n + 1))
 
@@ -73,17 +80,20 @@ def rebuild_timeline_from_task(task: TaskRecord) -> list[Message]:
         planned = f"规划完成 · {status}"
         if preview:
             planned = f"{planned}：{preview}"
+        planned_meta: dict[str, Any] = {
+            "phase": "planned",
+            "step": i,
+            "run_id": run_id,
+            "reconstructed": True,
+        }
+        if step_label:
+            planned_meta["step_label"] = step_label
         out.append(
             _progress(
                 planned,
                 task_id=tid,
                 ts=step_ts,
-                meta={
-                    "phase": "planned",
-                    "step": i,
-                    "run_id": run_id,
-                    "reconstructed": True,
-                },
+                meta=planned_meta,
                 mid=f"recon-{tid}-planned-{i}",
             )
         )
