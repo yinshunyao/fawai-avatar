@@ -27,17 +27,55 @@ class Action:
     args: dict[str, Any] = field(default_factory=dict)
     needs_foreground: bool = False
     write_resources: list[str] = field(default_factory=list)
+    # 可选机读预期（动作段预期闸）；见 brain/action_segment.py
+    expect: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        out = asdict(self)
+        if not out.get("expect"):
+            out.pop("expect", None)
+        return out
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Action":
+        raw_expect = data.get("expect")
+        expect: dict[str, Any] | None = None
+        if isinstance(raw_expect, dict) and raw_expect:
+            expect = dict(raw_expect)
+        args = dict(data.get("args") or {})
+        # 兼容把 expect 写在 args 里
+        if expect is None and isinstance(args.get("expect"), dict) and args.get("expect"):
+            expect = dict(args.pop("expect"))
+        elif "expect" in args:
+            args.pop("expect", None)
         return cls(
             kind=str(data.get("kind") or data.get("type") or "wait"),
-            args=dict(data.get("args") or {}),
+            args=args,
             needs_foreground=bool(data.get("needs_foreground", False)),
             write_resources=[str(x) for x in (data.get("write_resources") or [])],
+            expect=expect,
+        )
+
+    def evolve(self, **kwargs: Any) -> "Action":
+        """复制并覆盖字段（保留 expect）。"""
+        return Action(
+            kind=str(kwargs["kind"]) if "kind" in kwargs else self.kind,
+            args=dict(kwargs["args"]) if "args" in kwargs else dict(self.args or {}),
+            needs_foreground=(
+                bool(kwargs["needs_foreground"])
+                if "needs_foreground" in kwargs
+                else self.needs_foreground
+            ),
+            write_resources=(
+                [str(x) for x in kwargs["write_resources"]]
+                if "write_resources" in kwargs
+                else list(self.write_resources or [])
+            ),
+            expect=(
+                dict(kwargs["expect"])
+                if "expect" in kwargs and isinstance(kwargs.get("expect"), dict)
+                else (dict(self.expect) if self.expect else None)
+            ),
         )
 
 
@@ -58,6 +96,8 @@ class Plan:
     title: str = ""
     # 本步业务意图（步骤簇头；≠ title）
     step_label: str = ""
+    # 步型：sense | act_serial | act_parallel | analyze | finalize（见步骤分类与执行流）
+    step_kind: str = ""
     # 主脑委派：{"tier":"fast","goal":"...","stop_when":"...","max_steps":N}；空=不委派
     delegate: dict[str, Any] | None = None
 
@@ -71,6 +111,7 @@ class Plan:
             "observe_kinds": list(self.observe_kinds),
             "title": self.title,
             "step_label": self.step_label,
+            "step_kind": self.step_kind,
         }
         if self.observe_args:
             out["observe_args"] = dict(self.observe_args)

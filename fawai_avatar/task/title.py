@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 _WS_RE = re.compile(r"\s+")
 _PREFIX_RE = re.compile(
@@ -21,6 +22,67 @@ def normalize_task_title(raw: str, *, max_len: int = 24) -> str:
     if len(text) <= max_len:
         return text
     return text[: max_len - 1].rstrip() + "…"
+
+
+def can_replace_task_title(
+    *,
+    existing: str,
+    existing_source: str,
+    proposed: str,
+    proposed_source: str,
+) -> bool:
+    """是否应用新标题：空/启发式可被覆盖；已有 llm 正式名不覆盖。"""
+    named = normalize_task_title(proposed)
+    if not named:
+        return False
+    cur = normalize_task_title(existing)
+    cur_src = (existing_source or "").strip() or ("heuristic" if cur else "")
+    new_src = (proposed_source or "").strip() or "heuristic"
+    if not cur:
+        return True
+    if cur == named and cur_src == new_src:
+        return False
+    if cur_src == "llm" and new_src != "llm":
+        return False
+    if cur_src == "llm" and new_src == "llm":
+        # 会话已有正式短标题：不因后续子节点再命名而漂移
+        return False
+    return True
+
+
+def commit_task_title(
+    supervisor: Any,
+    task_id: str,
+    title: str,
+    *,
+    source: str,
+) -> str:
+    """
+    把短标题写入任务 meta.title（会话列表真源）。
+    返回实际落盘标题；未写入则空串。
+    """
+    tid = (task_id or "").strip()
+    named = normalize_task_title(title)
+    if not tid or not named or supervisor is None:
+        return ""
+    task = supervisor.get_task(tid)
+    if task is None:
+        return ""
+    meta = dict(task.meta or {})
+    existing = str(meta.get("title") or "")
+    existing_source = str(meta.get("title_source") or "")
+    if not can_replace_task_title(
+        existing=existing,
+        existing_source=existing_source,
+        proposed=named,
+        proposed_source=source,
+    ):
+        return ""
+    supervisor.merge_task_meta(
+        tid,
+        {"title": named, "title_source": (source or "").strip() or "heuristic"},
+    )
+    return named
 
 
 def suggest_task_title(goal: str, *, max_len: int = 24) -> str:

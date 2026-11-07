@@ -13,16 +13,26 @@ from fawai_avatar.brain.orchestrator import (
     should_enter_plan_mode,
 )
 from fawai_avatar.brain.plan_scheduler import (
+    _PARENT_INLINE_MAX,
+    _parent_summary,
+    _store_user_summary,
     apply_plan_revision,
     bootstrap_parent_meta,
     is_orchestrator_task,
     is_supervisor_task,
     load_graph,
     on_supervisor_finished,
+    remove_plan_nodes,
     replan_full_graph,
+    resume_plan_child_node,
     retry_plan_nodes,
     spawn_ready_children,
     wants_full_replan_followup,
+)
+from fawai_avatar.runtime.checkpoint import (
+    CHECKPOINT_KEY,
+    excise_step_from_context,
+    load_checkpoint,
 )
 from fawai_avatar.task.supervisor import Supervisor
 
@@ -54,6 +64,63 @@ def main() -> None:
     print({"nodes": len(graph.nodes), "source": graph.source})
     _assert(len(graph.nodes) >= 2, "expect >=2 nodes")
     _assert(graph.nodes[1].depends_on == [graph.nodes[0].id], "serial depends")
+
+    print("== shared facts pinned on the graph ==")
+    from fawai_avatar.brain.orchestrator import format_supervisor_goal
+    from fawai_avatar.brain.plan_graph import PlanGraph, PlanNode
+    from fawai_avatar.brain.shared_facts import (
+        apply_shared_facts,
+        fill_shared_facts_from_node,
+    )
+
+    shared = PlanGraph(
+        plan_id="shared",
+        root_goal="查看训练状态",
+        nodes=[
+            PlanNode(id="n1", goal="读连接配置", produces=["out_n1"]),
+            PlanNode(id="n2", goal="查训练进程", produces=["out_n2"]),
+            PlanNode(id="n3", goal="读训练日志", produces=["out_n3"]),
+        ],
+    )
+    apply_shared_facts(
+        shared,
+        [
+            {
+                "key": "ssh_endpoint",
+                "producer": "n1",
+                "consumers": ["n2", "n3"],
+                "what": "host 与 port",
+            }
+        ],
+    )
+    _assert("ssh_endpoint" in shared.nodes[0].produces, "producer key")
+    _assert(shared.nodes[1].depends_on == ["n1"], "n2 waits n1")
+    _assert(shared.nodes[2].depends_on == ["n1"], "n3 waits n1")
+    _assert("ssh_endpoint" in shared.nodes[2].consumes, "n3 consumes")
+    _assert(shared.ready_node_ids() == ["n1"], "only producer ready")
+    host_line = "host=10.0.0.8 port=22 " + ("h" * 180)
+    fill_shared_facts_from_node(
+        shared,
+        "n1",
+        host_line + "\npassword: hunter2",
+        data_dir=str(Path(tempfile.mkdtemp())),
+        task_id="parent-shared",
+    )
+    shared.nodes[0].status = "completed"
+    goal_n2 = format_supervisor_goal(
+        root_goal=shared.root_goal,
+        node=shared.nodes[1],
+        artifacts=shared.artifacts,
+        shared_facts=list(shared.shared_facts),
+    )
+    _assert("10.0.0.8" in goal_n2, "host kept")
+    _assert("hunter2" not in goal_n2, "password not copied")
+    _assert(len(host_line) > 120, "sample longer than old clip")
+    _assert("10.0.0.8" in goal_n2 and goal_n2.find("10.0.0.8") >= 0, "not clipped away")
+    restored = PlanGraph.from_dict(shared.to_dict())
+    _assert(restored.shared_facts[0].key == "ssh_endpoint", "roundtrip key")
+    _assert("n1" in restored.nodes[1].depends_on, "roundtrip depends")
+    print("[PASS] shared facts")
 
     print("== scheduler spawn + advance ==")
     with tempfile.TemporaryDirectory() as tmp:
@@ -102,6 +169,9 @@ def main() -> None:
         _assert(parent is not None and parent.status == "completed", "parent status")
         g2 = load_graph(parent.meta)
         _assert(g2 is not None and g2.all_completed(), "graph all completed")
+        p_thought = str((parent.meta or {}).get("final_thought") or "")
+        _assert("计划完成" in p_thought, p_thought)
+        _assert("内容为 one" in p_thought, "末节点结论文须完整进父 final_thought")
 
     print("== append analyze ==")
     g = build_plan_graph("写 a 然后写 b")
@@ -260,7 +330,27 @@ def main() -> None:
         _assert(g_fail.get(n2_id) is not None and g_fail.get(n2_id).status == "failed", "n2 failed")
 
         _assert(not wants_full_replan_followup("继续"), "continue != full replan")
+        _assert(
+            not wants_full_replan_followup(
+                "最后一次训练应该使用best.pt，不要使用last.pt"
+            ),
+            "constraint append != full replan",
+        )
         _assert(wants_full_replan_followup("整图重规划"), "explicit full replan")
+
+        # 修订互斥：模拟 in-flight 时后到者须失败
+        from fawai_avatar.brain import plan_scheduler as _ps
+
+        _assert(_ps._begin_plan_revision(parent_id, "test_lock") is None, "lock acquire")
+        busy = retry_plan_nodes(
+            supervisor,
+            parent_task_id=parent_id,
+            node_ids=[n2_id],
+            reason="should be blocked",
+        )
+        _assert(not busy.get("ok"), busy)
+        _assert("进行中" in str(busy.get("reason") or ""), busy.get("reason"))
+        _ps._end_plan_revision(parent_id)
 
         out = retry_plan_nodes(
             supervisor,
@@ -320,6 +410,79 @@ def main() -> None:
         _assert(g_end is not None and g_end.get(n1_id).status == "completed", "n1 preserved")
         _assert(g_end is not None and g_end.all_completed(), "all completed after retry")
 
+    print("== resume plan child from step (复用监管脑) ==")
+    with tempfile.TemporaryDirectory() as tmp:
+        data_dir = Path(tmp)
+        supervisor = Supervisor(str(data_dir))
+        goal_rs = "先规划：写 notes/rs.txt 为 one，然后读取并答复"
+        g_rs = build_plan_graph(goal_rs)
+        parent_rs = supervisor.create_task(
+            goal_rs, meta=bootstrap_parent_meta(graph=g_rs, title="步骤恢复冒烟")
+        )
+        kids_rs = spawn_ready_children(
+            supervisor, parent_task_id=parent_rs, graph=g_rs
+        )
+        _assert(len(kids_rs) >= 1, kids_rs)
+        child_rs = kids_rs[0]
+        child_meta = supervisor.get_task(child_rs).meta or {}
+        node_rs = str(child_meta.get("plan_node_id") or "")
+        _assert(bool(node_rs), "plan_node_id")
+        supervisor.set_running(child_rs)
+        supervisor.fail(child_rs, message="step fail")
+        adv_rs = on_supervisor_finished(
+            supervisor,
+            child_task_id=child_rs,
+            ok=False,
+            error="step fail",
+        )
+        _assert(adv_rs.get("parent_failed"), adv_rs)
+        parent = supervisor.get_task(parent_rs)
+        _assert(parent is not None and parent.status == "failed", parent.status if parent else None)
+
+        # 复用同一监管脑：图节点 running、父计划重开；不 spawn
+        out_rs = resume_plan_child_node(supervisor, child_task_id=child_rs)
+        print(
+            {
+                "ok": out_rs.get("ok"),
+                "plan_node_id": out_rs.get("plan_node_id"),
+                "parent_status": out_rs.get("parent_status"),
+            }
+        )
+        _assert(out_rs.get("ok"), out_rs)
+        _assert(out_rs.get("plan_node_id") == node_rs, out_rs.get("plan_node_id"))
+        parent = supervisor.get_task(parent_rs)
+        _assert(parent is not None and parent.status == "running", parent.status if parent else None)
+        g_live = load_graph(parent.meta)
+        _assert(g_live is not None, "graph")
+        n_live = g_live.get(node_rs)
+        _assert(n_live is not None and n_live.status == "running", n_live.status if n_live else None)
+        _assert(n_live.task_id == child_rs, n_live.task_id)
+        # 子任务仍须自行 requeue（枢纽 resume_from_step 负责）；此处模拟续跑成功
+        _assert(supervisor.requeue_task(child_rs, reopen=True), "requeue child")
+        supervisor.set_running(child_rs)
+        supervisor.complete(child_rs)
+        adv_done = on_supervisor_finished(
+            supervisor,
+            child_task_id=child_rs,
+            ok=True,
+            final_thought="ok after step resume",
+        )
+        cur = (adv_done.get("spawned") or [None])[0]
+        while cur:
+            supervisor.set_running(cur)
+            supervisor.complete(cur)
+            nxt = on_supervisor_finished(
+                supervisor, child_task_id=cur, ok=True, final_thought=f"done {cur[:6]}"
+            )
+            if nxt.get("parent_completed"):
+                break
+            cur = (nxt.get("spawned") or [None])[0]
+        parent = supervisor.get_task(parent_rs)
+        _assert(
+            parent is not None and parent.status == "completed",
+            parent.status if parent else None,
+        )
+
     print("== full replan (重新执行) ==")
     with tempfile.TemporaryDirectory() as tmp:
         data_dir = Path(tmp)
@@ -371,6 +534,188 @@ def main() -> None:
             all(n.status in {"pending", "ready", "running"} for n in g_new.nodes),
             [n.status for n in g_new.nodes],
         )
+
+    print("== remove_plan_nodes ==")
+    with tempfile.TemporaryDirectory() as tmp:
+        data_dir = Path(tmp)
+        supervisor = Supervisor(str(data_dir))
+        goal_rm = "先规划：写 notes/rm1.txt 为 one，然后读取并答复，再写 notes/rm2.txt"
+        g_rm = build_plan_graph(goal_rm)
+        _assert(len(g_rm.nodes) >= 2, "need >=2 nodes to remove one")
+        parent_rm = supervisor.create_task(
+            goal_rm, meta=bootstrap_parent_meta(graph=g_rm, title="删节点冒烟")
+        )
+        kids_rm = spawn_ready_children(
+            supervisor, parent_task_id=parent_rm, graph=g_rm
+        )
+        _assert(len(kids_rm) >= 1, kids_rm)
+        # 标第二节点可删（未启动或 failed 均可）
+        drop_id = g_rm.nodes[-1].id
+        keep_ids = {n.id for n in g_rm.nodes if n.id != drop_id}
+        out_rm = remove_plan_nodes(
+            supervisor,
+            parent_task_id=parent_rm,
+            node_ids=[drop_id],
+            reason="冒烟删除",
+        )
+        print(
+            {
+                "ok": out_rm.get("ok"),
+                "removed": out_rm.get("removed"),
+                "active": [
+                    n["id"]
+                    for n in ((out_rm.get("graph") or {}).get("nodes") or [])
+                ],
+            }
+        )
+        _assert(out_rm.get("ok"), out_rm)
+        _assert(drop_id in (out_rm.get("removed") or []), out_rm.get("removed"))
+        g_after = load_graph(supervisor.get_task(parent_rm).meta)
+        _assert(g_after is not None, "graph after remove")
+        _assert(drop_id not in {n.id for n in g_after.nodes}, [n.id for n in g_after.nodes])
+        _assert(keep_ids <= {n.id for n in g_after.nodes}, keep_ids)
+        _assert(any(n.id == drop_id for n in g_after.retired), "retired")
+        # 下游依赖剥离
+        for n in g_after.nodes:
+            _assert(drop_id not in n.depends_on, n.depends_on)
+        # 禁止删光
+        deny = remove_plan_nodes(
+            supervisor,
+            parent_task_id=parent_rm,
+            node_ids=[n.id for n in g_after.nodes],
+            reason="试图删光",
+        )
+        _assert(not deny.get("ok"), deny)
+        _assert("不能删光" in str(deny.get("reason") or ""), deny.get("reason"))
+
+    print("== excise_step_from_context ==")
+    meta_ex = {
+        CHECKPOINT_KEY: {
+            "version": 1,
+            "run_id": "smoke",
+            "next_step": 3,
+            "history": [],
+            "traces": [
+                {"step": 0, "plan": {"thought": "a"}, "results": []},
+                {"step": 1, "plan": {"thought": "b-noise"}, "results": []},
+                {"step": 2, "plan": {"thought": "c"}, "results": []},
+            ],
+            "replan_count": 0,
+            "reflect_count": 0,
+            "stagnation_count": 0,
+            "fingerprint_fails": {},
+            "prior_alternate_fps": [],
+            "step_fp_counts": {"1": 2},
+            "prior_judged_step_fps": [],
+            "verify_results": [],
+            "write_set": [],
+            "saw_code_check_ok": False,
+            "saw_architecture_ok": False,
+            "explore_only_streak": 0,
+            "explore_mutate_forced": False,
+            "explore_behavior_armed": False,
+            "remote_idle_streak": 0,
+            "remote_method_forced": False,
+            "read_path_counts": {},
+            "read_windows": {},
+            "locate_anchors": [],
+            "post_locate_streak": 0,
+            "locate_mutate_forced": False,
+            "wide_grep_ban_paths": [],
+            "wide_grep_ban_patterns": {},
+            "awaiting_user_answer": False,
+            "pending_observe_kinds": None,
+            "last_reflection": None,
+        },
+        "steps": [
+            {"step": 0, "plan": {"thought": "a"}, "results": []},
+            {"step": 1, "plan": {"thought": "b-noise"}, "results": []},
+            {"step": 2, "plan": {"thought": "c"}, "results": []},
+        ],
+    }
+    patch = excise_step_from_context(meta_ex, step=1)
+    _assert(patch.get("excised_step") == 1, patch)
+    ck = load_checkpoint({CHECKPOINT_KEY: patch[CHECKPOINT_KEY]})
+    _assert(ck is not None, "checkpoint after excise")
+    steps_left = [
+        int(t.get("step")) for t in (ck.get("traces") or []) if isinstance(t, dict)
+    ]
+    _assert(steps_left == [0, 2], steps_left)
+    meta_steps_left = [
+        int(t.get("step")) for t in (patch.get("steps") or []) if isinstance(t, dict)
+    ]
+    _assert(meta_steps_left == [0, 2], meta_steps_left)
+    hist = " ".join(
+        str(h.get("content") or "") for h in (ck.get("history") or []) if isinstance(h, dict)
+    )
+    _assert("b-noise" not in hist, hist)
+    _assert("a" in hist and "c" in hist, hist)
+    _assert(ck.get("step_fp_counts") == {}, ck.get("step_fp_counts"))
+
+    print("== parent summary keeps last-node conclusion intact ==")
+    from fawai_avatar.brain.plan_graph import PlanGraph, PlanNode
+
+    long_n3 = (
+        "**结论：执行失败。**\n\n## 校验结果\n\n"
+        "| 维度 | 上游草稿报告 | 本次终稿 |\n|---|---|---|\n"
+        "| 执行状态 | 称部分成功 | **完全失败** |\n"
+        "| 根因 | 笼统环境隔离 | ModuleNotFoundError: paramiko |\n"
+    )
+    # 旧行为会把各节点 summary[:120] 拼进结论文，在「| 维度 | 上游」处截断
+    g_sum = PlanGraph(
+        plan_id="sum",
+        root_goal="分析任务",
+        nodes=[
+            PlanNode(
+                id="n1",
+                goal="取证",
+                artifact={
+                    "summary": "已完成任务的数据采集。"
+                    + ("x" * 200)
+                    + "\n\n### detailed_logs\n- 执行环境：缺依赖，但远程 Aut"
+                },
+            ),
+            PlanNode(
+                id="n2",
+                goal="写稿",
+                artifact={"summary": "草稿已落盘。", "user_summary": "草稿已落盘。"},
+            ),
+            PlanNode(
+                id="n3",
+                goal="校验",
+                artifact={
+                    "summary": long_n3[:800],
+                    "user_summary": long_n3,
+                },
+            ),
+        ],
+    )
+    summary = _parent_summary(g_sum)
+    _assert("计划完成（3 节点）" in summary, summary)
+    _assert("| 维度 | 上游草稿报告 | 本次终稿 |" in summary, summary)
+    _assert("ModuleNotFoundError: paramiko" in summary, summary)
+    _assert("但远程 Aut" not in summary, "索引行不得残留旧硬切半截")
+    # 索引行是首行预览，不应把 n1 长正文硬切拼进结论文主体
+    _assert(summary.count("### detailed_logs") == 0, summary)
+
+    print("== parent conclusion spills long body but does not truncate ==")
+    with tempfile.TemporaryDirectory() as td:
+        huge = ("完整结论文段落。\n" * 1200) + "END_MARKER_NO_TRUNC"
+        _assert(len(huge) > _PARENT_INLINE_MAX, len(huge))
+        stored = _store_user_summary(
+            huge, data_dir=td, task_id="parent-long", node_id="n9"
+        )
+        _assert(stored.get("user_summary_path"), stored)
+        g_long = PlanGraph(
+            plan_id="long",
+            root_goal="长结论",
+            nodes=[
+                PlanNode(id="n9", goal="收尾", artifact=stored),
+            ],
+        )
+        out = _parent_summary(g_long)
+        _assert("END_MARKER_NO_TRUNC" in out, out[-80:])
+        _assert(out.count("完整结论文段落。") >= 1200, "须读回落盘全文，不得按固定字数硬切")
 
     print("OK demo_plan_mode")
 

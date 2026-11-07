@@ -97,7 +97,7 @@ def _env_int(name: str, *, default: int | None = None) -> int | None:
 
 @dataclass(frozen=True)
 class LlmConfig:
-    """接入凭证 + 路由模型名。生成参数按模型档案挂载，见 ``llm.model_profiles``。"""
+    """接入凭证 + 路由模型名。真源为 ``llm_settings.sqlite``（见 ``llm.settings_store``）。"""
 
     api_key: str | None
     base_url: str | None
@@ -114,22 +114,45 @@ class LlmConfig:
         return self.force_model or self.text_model
 
     @classmethod
-    def from_env(cls) -> "LlmConfig":
-        load_dotenv()
-        timeout = _env_int("FAWAI_LLM_TIMEOUT", default=120)
+    def from_store(cls) -> "LlmConfig":
+        """从本机 LLM 设置库组装兼容视图（单供应商聚合仅作兜底展示）。"""
+        from fawai_avatar.llm.settings_store import get_store
+
+        store = get_store()
+        text = store.resolve_route("text")
+        vlm = store.resolve_route("vlm")
+        asr = store.resolve_route("asr")
+        fast = store.resolve_route("fast")
+        force = store.resolve_route("force")
+        embed = store.resolve_route("embed")
+        # 默认凭证取文本路由；无则退到任一已配置 Key 的供应商
+        primary = text if text.has_key else None
+        if primary is None:
+            for role in ("vlm", "fast", "asr", "embed", "force"):
+                ep = store.resolve_route(role)
+                if ep.has_key:
+                    primary = ep
+                    break
+        if primary is None:
+            primary = text
         return cls(
-            api_key=_env("FAWAI_LLM_API_KEY") or _env("OPENAI_API_KEY"),
-            base_url=_env("FAWAI_LLM_BASE_URL") or _env("OPENAI_BASE_URL"),
-            text_model=_env("FAWAI_LLM_TEXT_MODEL") or "qwen3.7-plus",
-            vlm_model=_env("FAWAI_LLM_VLM_MODEL") or "qwen3-vl-plus",
-            asr_model=_env("FAWAI_LLM_ASR_MODEL") or "qwen3-asr-flash",
-            fast_model=_env("FAWAI_LLM_FAST_MODEL") or None,
-            force_model=_env("FAWAI_LLM_MODEL") or _env("OPENAI_MODEL"),
-            timeout_sec=None if timeout is None or timeout <= 0 else float(timeout),
+            api_key=(primary.api_key or None),
+            base_url=(primary.base_url or None),
+            text_model=text.model or "qwen3.7-plus",
+            vlm_model=vlm.model or "qwen3-vl-plus",
+            asr_model=asr.model or "",
+            fast_model=fast.model or None,
+            force_model=force.model or None,
+            timeout_sec=primary.timeout_sec,
         )
 
+    @classmethod
+    def from_env(cls) -> "LlmConfig":
+        """兼容旧名：实际读 SQLite 设置库（含首次从 .env 迁移）。"""
+        return cls.from_store()
+
     def chat_sampling_kwargs(self, model: str | None = None) -> dict[str, float | int]:
-        """按选定模型读取 ``data/llm_models/{model}.json``；无档案则不传采样参数。"""
+        """按选定模型读取档案；无档案则不传采样参数。"""
         from fawai_avatar.llm.model_profiles import sampling_kwargs_for_model
 
         mid = (model or self.model or "").strip()
@@ -199,9 +222,14 @@ def lore_llm_extract_enabled() -> bool:
         return False
     if raw in {"1", "true", "yes", "on"}:
         return True
-    # auto
-    key = _env("FAWAI_LLM_API_KEY") or _env("OPENAI_API_KEY")
-    return bool(key)
+    # auto：任一供应商已配置 Key 则开
+    try:
+        from fawai_avatar.llm.settings_store import get_store
+
+        return any(p.get("has_key") for p in get_store().list_providers())
+    except Exception:
+        key = _env("FAWAI_LLM_API_KEY") or _env("OPENAI_API_KEY")
+        return bool(key)
 
 
 def lore_vector_enabled(*, default: str = "auto") -> bool:
@@ -225,8 +253,10 @@ def lore_vector_enabled(*, default: str = "auto") -> bool:
 
 
 def lore_embed_model() -> str:
-    load_dotenv()
-    return _env("FAWAI_LORE_EMBED_MODEL") or "text-embedding-v3"
+    from fawai_avatar.llm.settings_store import get_store
+
+    mid = get_store().resolve_route("embed").model.strip()
+    return mid or "text-embedding-v3"
 
 
 @dataclass(frozen=True)

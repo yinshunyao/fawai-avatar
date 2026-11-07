@@ -230,7 +230,13 @@ _TOOL_PARAMETER_SCHEMAS: dict[str, dict[str, Any]] = {
                 "type": "string",
                 "description": "相对会话根 data/sessions/{task_id}/ 的路径",
             },
-            "content": {"type": "string", "description": "文件全文"},
+            "content": {
+                "type": "string",
+                "description": (
+                    "文件全文。新建脚本尽最大努力 stdout 打一行 OK 或 FAIL:原因，"
+                    "失败非零退出，便于调用侧 expect（精确或模糊）；非硬闸"
+                ),
+            },
         },
         "required": ["path", "content"],
         "additionalProperties": True,
@@ -352,8 +358,9 @@ def openai_tools_for_coding(
                 "function": {
                     "name": "delegate_to_fast",
                     "description": (
-                        "把一段低风险子目标委派给快模型执行；本步不再给其它工具。"
-                        "高风险改写/终答/互斥路线勿用。"
+                        "机械/低风险子段优先委派快模型（只读定位、已知路径再读、远程 ls/"
+                        "进程/supervisor/端口探查、同构只读链、简单改写）；本步不再给其它工具。"
+                        "高风险改写/终答/互斥路线/需澄清勿用。"
                     ),
                     "parameters": {
                         "type": "object",
@@ -445,12 +452,18 @@ def plan_from_tool_calls(
             args_obj = parsed if isinstance(parsed, dict) else {}
         # 先展平嵌套 args，再算 write_resources，避免 path 埋在 JSON 字符串里导致租约/架构漏绑
         flat_args = normalize_tool_args(args_obj if isinstance(args_obj, dict) else {})
+        expect = None
+        if isinstance(flat_args.get("expect"), dict) and flat_args.get("expect"):
+            expect = dict(flat_args.pop("expect"))
+        elif "expect" in flat_args:
+            flat_args.pop("expect", None)
         actions.append(
             apply_capability_defaults(
                 Action(
                     kind=name,
                     args=dict(flat_args),
                     write_resources=_paths_from_args(name, flat_args),
+                    expect=expect,
                 )
             )
         )

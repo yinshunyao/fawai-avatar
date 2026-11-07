@@ -238,16 +238,19 @@ def format_method_switch_history(constraints: list[str]) -> str:
 
 
 def remote_idle_gate_threshold(*, goal: str = "") -> int:
-    """连续无远端副作用多少步后注入换道；0=关。默认 6；可用 FAWAI_REMOTE_IDLE_GATE。"""
+    """连续无远端副作用多少步后注入换道；0=关（默认）。
+
+    部署类目标先读材料也算正常取证，默认不因只读步数逼远端副作用。
+    仅显式 `FAWAI_REMOTE_IDLE_GATE`>0 时注入。
+    """
+    _ = goal  # 保留参数兼容；默认关后不再按目标关键词默认 6
     raw = (os.environ.get("FAWAI_REMOTE_IDLE_GATE") or "").strip()
-    if raw:
-        try:
-            return max(0, int(raw))
-        except ValueError:
-            pass
-    if not looks_like_remote_ops_goal(goal):
+    if not raw:
         return 0
-    return 6
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 0
 
 
 def remote_idle_abort_threshold(*, goal: str = "") -> int:
@@ -388,6 +391,27 @@ def remote_gate_should_abort_after_force(
     return is_remote_idle_explore_step(actions, results) or not is_remote_side_effect_step(
         actions, results
     )
+
+
+def strip_disabled_remote_gate_history(
+    history: list[dict[str, Any]] | None,
+    *,
+    goal: str = "",
+) -> list[dict[str, Any]]:
+    """闸门默认关时，已注入的远端闸文案不再送进下一轮规划。"""
+    msgs = list(history or [])
+    if remote_idle_gate_threshold(goal=goal) > 0:
+        return msgs
+    markers = (REMOTE_GATE_MARKER, REMOTE_FORCE_MARKER)
+    kept: list[dict[str, Any]] = []
+    for msg in msgs:
+        text = msg.get("content")
+        if not isinstance(text, str):
+            text = str(text or "")
+        if any(marker in text for marker in markers):
+            continue
+        kept.append(msg)
+    return kept
 
 
 def format_remote_gate_message(*, streak: int, gate: int, abort_at: int) -> str:

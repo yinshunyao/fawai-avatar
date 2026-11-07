@@ -30,11 +30,13 @@ _HARD_MAX_STEPS = 12
 
 
 def fast_model_from_env() -> str:
-    """`FAWAI_LLM_FAST_MODEL`；空则未配置快模型（委派关闭）。"""
-    from fawai_avatar.config import load_dotenv
+    """快模型路由；空则未配置（委派关闭）。真源为 llm_settings 库。"""
+    from fawai_avatar.llm.settings_store import get_store
 
-    load_dotenv()
-    return (os.environ.get("FAWAI_LLM_FAST_MODEL") or "").strip()
+    ep = get_store().resolve_route("fast")
+    if not ep.has_key:
+        return ""
+    return (ep.model or "").strip()
 
 
 def parse_delegate(raw: Any) -> DelegateSpec | None:

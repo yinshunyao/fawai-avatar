@@ -6,6 +6,7 @@ from typing import Any, Literal
 from fawai_avatar.config import LlmConfig
 
 RouteKind = Literal["text", "multimodal"]
+RouteRole = Literal["text", "vlm", "fast", "asr", "ocr", "embed", "force"]
 
 
 def messages_need_vision(messages: list[dict[str, Any]]) -> bool:
@@ -34,19 +35,41 @@ def route_model(
     *,
     model: str | None = None,
     force_multimodal: bool | None = None,
-) -> tuple[str, RouteKind]:
+    route_role: str | None = None,
+) -> tuple[str, RouteKind, str]:
     """
-    简单智能路由：
-    - 显式 model / FAWAI_LLM_MODEL → 原样使用（kind 仍按内容标注）
-    - 含图像或多模态标记 → vlm_model
-    - 否则 → text_model
+    简单智能路由，返回 ``(model_id, kind, role)``。
+
+    - 显式 ``route_role`` → 用该角色库中的模型（可被显式 model 覆盖 id）
+    - 显式 ``model`` 且无 role → 仍按内容标 kind，role 尽量匹配库中同 id 路由，否则 text
+    - 含图像 → vlm；否则 text；force 路由有模型时覆盖 text/vlm 的模型 id
     """
     multimodal = force_multimodal if force_multimodal is not None else messages_need_vision(messages)
     kind: RouteKind = "multimodal" if multimodal else "text"
-    if model:
-        return model, kind
-    if config.force_model:
-        return config.force_model, kind
+
+    from fawai_avatar.llm.settings_store import get_store
+
+    store = get_store()
+    role_n = (route_role or "").strip()
+    if role_n in {"text", "vlm", "fast", "asr", "ocr", "embed", "force"}:
+        ep = store.resolve_route(role_n)
+        mid = (model or ep.model or "").strip()
+        return mid, kind, role_n
+
+    explicit = (model or "").strip()
+    if explicit:
+        # 显式模型：优先匹配已配置路由
+        for cand in ("fast", "force", "vlm", "text", "asr", "ocr", "embed"):
+            ep = store.resolve_route(cand)
+            if ep.model and ep.model == explicit:
+                return explicit, kind, cand
+        return explicit, kind, "vlm" if multimodal else "text"
+
+    force = store.resolve_route("force")
+    if force.model:
+        return force.model, kind, "force"
     if multimodal:
-        return config.vlm_model, "multimodal"
-    return config.text_model, "text"
+        ep = store.resolve_route("vlm")
+        return (ep.model or config.vlm_model), "multimodal", "vlm"
+    ep = store.resolve_route("text")
+    return (ep.model or config.text_model), "text", "text"

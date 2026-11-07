@@ -13,7 +13,11 @@ from fawai_avatar.brain.prompt_profile import (
     infer_prompt_profile,
     looks_like_browser_goal,
 )
-from fawai_avatar.control.browser import browser_package_available, close_browser_session
+from fawai_avatar.control.browser import (
+    browser_package_available,
+    close_browser_session,
+    parse_viewport_args,
+)
 from fawai_avatar.control.executor import Controller
 from fawai_avatar.platform_info import clear_platform_cache
 from fawai_avatar.types import Action
@@ -22,6 +26,21 @@ from fawai_avatar.types import Action
 def main() -> None:
     os.environ["FAWAI_HEADLESS"] = "1"
     clear_platform_cache()
+
+    assert parse_viewport_args({"viewport": "mobile"}) == {
+        "width": 390,
+        "height": 844,
+    }
+    assert parse_viewport_args({"mobile": True}) == {"width": 390, "height": 844}
+    assert parse_viewport_args({"viewport": {"width": 360, "height": 800}}) == {
+        "width": 360,
+        "height": 800,
+    }
+    assert parse_viewport_args({"viewport": "390x844"}) == {
+        "width": 390,
+        "height": 844,
+    }
+    assert parse_viewport_args({}) is None
 
     assert looks_like_browser_goal("打开网页 https://example.com")
     prof = infer_prompt_profile("打开网页 https://example.com")

@@ -100,12 +100,14 @@ def rebuild_timeline_from_task(task: TaskRecord) -> list[Message]:
 
         if actions:
             act_lines = [_summarize_action_dict(a) for a in actions if isinstance(a, dict)]
-            act_text = "执行中：" + ("；".join(act_lines) if act_lines else "动作")
+            act_text = "执行中：\n" + ("\n".join(act_lines) if act_lines else "动作")
             if len(act_text) > 900:
                 act_text = act_text[:899] + "…"
-            tool = ""
-            if act_lines:
-                tool = str((actions[0] or {}).get("kind") or "")
+            tools = [
+                str((a or {}).get("kind") or "").strip()
+                for a in actions
+                if isinstance(a, dict) and str((a or {}).get("kind") or "").strip()
+            ]
             out.append(
                 _progress(
                     act_text,
@@ -115,7 +117,8 @@ def rebuild_timeline_from_task(task: TaskRecord) -> list[Message]:
                         "phase": "act",
                         "step": i,
                         "run_id": run_id,
-                        "tool": tool or None,
+                        "tool": ", ".join(tools[:8]) or None,
+                        "commands": act_lines[:8],
                         "reconstructed": True,
                     },
                     mid=f"recon-{tid}-act-{i}",
@@ -235,15 +238,11 @@ def _progress(
 
 
 def _summarize_action_dict(action: dict[str, Any]) -> str:
+    from fawai_avatar.runtime.loop import summarize_action_line
+
     kind = str(action.get("kind") or "?").strip() or "?"
     args = action.get("args") if isinstance(action.get("args"), dict) else {}
-    cmd = args.get("cmd") or args.get("command")
-    path = args.get("path")
-    if cmd is not None and str(cmd).strip():
-        return f"{kind}: {_clip(_redact(str(cmd)), 120)}"
-    if path is not None and str(path).strip():
-        return f"{kind}: path={_clip(str(path), 120)}"
-    return kind
+    return summarize_action_line(kind, args, max_len=240)
 
 
 def _redact(text: str) -> str:

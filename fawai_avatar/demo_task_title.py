@@ -4,7 +4,15 @@
 from __future__ import annotations
 
 from fawai_avatar.brain.planner import _plan_from_payload
+from fawai_avatar.brain.plan_scheduler import (
+    best_child_llm_title,
+    promote_title_to_plan_parent,
+    resolve_session_title,
+)
+from fawai_avatar.task.supervisor import Supervisor
 from fawai_avatar.task.title import (
+    can_replace_task_title,
+    commit_task_title,
     normalize_step_label,
     normalize_task_title,
     resolve_step_label,
@@ -25,6 +33,62 @@ def main() -> None:
     assert title_from_plan_payload({"title": "Web粘贴图片"}) == "Web粘贴图片"
     assert title_from_plan_payload({"task_title": "侧栏命名"}) == "侧栏命名"
     assert title_from_plan_payload({}) == ""
+
+    assert can_replace_task_title(
+        existing="1、压缩目录/Users…",
+        existing_source="heuristic",
+        proposed="压缩GlueGap数据",
+        proposed_source="llm",
+    )
+    assert not can_replace_task_title(
+        existing="压缩GlueGap数据",
+        existing_source="llm",
+        proposed="切换r34训练配置",
+        proposed_source="llm",
+    )
+
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        supervisor = Supervisor(tmp)
+        parent_id = supervisor.create_task(
+            "1、压缩目录/tmp/GlueGap\n2、上传训练",
+            meta={
+                "plan_role": "orchestrator",
+                "title": "1、压缩目录/tmp/GlueGap",
+                "title_source": "heuristic",
+            },
+        )
+        child_id = supervisor.create_task(
+            "压缩节点",
+            meta={
+                "plan_role": "supervisor",
+                "plan_parent_task_id": parent_id,
+                "title": "压缩GlueGap数据",
+                "title_source": "llm",
+            },
+        )
+        assert best_child_llm_title(supervisor, parent_id) == "压缩GlueGap数据"
+        written = promote_title_to_plan_parent(
+            supervisor, child_id, "压缩GlueGap数据", source="llm"
+        )
+        assert written == "压缩GlueGap数据", written
+        parent = supervisor.get_task(parent_id)
+        assert parent is not None
+        assert (parent.meta or {}).get("title") == "压缩GlueGap数据"
+        assert (parent.meta or {}).get("title_source") == "llm"
+        # 再次提升不得覆盖
+        assert (
+            promote_title_to_plan_parent(
+                supervisor, child_id, "切换r34训练配置", source="llm"
+            )
+            == ""
+        )
+        named, src = resolve_session_title(supervisor, parent)
+        assert named == "压缩GlueGap数据" and src == "llm"
+        assert commit_task_title(
+            supervisor, parent_id, "其它名", source="heuristic"
+        ) == ""
 
     assert step_label_from_plan_payload({"step_label": "查找转换脚本"}) == "查找转换脚本"
     assert step_label_from_plan_payload({"intent": "转 VOC XML"}) == "转 VOC XML"

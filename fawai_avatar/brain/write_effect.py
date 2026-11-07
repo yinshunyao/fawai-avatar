@@ -208,9 +208,13 @@ def format_visible_effect_prompt(*, goal: str, write_set: list[str]) -> str:
     return (
         f"{VISIBLE_EFFECT_MARKER}已有写入（{paths}）。"
         "请给出面向用户的最终回答：须写清用户应看到的可见变化"
-        "（布局/间距/组件位置等），禁止空话或 native tool_calls。"
+        "（布局/间距/组件位置等），可对照 diff/@media 说明窄屏下如何变；"
+        "禁止空话或 native tool_calls。"
         f"{img_hint}"
-        "若实际无可见副作用，禁止 success，改 status=failed 说明原因。"
+        "实机截屏 / 桌面点系统 Chrome / 浏览器打开属**可选验收**，"
+        "做不到不得因此 failed；若要验手机窄屏，用 browser_navigate"
+        "（viewport=mobile 或 width≤859）→ browser_snapshot，勿用桌面截屏冒充手机。"
+        "仅当补丁本身无目标对齐的可见副作用时，禁止 success，改 failed 说明原因。"
         "本步必须 actions 为空；若可 success，则 status=success、done=true，"
         "thought 即为给用户的最终回复。"
     )

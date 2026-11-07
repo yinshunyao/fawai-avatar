@@ -30,23 +30,11 @@ class SettingField:
     supports_params: bool = False  # chat 类可挂生成参数
 
 
-# 模型配置页（导航「模型配置」）；其余属系统配置页
-# 生成参数不在 .env：按模型落盘 data/llm_models/{model}.json
-MODEL_GROUP_IDS: frozenset[str] = frozenset({"llm_provider", "llm_models"})
-MODEL_ROUTE_KEYS: frozenset[str] = frozenset(
-    {
-        "FAWAI_LLM_TEXT_MODEL",
-        "FAWAI_LLM_VLM_MODEL",
-        "FAWAI_LLM_FAST_MODEL",
-        "FAWAI_LLM_ASR_MODEL",
-        "FAWAI_LORE_EMBED_MODEL",
-        "FAWAI_LLM_MODEL",
-    }
-)
+# 模型配置已迁 llm_settings.sqlite（见 /api/llm/settings）；本文件只管系统 .env
+MODEL_GROUP_IDS: frozenset[str] = frozenset()
+MODEL_ROUTE_KEYS: frozenset[str] = frozenset()
 
 GROUPS: tuple[tuple[str, str], ...] = (
-    ("llm_provider", "接入凭证"),
-    ("llm_models", "模型路由"),
     ("runtime", "运行与大脑"),
     ("gateway", "网关与保活"),
     ("frp", "frp 穿透"),
@@ -56,88 +44,6 @@ GROUPS: tuple[tuple[str, str], ...] = (
 )
 
 FIELDS: tuple[SettingField, ...] = (
-    SettingField(
-        "FAWAI_LLM_BASE_URL",
-        "llm_provider",
-        "API Base URL",
-        "str",
-        default="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        hint="OpenAI 兼容接口根路径（如 DashScope / OpenAI / 自建网关）",
-    ),
-    SettingField(
-        "FAWAI_LLM_API_KEY",
-        "llm_provider",
-        "API Key",
-        "str",
-        secret=True,
-        hint="留空保存表示不改；可点清空",
-    ),
-    SettingField(
-        "FAWAI_LLM_TIMEOUT",
-        "llm_provider",
-        "请求超时（秒）",
-        "int",
-        default="120",
-        hint="单次 chat / embed / ASR 请求超时；0=SDK 默认",
-    ),
-    SettingField(
-        "FAWAI_LLM_TEXT_MODEL",
-        "llm_models",
-        "文本模型",
-        "str",
-        default="qwen3.7-plus",
-        hint="无图消息走此模型；下拉为在线拉取的文本生成列表",
-        model_kind="text",
-        supports_params=True,
-    ),
-    SettingField(
-        "FAWAI_LLM_VLM_MODEL",
-        "llm_models",
-        "多模态模型",
-        "str",
-        default="qwen3-vl-plus",
-        hint="消息含图像时走此模型；下拉为在线视觉理解列表",
-        model_kind="vlm",
-        supports_params=True,
-    ),
-    SettingField(
-        "FAWAI_LLM_FAST_MODEL",
-        "llm_models",
-        "快模型（委派）",
-        "str",
-        hint="主脑委派子目标时使用；留空则关闭委派（主脑自行执行）",
-        model_kind="text",
-        supports_params=True,
-    ),
-    SettingField(
-        "FAWAI_LLM_ASR_MODEL",
-        "llm_models",
-        "语音转写模型",
-        "str",
-        default="qwen3-asr-flash",
-        hint="对话框语音输入；下拉为在线 ASR 列表",
-        model_kind="asr",
-        supports_params=False,
-    ),
-    SettingField(
-        "FAWAI_LORE_EMBED_MODEL",
-        "llm_models",
-        "嵌入模型",
-        "str",
-        default="text-embedding-v3",
-        hint="个人知识库向量索引；下拉为在线嵌入列表",
-        model_kind="embed",
-        supports_params=False,
-    ),
-    SettingField(
-        "FAWAI_LLM_MODEL",
-        "llm_models",
-        "强制模型（可选）",
-        "str",
-        hint="有值时覆盖文本/多模态智能路由；不覆盖 ASR",
-        model_kind="text",
-        supports_params=True,
-    ),
     SettingField("FAWAI_DRY_RUN", "runtime", "干跑", "bool", default="0", hint="1=不真点键鼠/shell"),
     SettingField("FAWAI_DATA_DIR", "runtime", "数据目录", "str", default="data"),
     SettingField("FAWAI_WORK_ROOT", "runtime", "工作区根", "str", default="."),
@@ -463,16 +369,15 @@ def _group_in_scope(group_id: str, scope: str) -> bool:
 
 
 def _selected_route_models(disk: dict[str, str] | None = None) -> list[str]:
-    disk = disk if disk is not None else read_dotenv_map()
+    del disk  # 兼容旧签名
+    from fawai_avatar.llm.settings_store import get_store
+
     models: list[str] = []
     seen: set[str] = set()
-    for key in (
-        "FAWAI_LLM_TEXT_MODEL",
-        "FAWAI_LLM_VLM_MODEL",
-        "FAWAI_LLM_FAST_MODEL",
-        "FAWAI_LLM_MODEL",
-    ):
-        mid = effective_value(key, disk=disk).strip()
+    for role, r in get_store().list_routes().items():
+        if role not in {"text", "vlm", "fast", "force"}:
+            continue
+        mid = str(r.get("model_id") or "").strip()
         if not mid or mid in seen:
             continue
         seen.add(mid)
@@ -506,7 +411,7 @@ def get_settings_payload(*, scope: str = "all") -> dict[str, Any]:
             "hint": field.hint,
             "options": list(field.options),
             "step": field.step,
-            "model_pick": field.key in MODEL_ROUTE_KEYS,
+            "model_pick": False,
             "model_kind": field.model_kind,
             "supports_params": bool(field.supports_params),
         }
@@ -531,20 +436,12 @@ def get_settings_payload(*, scope: str = "all") -> dict[str, Any]:
         "fields": fields_out,
         "values": values,
     }
-    if scope_n in {"model", "all"}:
-        from fawai_avatar.llm.model_profiles import (
-            PARAM_SCHEMA,
-            models_dir,
-            profiles_payload_for_models,
-        )
+    if scope_n == "model":
+        # 模型配置已迁 /api/llm/settings；此处仅占位避免旧前端报错
+        from fawai_avatar.llm.settings_store import get_store
 
-        selected = _selected_route_models(disk)
-        payload["model_profiles"] = {
-            "dir": str(models_dir()),
-            "param_schema": list(PARAM_SCHEMA),
-            "selected_models": selected,
-            "profiles": profiles_payload_for_models(selected, ensure=True),
-        }
+        payload["llm_settings"] = get_store().settings_payload()
+        payload["hint"] = "use /api/llm/settings"
     return payload
 
 

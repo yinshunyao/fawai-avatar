@@ -21,8 +21,51 @@ CONSTRAINT_PATH_LEDGER = (
     "各必要路径均须尝试或标明阻塞；一条阻塞时不得遗忘其他已就绪必要路径——"
     "须继续推进副作用，或 status=failed 时按路径分项说明并交付已齐材料上的可执行步骤；"
     "改写/作答所依赖的证据须可回读原文（小窗 fs_read 或压缩 dump）；"
-    "禁止把宽搜/反复读说明等可选探索当成唯一进展"
+    "禁止把宽搜/反复读说明等可选探索当成唯一进展；"
+    "实机截屏/桌面 Chrome/浏览器验页属可选，不得升成必要路径；"
+    "已 mutate 时可用 thought 对照 diff 说明可见变化后 success，验不了不得因此 failed"
 )
+
+# 反省常把「截屏验手机」升成硬必要并逼 failed——清洗为可选验收
+_FORCE_VISUAL_VERIFY_HINTS = (
+    "须验证移动端",
+    "必须截屏",
+    "须截屏",
+    "截屏验证",
+    "验证移动端布局",
+    "验证手机端",
+    "缺乏视觉反馈",
+    "无法获取Chrome",
+    "无法获取 chrome",
+    "无法获取窗口画面",
+    "画面验证",
+    "视觉验证",
+    "实机验证",
+)
+
+_VISUAL_VERIFY_OPTIONAL = (
+    "实机截屏/桌面点 Chrome/浏览器打开属可选验收，不得升成必要路径；"
+    "已有 mutate 时 thought 对照 diff/@media 说明可见变化即可 success；"
+    "若要验窄屏用 browser_navigate(viewport=mobile)→snapshot；做不到不得因此 failed"
+)
+
+
+def scrub_forced_visual_verify_constraints(constraints: list[str] | None) -> list[str]:
+    """丢掉「必须截屏/验移动端否则 failed」类约束，换成可选验收口径。"""
+    out: list[str] = []
+    replaced = False
+    for raw in constraints or []:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        low = text.lower()
+        if any(h.lower() in low for h in _FORCE_VISUAL_VERIFY_HINTS):
+            if not replaced:
+                out.append(_VISUAL_VERIFY_OPTIONAL)
+                replaced = True
+            continue
+        out.append(text)
+    return out
 
 # 材料/落点类信号（抽象，非专名）
 _MATERIAL_HINTS = (
@@ -162,19 +205,34 @@ def path_ledger_prompt_lines(*, short: bool = False) -> str:
         "各必要路径均须尝试或明确阻塞；一条阻塞时不得偏科遗忘其他已就绪必要路径——"
         "须继续推进可验收副作用，或 `status=failed` 时按路径**分项**说明"
         "（已齐 / 阻塞原因），若声称交命令则 thought 须含可复制命令。"
-        "宽搜、反复读同一说明等属可选，不得替代必要路径进展；压缩摘要不得当作证据保真已齐。\n"
+        "宽搜、反复读同一说明、实机截屏/浏览器验页等属可选，不得替代必要路径进展，"
+        "也不得因可选验收做不到就整任务 failed；压缩摘要不得当作证据保真已齐。\n"
     )
 
 
 def enrich_reflection_path_ledger(reflection: Reflection) -> Reflection:
     """alternate/abort 时追加台账约束，防止反省把恢复收成单线偏科。"""
     if not path_ledger_enabled():
-        return reflection
-    if reflection.decision != "alternate":
-        return reflection
-    constraints = list(reflection.constraints or [])
-    if CONSTRAINT_PATH_LEDGER not in constraints:
-        constraints.append(CONSTRAINT_PATH_LEDGER)
+        # 仍清洗「强制视觉验收」——不依赖台账总闸
+        cleaned = scrub_forced_visual_verify_constraints(list(reflection.constraints or []))
+        if cleaned == list(reflection.constraints or []):
+            return reflection
+        return Reflection(
+            cause=reflection.cause,
+            decision=reflection.decision,
+            constraints=cleaned[:8],
+            thought=reflection.thought,
+            fingerprint=reflection.fingerprint,
+            forced=reflection.forced,
+            raw={
+                **dict(reflection.raw or {}),
+                "visual_verify_scrubbed": True,
+            },
+        )
+    constraints = scrub_forced_visual_verify_constraints(list(reflection.constraints or []))
+    if reflection.decision == "alternate":
+        if CONSTRAINT_PATH_LEDGER not in constraints:
+            constraints.append(CONSTRAINT_PATH_LEDGER)
     return Reflection(
         cause=reflection.cause,
         decision=reflection.decision,
@@ -184,7 +242,8 @@ def enrich_reflection_path_ledger(reflection: Reflection) -> Reflection:
         forced=reflection.forced,
         raw={
             **dict(reflection.raw or {}),
-            "path_ledger": True,
+            "path_ledger": reflection.decision == "alternate",
+            "visual_verify_scrubbed": True,
         },
     )
 

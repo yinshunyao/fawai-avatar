@@ -24,9 +24,23 @@ from fawai_avatar.channel.task_timeline import (
     rebuild_timeline_from_task,
     timeline_needs_rebuild,
 )
+from fawai_avatar.brain.plan_scheduler import is_awaiting_plan
 from fawai_avatar.skills.review import _review_goal_title
 from fawai_avatar.task.models import TaskRecord
 from fawai_avatar.task.supervisor import Supervisor
+
+
+async def _wait_create_orchestrate(
+    hub: SessionHub, task_id: str, *, timeout: float = 3.0
+) -> None:
+    """新建先建卡再异步编排；追问/追加前须等 awaiting_plan 清掉。"""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        task = hub.supervisor.get_task(task_id)
+        if task is not None and not is_awaiting_plan(task.meta):
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"awaiting_plan 超时未清: {task_id[:8]}")
 
 
 def _check_image_marks() -> None:
@@ -353,6 +367,32 @@ def main() -> None:
             card = await hub.handle_inbound(Message.text_user("打开备忘录写一句话"))
             assert card is not None and card.kind == "card"
             assert card.meta.get("mode") == "create"
+            # 须先看到受理进度（不等编排 LLM）
+            for _ in range(30):
+                if any(
+                    m.kind == "progress" and (m.meta or {}).get("phase") == "accepted"
+                    for m in seen
+                ):
+                    break
+                await asyncio.sleep(0.05)
+            assert any(
+                m.kind == "progress" and (m.meta or {}).get("phase") == "accepted"
+                for m in seen
+            ), "新建须立刻 phase=accepted"
+            await _wait_create_orchestrate(hub, card.task_id)
+            orch = [
+                m
+                for m in seen
+                if m.kind == "progress"
+                and m.task_id == card.task_id
+                and (m.meta or {}).get("phase") in {"orchestrate", "plan_build"}
+            ]
+            assert any("未进计划模式" in (m.text or "") for m in orch), [
+                m.text for m in orch
+            ]
+            assert all((m.meta or {}).get("timeline_segment") != "new" for m in orch), (
+                "判定进度须并入受理段，禁止另开 timeline_segment"
+            )
             # 等后台 worker
             for _ in range(50):
                 if any(m.kind == "card" and m.meta.get("status") in {"completed", "failed"} for m in seen):
@@ -364,6 +404,7 @@ def main() -> None:
 
             # 路由/追加自检不自动跑 worker
             quiet = SessionHub(sup, worker=None, auto_run_worker=False)
+            quiet.bind_loop(asyncio.get_running_loop())
 
             # 终态同目标追问 → 续跑 reopen（mock 默认 continue）
             cont_done = await quiet.handle_inbound(
@@ -382,14 +423,17 @@ def main() -> None:
             assert branched.meta.get("mode") == "create"
             assert branched.task_id != card.task_id
             assert branched.meta.get("parent_task_id") == card.task_id
+            await _wait_create_orchestrate(quiet, branched.task_id)
 
             # 无 task_id 仍新建
             fresh = await quiet.handle_inbound(Message.text_user("无关的新目标"))
             assert fresh is not None and fresh.meta.get("mode") == "create"
+            await _wait_create_orchestrate(quiet, fresh.task_id)
 
             # 非终态追问
             created = await quiet.handle_inbound(Message.text_user("起草邮件"))
             assert created.meta.get("mode") == "create"
+            await _wait_create_orchestrate(quiet, created.task_id)
             cont = await quiet.handle_inbound(
                 Message.text_user("语气正式一点", task_id=created.task_id)
             )
@@ -407,6 +451,7 @@ def main() -> None:
             running = await quiet.handle_inbound(Message.text_user("整理桌面文件"))
             assert running.meta.get("mode") == "create"
             rid = running.task_id
+            await _wait_create_orchestrate(quiet, rid)
             assert quiet.supervisor.set_running(rid)
             appended = await quiet.handle_inbound(
                 Message.text_user("先只动下载文件夹", task_id=rid)
@@ -429,6 +474,7 @@ def main() -> None:
             assert branched_run.meta.get("mode") == "create"
             assert branched_run.task_id != rid
             assert branched_run.meta.get("parent_task_id") == rid
+            await _wait_create_orchestrate(quiet, branched_run.task_id)
 
             # 入站幂等：同 message_id 不二次落盘/路由；短窗同文不落第二份
             idemp = SessionHub(sup, worker=None, auto_run_worker=False)

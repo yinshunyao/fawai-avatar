@@ -3,9 +3,20 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
-from typing import Any
+from typing import Any, Callable
+
+from fawai_avatar.brain.durable_memory import durable_memory_text
+
+Summarize = Callable[[str], str | None]
+
+_COMPACT_NOTE = (
+    "（这是更早步骤的摘要，只保留做过什么和得到的结论。"
+    "摘要里没有的事实不在当前上下文中，须按 path 定向再读；"
+    "不要把「曾经读过」当成不能再取证。）"
+)
 
 _PATH_RE = re.compile(
     r"(?:path=|paths?:\s*|path':\s*|path\":\s*)['\"]?([^\s'\",\]]+)",
@@ -213,3 +224,113 @@ def compress_history_for_plan(
             break
         out.pop(0)
     return out
+
+
+def _prefix_hash(msgs: list[dict[str, Any]]) -> str:
+    digest = hashlib.sha256()
+    for msg in msgs:
+        digest.update(str(msg.get("role") or "").encode())
+        digest.update(b"\0")
+        digest.update(_msg_text(msg).encode())
+        digest.update(b"\0")
+    return digest.hexdigest()[:16]
+
+
+def _compact_excerpt(older: list[dict[str, Any]], *, limit: int = 12000) -> str:
+    parts = [f"[{msg.get('role') or 'user'}]\n{_msg_text(msg)}" for msg in older]
+    text = "\n\n".join(parts)
+    if len(text) <= limit:
+        return text
+    return "…（更早内容已截断）\n" + text[-limit:]
+
+
+def _fit_plan_history(
+    out: list[dict[str, Any]], *, limit: int, keep: int
+) -> list[dict[str, Any]]:
+    while out and sum(_msg_chars(m) for m in out) > limit:
+        if len(out) <= max(2, keep // 2 or 1):
+            oldest = out[0]
+            text = _msg_text(oldest)
+            if len(text) > 160:
+                out[0] = {
+                    "role": oldest.get("role") or "user",
+                    "content": text[:159] + "…",
+                }
+            break
+        out.pop(0)
+    return out
+
+
+def plan_history(
+    history: list[dict[str, Any]] | None,
+    *,
+    cache: dict[str, Any] | None = None,
+    summarize: Summarize | None = None,
+    keep_recent: int | None = None,
+    max_chars: int | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """规划用历史。超窗时优先用 compact 摘要；失败则退回机械远窗。
+
+    cache 为 ``{"prefix_hash", "text"}``。同一段旧历史不重复摘要。
+    """
+    msgs = list(history or [])
+    kept = dict(cache or {})
+    if not msgs:
+        return [], kept
+    keep = history_keep_recent() if keep_recent is None else max(0, keep_recent)
+    limit = history_max_chars() if max_chars is None else max(0, max_chars)
+    total = sum(_msg_chars(m) for m in msgs)
+    if keep <= 0:
+        keep = len(msgs)
+    if total <= limit and len(msgs) <= keep + 2:
+        return msgs, kept
+    if len(msgs) <= keep:
+        older: list[dict[str, Any]] = []
+        recent = msgs
+    else:
+        older = msgs[:-keep]
+        recent = msgs[-keep:]
+    older = _dedupe_older_reads(older)
+    prefix = _prefix_hash(older) if older else ""
+    compact_text = ""
+    if (
+        older
+        and prefix
+        and str(kept.get("prefix_hash") or "") == prefix
+        and str(kept.get("text") or "").strip()
+    ):
+        compact_text = str(kept.get("text") or "").strip()
+    elif older and summarize is not None:
+        try:
+            got = summarize(_compact_excerpt(older))
+        except Exception:
+            got = None
+        if isinstance(got, str) and got.strip():
+            compact_text = durable_memory_text(got.strip())[:1500]
+            if compact_text:
+                kept = {"prefix_hash": prefix, "text": compact_text}
+            else:
+                compact_text = ""
+    if not compact_text:
+        return (
+            compress_history_for_plan(msgs, keep_recent=keep, max_chars=limit),
+            kept if kept.get("text") else dict(cache or {}),
+        )
+    head = {
+        "role": "user",
+        "content": "【已完成步骤摘要】\n" + compact_text + "\n" + _COMPACT_NOTE,
+    }
+    out = _fit_plan_history([head] + _recent_for_plan(recent), limit=limit, keep=keep)
+    return out, kept
+
+
+def _recent_for_plan(recent: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    recent_out: list[dict[str, Any]] = []
+    for msg in recent:
+        role = str(msg.get("role") or "user")
+        text = _msg_text(msg)
+        if role == "user" and ("执行结果" in text or "工具结果" in text):
+            recent_out.append({"role": role, "content": _compact_recent_tool_msg(text)})
+        else:
+            recent_out.append(dict(msg))
+    return recent_out

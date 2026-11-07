@@ -42,9 +42,16 @@ def transcribe_audio(
     config: LlmConfig | None = None,
 ) -> dict[str, Any]:
     """把录音字节转成文本。成功返回 ``ok/text/model``；失败 ``ok=False`` + ``error``。"""
+    from fawai_avatar.llm.settings_store import get_store
+
     cfg = config or LlmConfig.from_env()
-    if not cfg.api_key:
-        return {"ok": False, "error": "未配置 FAWAI_LLM_API_KEY / OPENAI_API_KEY", "text": ""}
+    ep = get_store().resolve_route("asr")
+    api_key = (ep.api_key or cfg.api_key or "").strip()
+    if not api_key:
+        return {"ok": False, "error": "ASR 路由的供应商未配置 API Key", "text": ""}
+    model = (ep.model or cfg.asr_model or "").strip()
+    if not model:
+        return {"ok": False, "error": "未配置语音转写模型", "text": ""}
     if not data:
         return {"ok": False, "error": "音频为空", "text": ""}
     if len(data) > MAX_AUDIO_BYTES:
@@ -57,7 +64,6 @@ def transcribe_audio(
     mime = (mime_type or "audio/webm").split(";")[0].strip().lower() or "audio/webm"
     b64 = base64.b64encode(data).decode("ascii")
     data_uri = f"data:{mime};base64,{b64}"
-    model = cfg.asr_model
     messages: list[dict[str, Any]] = [
         {
             "role": "user",
@@ -75,11 +81,12 @@ def transcribe_audio(
         return {"ok": False, "error": "未安装 openai 包", "text": ""}
 
     client_kwargs: dict[str, Any] = {
-        "api_key": cfg.api_key,
-        "base_url": cfg.base_url or None,
+        "api_key": api_key,
+        "base_url": (ep.base_url or cfg.base_url) or None,
     }
-    if cfg.timeout_sec is not None:
-        client_kwargs["timeout"] = cfg.timeout_sec
+    timeout = ep.timeout_sec if ep.timeout_sec is not None else cfg.timeout_sec
+    if timeout is not None:
+        client_kwargs["timeout"] = timeout
     client = OpenAI(**client_kwargs)
     kwargs: dict[str, Any] = {"model": model, "messages": messages}
     lang = (language or "").strip()

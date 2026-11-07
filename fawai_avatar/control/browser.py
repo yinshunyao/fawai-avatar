@@ -68,6 +68,81 @@ def _timeout_ms() -> int:
         return 30000
 
 
+# 窄屏/@media 验收预设（宽高足以触发常见 max-width:859px 等）
+_VIEWPORT_PRESETS: dict[str, dict[str, int]] = {
+    "mobile": {"width": 390, "height": 844},
+    "iphone": {"width": 390, "height": 844},
+    "iphone14": {"width": 390, "height": 844},
+    "pixel": {"width": 412, "height": 915},
+    "phone": {"width": 390, "height": 844},
+}
+
+
+def parse_viewport_args(args: dict[str, Any] | None) -> dict[str, int] | None:
+    """解析 viewport / device / mobile；返回 {width,height} 或 None。"""
+    raw_args = args or {}
+    # mobile=true / 1 → 默认手机宽
+    mobile_flag = raw_args.get("mobile")
+    if mobile_flag is True or str(mobile_flag).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return dict(_VIEWPORT_PRESETS["mobile"])
+
+    raw = raw_args.get("viewport")
+    if raw is None:
+        raw = raw_args.get("device")
+    if raw is None or raw is False:
+        return None
+
+    if isinstance(raw, dict):
+        try:
+            w = int(raw.get("width") or raw.get("w") or 0)
+            h = int(raw.get("height") or raw.get("h") or 0)
+        except (TypeError, ValueError):
+            return None
+        if w >= 200 and h >= 200:
+            return {"width": w, "height": h}
+        return None
+
+    text = str(raw).strip().lower()
+    if not text:
+        return None
+    if text in _VIEWPORT_PRESETS:
+        return dict(_VIEWPORT_PRESETS[text])
+    # "390x844" / "390*844"
+    for sep in ("x", "*", "×", ","):
+        if sep in text:
+            left, _, right = text.partition(sep)
+            try:
+                w = int(left.strip())
+                h = int(right.strip())
+            except ValueError:
+                return None
+            if w >= 200 and h >= 200:
+                return {"width": w, "height": h}
+            return None
+    # 仅宽度：高度默认 844
+    try:
+        w = int(text)
+    except ValueError:
+        return None
+    if w >= 200:
+        return {"width": w, "height": 844}
+    return None
+
+
+def apply_viewport(page: Any, args: dict[str, Any] | None) -> dict[str, int] | None:
+    """对当前页 set_viewport_size；供 @media / 窄屏验收。"""
+    vp = parse_viewport_args(args)
+    if not vp:
+        return None
+    page.set_viewport_size({"width": vp["width"], "height": vp["height"]})
+    return vp
+
+
 def _install_hint() -> str:
     exe = sys.executable
     return (
@@ -284,14 +359,17 @@ class BrowserTools:
         if "://" not in url:
             url = "https://" + url
         page = _ensure_page()
+        vp = apply_viewport(page, args)
         wait_until = str(args.get("wait_until") or "domcontentloaded").strip()
         page.goto(url, wait_until=wait_until, timeout=_timeout_ms())
         clear_browser_registry()
-        return ExecResult(
-            ok=True,
-            message=f"navigated {page.url}",
-            data={"url": page.url, "title": page.title()},
-        )
+        data: dict[str, Any] = {"url": page.url, "title": page.title()}
+        if vp:
+            data["viewport"] = vp
+        msg = f"navigated {page.url}"
+        if vp:
+            msg += f" · viewport {vp['width']}x{vp['height']}"
+        return ExecResult(ok=True, message=msg, data=data)
 
     def _snapshot(self, args: dict[str, Any]) -> ExecResult:
         page = _ensure_page()

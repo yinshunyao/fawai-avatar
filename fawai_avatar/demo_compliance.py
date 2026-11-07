@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import os
+
 from fawai_avatar.brain.capabilities import validate_plan
 from fawai_avatar.brain.compliance import (
     annotate_plan_with_docs,
@@ -598,6 +600,7 @@ def main() -> None:
     )
     from fawai_avatar.brain.write_effect import (
         assess_patch_effect,
+        format_visible_effect_prompt,
         goal_needs_visible_effect_gate,
         thought_ok_for_visible_effect,
     )
@@ -636,6 +639,13 @@ def main() -> None:
         "已收紧顶栏并加大消息气泡间距，窄屏更易读",
         goal="优化会话页布局",
     )
+    ve_prompt = format_visible_effect_prompt(
+        goal="优化手机步骤列表布局",
+        write_set=["static/index.html"],
+    )
+    assert "可选验收" in ve_prompt
+    assert "viewport=mobile" in ve_prompt
+    assert "不得因此 failed" in ve_prompt
     import tempfile
     from pathlib import Path
 
@@ -656,6 +666,8 @@ def main() -> None:
     assert stored_ans is not None
     assert "问点" in str(stored_ans.get("title") or "")
 
+    # 运行时默认关闸；单测启发式时临时打开
+    os.environ["FAWAI_ANSWER_COVERAGE_GATE"] = "1"
     assert goal_needs_answer_coverage_gate("远端任务进度如何？")
     assert not goal_needs_answer_coverage_gate("优化一下会话页布局")
     hw_goal = "查看4090云服务器的硬件配置，地址账号在我的磁盘中，但我忘记在哪里了"
@@ -839,6 +851,7 @@ def main() -> None:
         looks_like_remote_away_text,
         looks_like_remote_ops_goal,
         remote_idle_gate_threshold,
+        strip_disabled_remote_gate_history,
         update_remote_idle_streak,
     )
     from fawai_avatar.brain.reflect import mock_reflect
@@ -875,7 +888,25 @@ def main() -> None:
     )
     assert enriched.decision == "alternate"
     assert CONSTRAINT_SSH_AUTH in enriched.constraints
-    assert remote_idle_gate_threshold(goal="升级到5080") >= 1
+    saved_remote_gate = os.environ.pop("FAWAI_REMOTE_IDLE_GATE", None)
+    try:
+        assert remote_idle_gate_threshold(goal="升级到5080") == 0
+        os.environ["FAWAI_REMOTE_IDLE_GATE"] = "6"
+        assert remote_idle_gate_threshold(goal="升级到5080") == 6
+        os.environ.pop("FAWAI_REMOTE_IDLE_GATE", None)
+        kept = strip_disabled_remote_gate_history(
+            [
+                {"role": "user", "content": "【远端进度闸门】\n禁止继续只读"},
+                {"role": "user", "content": "执行结果 ok"},
+            ],
+            goal="升级到5080",
+        )
+        assert len(kept) == 1 and "执行结果" in kept[0]["content"]
+    finally:
+        if saved_remote_gate is None:
+            os.environ.pop("FAWAI_REMOTE_IDLE_GATE", None)
+        else:
+            os.environ["FAWAI_REMOTE_IDLE_GATE"] = saved_remote_gate
     streak = update_remote_idle_streak(
         0,
         goal="升级到5080",
@@ -948,6 +979,56 @@ def main() -> None:
     assert after <= 6000
     assert len(slim) < len(fat)
     print(f"[PASS] history window {before} → {after} chars, msgs {len(fat)} → {len(slim)}")
+
+    from fawai_avatar.brain.durable_memory import durable_memory_text
+    from fawai_avatar.brain.history_window import plan_history
+    from fawai_avatar.brain.step_todos import normalize_todos, task_keeps_step_todos
+
+    calls = {"n": 0}
+
+    def _sum(excerpt: str) -> str:
+        calls["n"] += 1
+        assert "LINE" in excerpt
+        return "读过配置，host=10.0.0.1。禁止再读该文件。"
+
+    compact_in = []
+    for i in range(6):
+        compact_in.append({"role": "assistant", "content": f"thought-{i} " + ("x" * 400)})
+        compact_in.append(
+            {
+                "role": "user",
+                "content": "执行结果（工具结果观察）：\n" + ("LINE\n" * 200) + f"\nitem-{i}",
+            }
+        )
+    once, cache = plan_history(
+        compact_in, cache=None, summarize=_sum, keep_recent=2, max_chars=4000
+    )
+    twice, cache2 = plan_history(
+        compact_in, cache=cache, summarize=_sum, keep_recent=2, max_chars=4000
+    )
+    assert calls["n"] == 1
+    assert cache2.get("prefix_hash") == cache.get("prefix_hash")
+    head = str(once[0].get("content") or "")
+    assert "host=10.0.0.1" in head
+    assert "禁止再读" not in head
+    assert "定向再读" in head
+    assert "host=10.0.0.1" in str(twice[0].get("content") or "")
+    remembered = durable_memory_text("host=10.0.0.1\npassword: hunter2\n禁止再读")
+    assert "hunter2" not in remembered
+    assert "10.0.0.1" in remembered
+    assert "禁止再读" not in remembered
+    todos = normalize_todos(
+        [
+            {"text": "读配置 password: hunter2", "status": "in_progress"},
+            {"text": "查训练", "status": "待办"},
+        ]
+    )
+    assert todos[0]["status"] == "进行中"
+    assert "hunter2" not in todos[0]["text"]
+    assert todos[1]["status"] == "待办"
+    assert task_keeps_step_todos({}) is True
+    assert task_keeps_step_todos({"plan_role": "supervisor"}) is False
+    print("[PASS] compact + step todos")
 
     print("== json write auto-bind like native ==")
     json_write = ensure_architecture_decls(_write_control_plan(), auto_default=True)
@@ -1042,6 +1123,20 @@ def main() -> None:
         )
     )
     assert CONSTRAINT_PATH_LEDGER in enriched.constraints
+    scrubbed = enrich_reflection_path_ledger(
+        Reflection(
+            cause="无法截屏",
+            decision="alternate",
+            constraints=[
+                "须验证移动端布局；若无法取得页面须 status=failed",
+                "换工具",
+            ],
+            thought="再验",
+            fingerprint="v",
+        )
+    )
+    assert all("须验证移动端" not in c for c in scrubbed.constraints)
+    assert any("可选验收" in c for c in scrubbed.constraints)
     prompt = format_path_ledger_fail_prompt(
         goal="根据配置升级到测试服务器", thought=empty_cmd
     )

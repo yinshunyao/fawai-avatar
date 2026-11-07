@@ -7,7 +7,7 @@ import os
 import re
 from pathlib import Path
 
-from fawai_avatar.brain.prompt_profile import looks_like_fs_web_goal
+from fawai_avatar.brain.prompt_profile import looks_like_fs_web_goal, report_delivery_rule
 from fawai_avatar.brain.write_effect import (
     goal_needs_visible_effect_gate,
     thought_is_placeholder,
@@ -152,7 +152,8 @@ _REJECT_FAIL_MSG = {
 
 
 def answer_coverage_gate_enabled() -> bool:
-    raw = (os.environ.get("FAWAI_ANSWER_COVERAGE_GATE") or "1").strip().lower()
+    # 默认关：启发式易误伤动作节点终稿；需要时设 FAWAI_ANSWER_COVERAGE_GATE=1
+    raw = (os.environ.get("FAWAI_ANSWER_COVERAGE_GATE") or "0").strip().lower()
     return raw not in {"0", "false", "off", "no"}
 
 
@@ -339,6 +340,7 @@ def format_answer_coverage_prompt(
         [
             "本步必须 status=success、done=true、actions 为空数组；",
             "thought 即为给用户看的最终回复。",
+            report_delivery_rule(goal).strip(),
             "若材料仍不足以回答，改 status=failed 或 need_input，说明缺什么。",
         ]
     )

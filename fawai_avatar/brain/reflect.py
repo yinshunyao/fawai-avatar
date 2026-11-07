@@ -46,6 +46,10 @@ _FINGERPRINT_KEYS = (
     "keys",
     "text",
     "content",
+    # fs_patch / fs_replace：正文必须进指纹，否则同 path 不同 hunk 撞同一指纹
+    "old",
+    "new",
+    "hunks",
     # fs_read 行范围：正式名 + 常见别名，避免同 path 不同区间被当成同一步
     "offset",
     "limit",
@@ -53,6 +57,9 @@ _FINGERPRINT_KEYS = (
     "end_line",
     "line",
 )
+
+# 补丁正文用全文哈希进指纹（禁止截断撞车）；其它长文本仍可截断
+_FINGERPRINT_HASH_KEYS = frozenset({"old", "new", "hunks"})
 
 # 规划方声明本步故意同构（如 patch 后同窗验收）→ 闭环跳过步骤重复计数与裁决
 # 不进指纹键：有/无标识的同读仍同指纹；带标识的步直接豁免
@@ -161,21 +168,28 @@ def coerce_reflection_no_abort(reflection: Reflection) -> Reflection:
     return reflection
 
 
+def _fingerprint_arg_value(key: str, val: Any) -> str:
+    """规范化单个指纹字段；补丁正文全文哈希，避免截断导致同 path 撞车。"""
+    if isinstance(val, (list, dict)):
+        rendered = json.dumps(val, ensure_ascii=False, sort_keys=True)
+    else:
+        rendered = str(val).strip()
+    if key in _FINGERPRINT_HASH_KEYS:
+        digest = hashlib.sha1(rendered.encode("utf-8")).hexdigest()[:16]
+        return f"h:{digest}"
+    if key in {"content", "text"} and len(rendered) > 120:
+        rendered = rendered[:120]
+    return rendered
+
+
 def action_fingerprint(action: Action) -> str:
-    """动作指纹：kind + 规范化关键 args（内容截断）。"""
+    """动作指纹：kind + 规范化关键 args（内容截断；补丁正文哈希）。"""
     parts: list[str] = [str(action.kind or "").strip().lower()]
     args = action.args or {}
     for key in _FINGERPRINT_KEYS:
         if key not in args:
             continue
-        val = args[key]
-        if isinstance(val, list):
-            rendered = json.dumps(val, ensure_ascii=False, sort_keys=True)
-        else:
-            rendered = str(val).strip()
-        if key in {"content", "text"} and len(rendered) > 120:
-            rendered = rendered[:120]
-        parts.append(f"{key}={rendered}")
+        parts.append(f"{key}={_fingerprint_arg_value(key, args[key])}")
     blob = "|".join(parts)
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
 
@@ -669,6 +683,7 @@ def run_reflect(
     history: list[dict[str, Any]] | None = None,
     prior_alternate_fps: set[str] | None = None,
     llm: Any | None = None,
+    on_llm_delta: Any | None = None,
 ) -> Reflection:
     """执行反省入口（供 Brain.reflect / 闭环调用）。"""
     if _mock_enabled() or llm is None:
@@ -700,7 +715,12 @@ def run_reflect(
             },
         ]
         # 执行反省：裁决质量优先，按主脑角色开思考（可预算）
-        result = client.chat(messages, tools=None, thinking_role="main")
+        result = client.chat(
+            messages,
+            tools=None,
+            thinking_role="main",
+            on_delta=on_llm_delta,
+        )
         if not result.get("ok"):
             base = mock_reflect(goal, actions, results, fingerprint=fingerprint)
             base.cause = f"反省 LLM 失败，回退启发式：{base.cause}"
@@ -720,7 +740,12 @@ def run_reflect(
             thinking = result.get("thinking")
             if isinstance(thinking, dict) and thinking:
                 raw["thinking"] = thinking
-            if usage or (isinstance(thinking, dict) and thinking):
+            reasoning = result.get("reasoning")
+            if isinstance(reasoning, str) and reasoning.strip():
+                raw["thinking_text"] = reasoning.strip()
+            if usage or (isinstance(thinking, dict) and thinking) or raw.get(
+                "thinking_text"
+            ):
                 base.raw = raw
 
     counts = {fingerprint: fail_count}

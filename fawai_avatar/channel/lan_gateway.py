@@ -137,7 +137,12 @@ def create_app(
     if STATIC_DIR.is_dir():
         app.mount("/assets", StaticFiles(directory=str(STATIC_DIR)), name="assets")
 
-    def _check_token(token: str | None) -> None:
+    def _check_token(token: str | None, request: Request | None = None) -> None:
+        # 本机回环地址免密：仅当直连 127.0.0.1/::1 时放行，防代理伪造
+        if request is not None:
+            client_host = request.client.host if request.client else None
+            if client_host in {"127.0.0.1", "::1"}:
+                return
         if not token or token.strip().upper() != app.state.passcode:
             raise HTTPException(status_code=401, detail="invalid passcode")
 
@@ -384,16 +389,134 @@ def create_app(
             raise HTTPException(status_code=400, detail={"errors": result["errors"]})
         return JSONResponse(result)
 
+    @app.get("/api/llm/settings")
+    async def llm_settings_get(
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.llm.model_profiles import PARAM_SCHEMA
+        from fawai_avatar.llm.settings_store import get_store
+
+        store = get_store()
+        payload = store.settings_payload()
+        payload["param_schema"] = list(PARAM_SCHEMA)
+        return JSONResponse(payload)
+
+    @app.put("/api/llm/settings")
+    async def llm_settings_put(
+        payload: dict[str, Any] | None = Body(default=None),
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        """整包或部分更新：providers[] / routes{} / profiles{}。"""
+        _check_token(x_fawai_token)
+        from fawai_avatar.llm.model_profiles import PARAM_SCHEMA, normalize_params
+        from fawai_avatar.llm.settings_store import get_store
+
+        body = payload or {}
+        store = get_store()
+        errors: list[str] = []
+        try:
+            for item in body.get("providers") or []:
+                if not isinstance(item, dict):
+                    continue
+                pid = str(item.get("id") or "").strip()
+                if not pid:
+                    continue
+                clear_key = bool(item.get("clear_api_key"))
+                key_raw = item.get("api_key")
+                store.upsert_provider(
+                    pid,
+                    label=str(item["label"]) if item.get("label") is not None else None,
+                    base_url=str(item["base_url"]) if item.get("base_url") is not None else None,
+                    api_key=str(key_raw) if isinstance(key_raw, str) else None,
+                    clear_api_key=clear_key,
+                    timeout_sec=(
+                        float(item["timeout_sec"])
+                        if item.get("timeout_sec") is not None and item.get("timeout_sec") != ""
+                        else None
+                    ),
+                )
+            routes = body.get("routes")
+            if isinstance(routes, dict):
+                for role, r in routes.items():
+                    if not isinstance(r, dict):
+                        continue
+                    store.set_route(
+                        str(role),
+                        provider_id=str(r.get("provider_id") or ""),
+                        model_id=str(r.get("model_id") or ""),
+                    )
+            profiles = body.get("profiles") or body.get("model_profiles")
+            if isinstance(profiles, dict):
+                for mid, pbody in profiles.items():
+                    params = pbody.get("params") if isinstance(pbody, dict) else pbody
+                    if isinstance(params, dict):
+                        store.set_profile_params(str(mid), normalize_params(params))
+            if "screenshot_grounding" in body:
+                store.set_screenshot_grounding(str(body.get("screenshot_grounding") or ""))
+            if body.get("delete_provider"):
+                store.delete_provider(str(body.get("delete_provider")))
+        except (ValueError, TypeError) as exc:
+            errors.append(str(exc))
+        out = store.settings_payload()
+        out["param_schema"] = list(PARAM_SCHEMA)
+        out["ok"] = not errors
+        if errors:
+            out["errors"] = errors
+        return JSONResponse(out, status_code=400 if errors else 200)
+
     @app.get("/api/llm/models")
     async def llm_models_list(
         kind: str = "all",
+        provider_id: str | None = None,
+        base_url: str | None = None,
         x_fawai_token: str | None = Header(default=None),
     ) -> JSONResponse:
-        """在线拉取模型列表。``kind``=text|vlm|asr|embed|all；DashScope 走原生目录。"""
+        """在线拉取模型列表。``kind``=text|vlm|asr|embed|all；可按 ``provider_id``。"""
         _check_token(x_fawai_token)
         from fawai_avatar.llm.model_profiles import list_remote_models
 
-        return JSONResponse(list_remote_models(kind=kind))
+        return JSONResponse(
+            list_remote_models(
+                kind=kind,
+                provider_id=(provider_id.strip() if isinstance(provider_id, str) else None),
+                base_url=(base_url.strip() if isinstance(base_url, str) and base_url.strip() else None),
+            )
+        )
+
+    @app.post("/api/llm/models")
+    async def llm_models_list_post(
+        payload: dict[str, Any] | None = Body(default=None),
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        """按 provider_id 或临时 base_url/api_key 拉远端模型。"""
+        _check_token(x_fawai_token)
+        from fawai_avatar.llm.model_profiles import list_remote_models
+
+        body = payload or {}
+        kind = str(body.get("kind") or "all")
+        provider_id = str(body.get("provider_id") or "").strip() or None
+        base_url = body.get("base_url")
+        api_key = body.get("api_key")
+        url = base_url.strip() if isinstance(base_url, str) and base_url.strip() else None
+        key = api_key.strip() if isinstance(api_key, str) and api_key.strip() else None
+        return JSONResponse(
+            list_remote_models(
+                kind=kind,
+                provider_id=provider_id,
+                base_url=url,
+                api_key=key,
+            )
+        )
+
+    @app.get("/api/llm/providers")
+    async def llm_providers_list(
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.llm.settings_store import get_store
+
+        return JSONResponse({"ok": True, "providers": get_store().list_providers()})
 
     @app.get("/api/llm/model-profile")
     async def llm_model_profile_get(
@@ -973,6 +1096,35 @@ def create_app(
             raise HTTPException(status_code=code, detail=detail)
         return JSONResponse(result)
 
+    @app.post("/api/tasks/{task_id}/excise-step")
+    async def excise_step_api(
+        task_id: str,
+        x_fawai_token: str | None = Header(default=None),
+        body: dict[str, Any] | None = Body(default=None),
+    ) -> JSONResponse:
+        """从执行上下文挖掉指定闭环步；父计划须同时传 plan_node_id。"""
+        _check_token(x_fawai_token)
+        task = _resolve_task(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="unknown task")
+        payload = body if isinstance(body, dict) else {}
+        raw_step = payload.get("step")
+        if raw_step is None:
+            raise HTTPException(status_code=400, detail="missing step")
+        try:
+            step = int(raw_step)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="invalid step") from exc
+        plan_node_id = str(payload.get("plan_node_id") or "").strip()
+        result = await hub.excise_step(
+            task.task_id, step, plan_node_id=plan_node_id
+        )
+        if not result.get("ok"):
+            detail = str(result.get("message") or "excise failed")
+            code = 409 if "执行中" in detail or "归档" in detail else 400
+            raise HTTPException(status_code=code, detail=detail)
+        return JSONResponse(result)
+
     @app.post("/api/tasks/{task_id}/plan/retry-nodes")
     async def retry_plan_nodes_api(
         task_id: str,
@@ -1001,6 +1153,39 @@ def create_app(
         )
         if not result.get("ok"):
             detail = str(result.get("message") or "retry failed")
+            raise HTTPException(status_code=400, detail=detail)
+        return JSONResponse(result)
+
+    @app.post("/api/tasks/{task_id}/plan/remove-nodes")
+    async def remove_plan_nodes_api(
+        task_id: str,
+        x_fawai_token: str | None = Header(default=None),
+        body: dict[str, Any] | None = Body(default=None),
+    ) -> JSONResponse:
+        """手工删除计划活跃节点；body.node_ids 必填；禁止删光全部活跃节点。"""
+        _check_token(x_fawai_token)
+        task = _resolve_task(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="unknown task")
+        from fawai_avatar.brain.plan_scheduler import is_orchestrator_task
+
+        if not is_orchestrator_task(task.meta):
+            raise HTTPException(status_code=400, detail="not a plan orchestrator task")
+        payload = body if isinstance(body, dict) else {}
+        raw_ids = payload.get("node_ids")
+        if not isinstance(raw_ids, list) or not raw_ids:
+            raise HTTPException(status_code=400, detail="missing node_ids")
+        node_ids = [str(x).strip() for x in raw_ids if str(x).strip()]
+        if not node_ids:
+            raise HTTPException(status_code=400, detail="missing node_ids")
+        reason = str(payload.get("reason") or "手工删除节点").strip()[:200]
+        result = await hub.remove_plan_nodes(
+            task.task_id,
+            node_ids=node_ids,
+            reason=reason or "手工删除节点",
+        )
+        if not result.get("ok"):
+            detail = str(result.get("message") or "remove failed")
             raise HTTPException(status_code=400, detail=detail)
         return JSONResponse(result)
 
@@ -1298,16 +1483,14 @@ def _is_hidden_plan_child(t: Any) -> bool:
 
 
 def _task_summary(t: Any, *, supervisor: Any = None) -> dict[str, Any]:
-    from fawai_avatar.task.title import normalize_task_title, suggest_task_title
+    from fawai_avatar.brain.plan_scheduler import resolve_session_title
 
     meta = getattr(t, "meta", None) or {}
-    title = normalize_task_title(str(meta.get("title") or "")) or suggest_task_title(
-        t.goal or ""
-    )
+    title, title_source = resolve_session_title(supervisor, t)
     out: dict[str, Any] = {
         "task_id": t.task_id,
         "title": title,
-        "title_source": str(meta.get("title_source") or "") or "heuristic",
+        "title_source": title_source or "heuristic",
         "goal": (t.goal or "")[:160],
         "status": t.status,
         "updated_at": getattr(t, "updated_at", 0),
@@ -1350,8 +1533,9 @@ def _task_detail(t: Any, *, supervisor: Any = None) -> dict[str, Any]:
     data = _task_summary(t, supervisor=supervisor)
     meta = dict(getattr(t, "meta", None) or {})
     detail_meta: dict[str, Any] = {
-        "title": meta.get("title") or data.get("title"),
-        "title_source": meta.get("title_source") or data.get("title_source"),
+        # 与列表同源：优先 _task_summary 已 resolve/回填的短标题
+        "title": data.get("title") or meta.get("title"),
+        "title_source": data.get("title_source") or meta.get("title_source"),
         "final_thought": meta.get("final_thought"),
         "error": meta.get("error"),
         "ok": meta.get("ok"),

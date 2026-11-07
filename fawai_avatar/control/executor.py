@@ -277,30 +277,44 @@ class Controller:
         if not ref:
             return None, ExecResult(
                 ok=False,
-                message="ui_* requires args.ref：须为最近 obs_ax 表中的编号（如 \"3\"），禁止臆造 chat-input 等 id",
+                message=(
+                    "ui_* requires args.ref：须为最近 obs_ax 编号（如 \"3\"）"
+                    "或 OCR 表编号（如 \"ocr1\"），禁止臆造 chat-input 等 id"
+                ),
             )
         from fawai_avatar.observe.ax_tree import format_available_refs, resolve_ax_ref
+        from fawai_avatar.observe.ocr_tree import format_available_ocr_refs, resolve_ocr_ref
 
         node, how = resolve_ax_ref(ref)
         if node is not None:
-            # 把解析结果挂到 args 便于日志（不改 Action 本体）
             if how == "fuzzy":
                 node = dict(node)
                 node["_resolved_how"] = "fuzzy"
                 node["_requested_ref"] = ref
             return node, None
 
+        ocr_node, ocr_how = resolve_ocr_ref(ref)
+        if ocr_node is not None:
+            node = dict(ocr_node)
+            node["_resolved_how"] = ocr_how
+            node["_requested_ref"] = ref
+            return node, None
+
         avail = format_available_refs()
-        looks_invented = not ref.isdigit()
+        ocr_avail = format_available_ocr_refs()
+        looks_invented = not (ref.isdigit() or ref.lower().startswith("ocr"))
         tip = (
-            "ref 须抄 obs_ax 摘要里的编号，禁止用 DOM/无障碍臆造名（如 chat-input-field）。"
+            "ref 须抄 obs_ax / OCR 摘要里的编号，禁止用 DOM/无障碍臆造名。"
             if looks_invented
-            else "该编号不在缓存中。"
+            else "该编号不在 AX/OCR 缓存中。"
         )
         return None, ExecResult(
             ok=False,
-            message=f"未知 ref={ref!r}；{tip} 请先 obs_ax 再 ui_click/ui_type。{avail}",
-            data={"ref": ref, "available_hint": avail},
+            message=(
+                f"未知 ref={ref!r}；{tip} 请先 obs_ax 或配置 OCR 后 obs_screen。"
+                f"{avail} {ocr_avail}"
+            ),
+            data={"ref": ref, "available_hint": avail, "ocr_hint": ocr_avail},
         )
 
     def _exec_ui_click(self, action: Action) -> ExecResult:

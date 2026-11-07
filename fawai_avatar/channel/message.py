@@ -78,8 +78,20 @@ class Message:
         return cls(kind="text", role="user", text=text, task_id=task_id)
 
     @classmethod
-    def text_assistant(cls, text: str, *, task_id: str | None = None) -> "Message":
-        return cls(kind="text", role="assistant", text=text, task_id=task_id)
+    def text_assistant(
+        cls,
+        text: str,
+        *,
+        task_id: str | None = None,
+        meta: dict[str, Any] | None = None,
+    ) -> "Message":
+        return cls(
+            kind="text",
+            role="assistant",
+            text=text,
+            task_id=task_id,
+            meta=dict(meta or {}),
+        )
 
     @classmethod
     def image_out(

@@ -161,6 +161,7 @@ def run_keeper(
     child_lock = threading.Lock()
     backoff = _MIN_BACKOFF
     stopping = False
+    stop_signals = 0
     code_reload_hit = threading.Event()
     watch_stop = threading.Event()
     child_log_fh: IO[str] | None = None
@@ -182,11 +183,13 @@ def run_keeper(
             except OSError:
                 pass
 
-    def _stop_child(*, wait: bool = True) -> None:
+    def _stop_child(*, wait: bool = True, kill: bool = False) -> None:
         """停掉当前网关子进程。
 
-        监视线程只负责发信号（wait=False），由主循环的 proc.wait() 收尸，
-        避免与主循环抢着把 ``child`` 置空，导致后续热重载变成空操作。
+        监视线程 / 信号回调只负责发信号（wait=False），由主循环的
+        ``proc.wait()`` 收尸。禁止在信号处理器里 ``wait``：主循环可能正
+        持有 ``Popen._waitpid_lock`` 阻塞在 waitpid 上，同线程再 wait 会死锁，
+        表现为网关已退出、终端却卡在「正在停止」回不到提示符。
         """
         nonlocal child
         with child_lock:
@@ -198,7 +201,7 @@ def run_keeper(
                 if child is proc:
                     child = None
             return
-        _signal_proc(proc, signal.SIGTERM)
+        _signal_proc(proc, signal.SIGKILL if kill else signal.SIGTERM)
         if not wait:
             return
         try:
@@ -275,11 +278,17 @@ def run_keeper(
             )
 
     def _on_signal(signum: int, _frame: object) -> None:
-        nonlocal stopping
+        nonlocal stopping, stop_signals
+        stop_signals += 1
         stopping = True
         watch_stop.set()
-        cprint(f"保活收到信号 {signum}，正在停止…")
-        _stop_child(wait=True)
+        if stop_signals == 1:
+            cprint(f"保活收到信号 {signum}，正在停止…")
+            # 只发 SIGTERM；收尸留给主循环 proc.wait()，避免信号回调里 wait 死锁
+            _stop_child(wait=False)
+        else:
+            cprint(f"保活再次收到信号 {signum}，强制结束子进程…")
+            _stop_child(wait=False, kill=True)
 
     signal.signal(signal.SIGINT, _on_signal)
     signal.signal(signal.SIGTERM, _on_signal)
@@ -382,6 +391,8 @@ def run_keeper(
         backoff = min(_MAX_BACKOFF, backoff * 2)
 
     watch_stop.set()
+    # 主循环已出 wait：此处再兜底收尸（含 SIGTERM 超时强杀）安全
+    _stop_child(wait=True)
     if child_log_fh is not None:
         try:
             child_log_fh.close()

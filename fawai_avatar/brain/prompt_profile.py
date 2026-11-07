@@ -294,6 +294,47 @@ def profile_full(*, coding: bool) -> PromptProfile:
     )
 
 
+_OTHER_REPORT_FORM_HINTS = (
+    "一句话",
+    "简短",
+    "简单说",
+    "不要图",
+    "不要图表",
+    "不要流程图",
+    "不要 mermaid",
+    "纯文本",
+    "不要表格",
+    "只要结论",
+    "直接说",
+    "别写报告",
+    "不要报告",
+    "不要分点",
+    "口语",
+)
+
+
+def user_specifies_report_form(goal: str) -> bool:
+    """用户已规定交稿篇幅或形式（含不要图表）。"""
+    g = goal or ""
+    return any(h.lower() in g.lower() for h in _OTHER_REPORT_FORM_HINTS)
+
+
+def report_delivery_rule(goal: str) -> str:
+    """终稿体例。用户另有指令时不再加图表。"""
+    if user_specifies_report_form(goal):
+        return (
+            "- 用户已规定交稿体例：success/failed 的终稿 thought 只按用户要求的篇幅和形式，"
+            "不要另加图表或流程图。\n"
+        )
+    return (
+        "- 面向用户的终稿（success 或 failed，且本步是交稿）：thought 写成可读报告，"
+        "先一句结论，再分项；有对照用 Markdown 表；有步骤、分支、依赖或结构关系时，"
+        "在 thought 内加一段 mermaid（```mermaid 围栏，优先 flowchart TD）。"
+        "没有这种关系就不要硬画，也不要编造数字。换行写在 JSON 字符串里，双引号要转义，"
+        "JSON 前后不要再包 markdown。\n"
+    )
+
+
 def goal_has_user_image(goal: str) -> bool:
     from fawai_avatar.channel.message import extract_image_marks
 

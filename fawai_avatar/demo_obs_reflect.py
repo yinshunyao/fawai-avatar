@@ -8,6 +8,8 @@ import tempfile
 from pathlib import Path
 
 from fawai_avatar.brain.obs_reflect import (
+    ObsReflection,
+    _strip_digest_as_source,
     build_obs_reflect_preview,
     format_obs_reflect_user_message,
     format_obs_reflection_for_history,
@@ -80,7 +82,7 @@ def main() -> None:
         )
         _ok("brain_obs_reflect", bool(via_brain.thought))
 
-        # 预览：短文不裁；长文头+尾 + 落盘，禁止旧式「…(截断)」假归因文案
+        # 预览：短文不裁；长文走压缩摘录，并声明不是原文
         short_preview, short_meta = build_obs_reflect_preview("ok short")
         _ok("preview_short_no_clip", short_preview == "ok short" and not short_meta.get("preview_clipped"))
 
@@ -100,7 +102,11 @@ def main() -> None:
             _ok("preview_has_head", "HEAD_MARK" in long_preview)
             _ok("preview_has_tail", "TAIL_LS_PS_EVIDENCE" in long_preview)
             _ok("preview_no_fake_trunc_tag", "…(截断)" not in long_preview)
-            _ok("preview_states_budget", "反省预览" in long_preview and "禁止" in long_preview)
+            _ok(
+                "preview_not_source",
+                "非原文" in long_preview and "处置策略" in long_preview and "不能作为原文处理" in long_preview,
+            )
+            _ok("preview_no_reread_order", "请用 fs_read" not in long_preview)
             dumped = Path(dump).read_text(encoding="utf-8")
             _ok("preview_dump_full", "HEAD_MARK" in dumped and "TAIL_LS_PS_EVIDENCE" in dumped)
 
@@ -114,6 +120,7 @@ def main() -> None:
             _ok("user_msg_preview_meta", bool(user_meta.get("preview_clipped")))
             _ok("user_msg_has_tail", "TAIL_LS_PS_EVIDENCE" in user_msg)
 
+            os.environ["FAWAI_OBS_REFLECT_PREVIEW_CHARS"] = "2500"
             via_clip = run_obs_reflect(
                 "查训练是否完成",
                 [Action(kind="shell", args={"cmd": "ssh remote"})],
@@ -123,7 +130,30 @@ def main() -> None:
                 llm=None,
             )
             hist = format_obs_reflection_for_history(via_clip)
-            _ok("history_has_dump_ptr", "fs_read" in hist and "preview:" in hist)
+            _ok(
+                "history_not_source",
+                "非原文" in hist
+                and "不能作为原文处理" in hist
+                and "处置策略" in hist
+                and "fs_read" not in hist
+                and dump not in hist,
+                hist[-360:],
+            )
+            dirty = ObsReflection(
+                thought=f"去读 {dump} 补全原文",
+                hints=[
+                    "fs_read obs_reflect_preview.txt 补全摘录",
+                    "下一步看进程是否在训练",
+                ],
+                notes=["把摘录当作原文引用"],
+            )
+            cleaned = _strip_digest_as_source(dirty, dump)
+            _ok(
+                "strip_digest_reread",
+                cleaned.hints == ["下一步看进程是否在训练"] and cleaned.notes == [],
+            )
+            _ok("strip_dump_from_thought", dump not in cleaned.thought)
+            os.environ.pop("FAWAI_OBS_REFLECT_PREVIEW_CHARS", None)
             _ok(
                 "raw_preview_meta",
                 bool((via_clip.raw or {}).get("preview", {}).get("dump_path")),

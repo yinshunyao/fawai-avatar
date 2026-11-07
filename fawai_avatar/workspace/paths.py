@@ -61,6 +61,32 @@ def parse_read_roots(raw: str | None, *, default: str = "/") -> list[Path]:
     return out
 
 
+def workspace_paths_prompt_block() -> str:
+    """执行脑系统提示：当前工作区根与只读根（解析后的配置，不是默认假设）。"""
+    from fawai_avatar.config import RuntimeConfig
+
+    cfg = RuntimeConfig.from_env()
+    try:
+        work = str(Path(cfg.work_root).expanduser().resolve())
+    except OSError:
+        work = cfg.work_root
+    roots = [r for r in cfg.read_roots if r]
+    lines = [
+        f"工作区根（可写）：{work}",
+        "相对路径相对工作区根；写入不得越出工作区根。",
+    ]
+    if roots:
+        lines.append("只读根：" + "、".join(roots))
+        lines.append(
+            "绝对路径的 fs_read / fs_grep / fs_glob 须落在工作区根或只读根之下；"
+            "未列入的目录不要当可读根。"
+        )
+    else:
+        lines.append("只读根：无（仅工作区）")
+        lines.append("读也不得越出工作区根。")
+    return "\n".join(lines)
+
+
 def path_under_any(path: Path, roots: list[Path]) -> bool:
     resolved = path.resolve()
     for root in roots:

@@ -22,7 +22,12 @@ _TRACE_MSG_MAX = 400
 def dump_checkpoint(state: dict[str, Any]) -> dict[str, Any]:
     """序列化可变闭环状态（调用方保证字段齐全）。"""
     history = [_clip_history_item(m) for m in (state.get("history") or [])]
-    traces = [_clip_trace(t) for t in (state.get("traces") or [])]
+    traces = []
+    for i, t in enumerate(state.get("traces") or []):
+        clipped = _clip_trace(t)
+        if "step" not in clipped:
+            clipped["step"] = int(i)
+        traces.append(clipped)
     verify = []
     for item in state.get("verify_results") or []:
         if isinstance(item, ExecResult):
@@ -95,7 +100,24 @@ def dump_checkpoint(state: dict[str, Any]) -> dict[str, Any]:
             and state.get("pending_observe_args")
             else None
         ),
+        "pending_step_kind": (
+            str(state.get("pending_step_kind") or "").strip() or None
+        ),
         "last_reflection": state.get("last_reflection"),
+        "history_compact": (
+            {
+                "prefix_hash": str((state.get("history_compact") or {}).get("prefix_hash") or "")[:32],
+                "text": str((state.get("history_compact") or {}).get("text") or "")[:1500],
+            }
+            if isinstance(state.get("history_compact"), dict)
+            and str((state.get("history_compact") or {}).get("text") or "").strip()
+            else {}
+        ),
+        "step_todos": [
+            {"text": str(item.get("text") or "")[:40], "status": str(item.get("status") or "")}
+            for item in (state.get("step_todos") or [])
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        ][:8],
     }
 
 
@@ -141,6 +163,131 @@ def history_from_step_dicts(steps: list[dict[str, Any]]) -> list[dict[str, Any]]
     return history
 
 
+def _trace_step_index(item: dict[str, Any], fallback: int) -> int:
+    """traces / meta.steps 条目上的步号；无字段则用列表下标。"""
+    raw = item.get("step")
+    if raw is None:
+        return int(fallback)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return int(fallback)
+
+
+def excise_step_from_context(
+    meta: dict[str, Any] | None, *, step: int
+) -> dict[str, Any]:
+    """从规划上下文挖掉指定闭环步（保留更早与更晚；步号空洞保留）。
+
+    返回可写回任务 meta 的补丁：{run_checkpoint, steps, excised_step}。
+    不自动拉 Worker。步号按条目 `step` 字段匹配；无字段则按列表下标。
+    """
+    import uuid
+
+    step_n = int(step)
+    if step_n < 0:
+        raise ValueError("step must be >= 0")
+
+    base = dict(meta or {})
+    existing = load_checkpoint(base)
+    traces_src: list[dict[str, Any]] = []
+    if existing is not None:
+        traces_src = [t for t in (existing.get("traces") or []) if isinstance(t, dict)]
+    if not traces_src:
+        traces_src = [s for s in (base.get("steps") or []) if isinstance(s, dict)]
+
+    kept_traces: list[dict[str, Any]] = []
+    found = False
+    for i, raw in enumerate(traces_src):
+        idx = _trace_step_index(raw, i)
+        if idx == step_n:
+            found = True
+            continue
+        # 保留原 step 编号（空洞）；无字段则补上当前下标含义的编号
+        item = dict(raw)
+        if item.get("step") is None:
+            item["step"] = idx
+        kept_traces.append(item)
+
+    if not found:
+        raise KeyError(f"step {step_n} not found")
+
+    meta_steps = [s for s in (base.get("steps") or []) if isinstance(s, dict)]
+    kept_meta_steps: list[dict[str, Any]] = []
+    for i, raw in enumerate(meta_steps):
+        idx = _trace_step_index(raw, i)
+        if idx == step_n:
+            continue
+        item = dict(raw)
+        if item.get("step") is None:
+            item["step"] = idx
+        kept_meta_steps.append(item)
+
+    old_next = int((existing or {}).get("next_step") or 0) if existing else 0
+    kept_nums = [_trace_step_index(t, i) for i, t in enumerate(kept_traces)]
+    if old_next == step_n:
+        new_next = (max(kept_nums) + 1) if kept_nums else 0
+    elif step_n < old_next:
+        # 删的是 next 之前的一步：next 编号本身仍合法则保留；否则收到 max+1
+        if old_next in kept_nums or not kept_nums:
+            new_next = old_next
+        else:
+            new_next = max(kept_nums) + 1 if kept_nums else 0
+    else:
+        new_next = old_next
+
+    state: dict[str, Any]
+    if existing is not None:
+        state = dict(existing)
+    else:
+        state = {
+            "run_id": uuid.uuid4().hex,
+            "replan_count": 0,
+            "reflect_count": 0,
+            "stagnation_count": 0,
+            "fingerprint_fails": {},
+            "prior_alternate_fps": [],
+            "step_fp_counts": {},
+            "prior_judged_step_fps": [],
+            "verify_results": [],
+            "write_set": list(base.get("write_set") or []),
+            "saw_code_check_ok": False,
+            "saw_architecture_ok": False,
+            "explore_only_streak": 0,
+            "explore_mutate_forced": False,
+            "explore_behavior_armed": False,
+            "remote_idle_streak": 0,
+            "remote_method_forced": False,
+            "read_path_counts": {},
+            "read_windows": {},
+            "locate_anchors": [],
+            "post_locate_streak": 0,
+            "locate_mutate_forced": False,
+            "wide_grep_ban_paths": [],
+            "wide_grep_ban_patterns": {},
+            "last_reflection": None,
+        }
+    if not state.get("run_id"):
+        state["run_id"] = uuid.uuid4().hex
+    state["next_step"] = max(0, int(new_next))
+    state["traces"] = kept_traces
+    state["history"] = history_from_step_dicts(kept_traces)
+    # 可重建字段：清空指纹计数，避免对着已删步的脏计数
+    state["step_fp_counts"] = {}
+    state["fingerprint_fails"] = {}
+    state["awaiting_user_answer"] = False
+    state["pending_observe_kinds"] = None
+    state["pending_observe_args"] = None
+    state["pending_step_kind"] = None
+
+    return {
+        CHECKPOINT_KEY: dump_checkpoint(state),
+        "steps": kept_meta_steps,
+        "excised_step": step_n,
+        "next_step": state["next_step"],
+    }
+
+
 def prepare_resume_from_step(meta: dict[str, Any] | None, *, step: int) -> dict[str, Any]:
     """构造从步骤 `step` 继续的 run_checkpoint。
 
@@ -152,7 +299,15 @@ def prepare_resume_from_step(meta: dict[str, Any] | None, *, step: int) -> dict[
     existing = load_checkpoint(meta)
     if existing is not None:
         traces_raw = [t for t in (existing.get("traces") or []) if isinstance(t, dict)]
-        kept = traces_raw[:step_n]
+        # 优先按步号字段截断；无字段则回退列表下标（兼容旧检查点）
+        kept: list[dict[str, Any]] = []
+        for i, t in enumerate(traces_raw):
+            idx = _trace_step_index(t, i)
+            if idx >= step_n:
+                break
+            kept.append(t)
+        # 若全部无有效 step 字段且 break 未触发（全 < step_n），上面逻辑已正确；
+        # 若条目无 step 且用下标：idx==i，与 traces_raw[:step_n] 等价。
         state = dict(existing)
         state["next_step"] = step_n
         state["traces"] = kept
@@ -161,6 +316,8 @@ def prepare_resume_from_step(meta: dict[str, Any] | None, *, step: int) -> dict[
         )
         state["awaiting_user_answer"] = False
         state["pending_observe_kinds"] = None
+        state["pending_observe_args"] = None
+        state["pending_step_kind"] = None
         if not state.get("run_id"):
             state["run_id"] = uuid.uuid4().hex
         return dump_checkpoint(state)
@@ -199,6 +356,8 @@ def prepare_resume_from_step(meta: dict[str, Any] | None, *, step: int) -> dict[
             "wide_grep_ban_patterns": {},
             "awaiting_user_answer": False,
             "pending_observe_kinds": None,
+            "pending_observe_args": None,
+            "pending_step_kind": None,
             "last_reflection": None,
         }
     )
@@ -274,6 +433,9 @@ def restore_runtime_state(raw: dict[str, Any]) -> dict[str, Any]:
             if isinstance(raw.get("pending_observe_args"), dict)
             and raw.get("pending_observe_args")
             else None
+        ),
+        "pending_step_kind": (
+            str(raw.get("pending_step_kind") or "").strip() or None
         ),
         "last_reflection": raw.get("last_reflection")
         if isinstance(raw.get("last_reflection"), dict)
@@ -408,7 +570,23 @@ def _clip_trace(tr: Any) -> dict[str, Any]:
                     "data": {},
                 }
             )
-    return {"observation": obs_d, "plan": plan_d or None, "results": res_out}
+    out: dict[str, Any] = {
+        "observation": obs_d,
+        "plan": plan_d or None,
+        "results": res_out,
+    }
+    # 保留步号（挖步 / 恢复按编号匹配；无字段则调用方用列表下标）
+    step_raw = None
+    if isinstance(tr, dict):
+        step_raw = tr.get("step")
+    else:
+        step_raw = getattr(tr, "step", None)
+    if step_raw is not None:
+        try:
+            out["step"] = int(step_raw)
+        except (TypeError, ValueError):
+            pass
+    return out
 
 
 def _obs_from_dict(data: Any) -> Observation | None:

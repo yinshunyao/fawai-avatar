@@ -44,12 +44,15 @@ def _mock_enabled() -> bool:
     }
 
 
-def decide_complexity(goal: str) -> dict[str, Any]:
+def decide_complexity(
+    goal: str, *, on_llm_delta: Any | None = None
+) -> dict[str, Any]:
     """
     编排脑判定是否进入计划模式（无人审）。
 
     返回 {"enter": bool, "reason": str, "source": "llm"|"mock"|"heuristic"|"off"|"fallback"}。
     非 mock 时优先 LLM；失败或 mock 用启发式。FAWAI_PLAN_MODE=0 恒不进。
+    ``on_llm_delta`` 与规划同款：流式思考/输出，不改变判定结果。
     """
     if not plan_mode_enabled():
         return {"enter": False, "reason": "FAWAI_PLAN_MODE 关闭", "source": "off"}
@@ -61,7 +64,7 @@ def decide_complexity(goal: str) -> dict[str, Any]:
         return _heuristic_complexity(text) | {"source": "mock"}
 
     try:
-        out = _llm_complexity(text)
+        out = _llm_complexity(text, on_llm_delta=on_llm_delta)
         if out is not None:
             return out
     except Exception:  # noqa: BLE001 — 判定失败回退启发式
@@ -94,7 +97,9 @@ def _heuristic_complexity(text: str) -> dict[str, Any]:
     return {"enter": False, "reason": "单阶段/简单目标"}
 
 
-def _llm_complexity(goal: str) -> dict[str, Any] | None:
+def _llm_complexity(
+    goal: str, *, on_llm_delta: Any | None = None
+) -> dict[str, Any] | None:
     from fawai_avatar.llm.client import chat
 
     system = (
@@ -108,6 +113,10 @@ def _llm_complexity(goal: str) -> dict[str, Any] | None:
         "3) 不确定时：若拆开后各段可独立验收则 true，否则 false。"
         "不要等人确认；你直接判定。"
     )
+    stream_kw: dict[str, Any] = {}
+    if on_llm_delta is not None:
+        stream_kw["thinking_role"] = "main"
+        stream_kw["on_delta"] = on_llm_delta
     resp = chat(
         [
             {"role": "system", "content": system},
@@ -115,6 +124,7 @@ def _llm_complexity(goal: str) -> dict[str, Any] | None:
         ],
         tools=None,
         tool_choice=None,
+        **stream_kw,
     )
     if not resp.get("ok"):
         return None
@@ -130,14 +140,19 @@ def _llm_complexity(goal: str) -> dict[str, Any] | None:
     return {"enter": bool(enter), "reason": reason[:80], "source": "llm"}
 
 
-def build_plan_graph(goal: str, *, plan_id: str | None = None) -> PlanGraph:
+def build_plan_graph(
+    goal: str,
+    *,
+    plan_id: str | None = None,
+    on_llm_delta: Any | None = None,
+) -> PlanGraph:
     """出图：mock/启发式默认；非 mock 尝试 LLM，失败回退启发式。"""
     pid = (plan_id or uuid.uuid4().hex).strip()
     text = (goal or "").strip()
     if _mock_enabled():
         return _heuristic_graph(text, plan_id=pid, source="mock")
     try:
-        graph = _llm_graph(text, plan_id=pid)
+        graph = _llm_graph(text, plan_id=pid, on_llm_delta=on_llm_delta)
         if graph is not None and graph.nodes:
             return graph
     except Exception:  # noqa: BLE001 — 出图失败用启发式
@@ -183,8 +198,11 @@ def format_supervisor_goal(
     root_goal: str,
     node: PlanNode,
     artifacts: dict[str, Any],
+    shared_facts: list[Any] | None = None,
 ) -> str:
     """监管脑看到的目标文案：节点 goal + 授权契约 + 上游产物。"""
+    from fawai_avatar.brain.shared_facts import inject_for
+
     lines = [
         f"【监管脑授权】节点 `{node.id}`",
         f"【停条件】{node.stop_when}",
@@ -194,13 +212,23 @@ def format_supervisor_goal(
     if node.consumes:
         bits = []
         for c in node.consumes:
-            bits.append(f"{c}={artifacts.get(c, '（缺失）')!r}"[:120])
+            pinned = inject_for(shared_facts, c)
+            if pinned:
+                bits.append(f"{c}={pinned}")
+            else:
+                bits.append(f"{c}={artifacts.get(c, '（缺失）')!r}"[:120])
         lines.append("【上游产物】" + "; ".join(bits))
+        if shared_facts:
+            lines.append(
+                "上游产物里已经给出的共用事实不要再获取一次；"
+                "其中没有的事实才按路径定向再读。口令不在产物里，从原配置读进环境。"
+            )
     lines.append(f"【用户总目标】{(root_goal or '')[:500]}")
     lines.append(f"【本节点目标】{node.goal}")
     lines.append(
         "你是监管脑：在本节点授权内自行完成任务并驱动执行步骤；"
         "不要改其它节点或全局租约；完成后在结论中兑现产物键含义。"
+        "若本节点生产共用事实，结论里写清事实本身（如 host、端口、日志路径），不要只写已完成。"
     )
     return "\n".join(lines)
 
@@ -266,7 +294,9 @@ def _heuristic_graph(goal: str, *, plan_id: str, source: str) -> PlanGraph:
     return PlanGraph(plan_id=plan_id, root_goal=goal, nodes=nodes, source=source)
 
 
-def _llm_graph(goal: str, *, plan_id: str) -> PlanGraph | None:
+def _llm_graph(
+    goal: str, *, plan_id: str, on_llm_delta: Any | None = None
+) -> PlanGraph | None:
     from fawai_avatar.llm.client import chat
 
     system = (
@@ -277,7 +307,16 @@ def _llm_graph(goal: str, *, plan_id: str) -> PlanGraph | None:
         '"consumes":[],"stop_when":"..."}]}。'
         "规则：节点 goal 可独立验收；串行用 depends_on；可并行则 depends_on 空并可同 parallel_group；"
         "produces/consumes 用短键；不要 markdown。"
+        "若多个节点会用到同一份事实（连接端点、训练任务、日志路径），再输出 "
+        '"shared_facts":[{"key":"ssh_endpoint","producer":"n1","consumers":["n2","n3"],'
+        '"what":"host 与 port，不含口令"}]。'
+        "每个事实只有一个 producer；consumers 是会用到它的节点 id。"
+        "不要把口令写成事实。"
     )
+    stream_kw: dict[str, Any] = {}
+    if on_llm_delta is not None:
+        stream_kw["thinking_role"] = "main"
+        stream_kw["on_delta"] = on_llm_delta
     resp = chat(
         [
             {"role": "system", "content": system},
@@ -285,6 +324,7 @@ def _llm_graph(goal: str, *, plan_id: str) -> PlanGraph | None:
         ],
         tools=None,
         tool_choice=None,
+        **stream_kw,
     )
     if not resp.get("ok"):
         return None
@@ -324,9 +364,13 @@ def _llm_graph(goal: str, *, plan_id: str) -> PlanGraph | None:
         )
     if not nodes:
         return None
-    return PlanGraph(
+    from fawai_avatar.brain.shared_facts import apply_shared_facts
+
+    graph = PlanGraph(
         plan_id=plan_id, root_goal=goal, nodes=nodes, source="llm"
     )
+    apply_shared_facts(graph, parsed.get("shared_facts"))
+    return graph
 
 
 def _llm_append_analyze(

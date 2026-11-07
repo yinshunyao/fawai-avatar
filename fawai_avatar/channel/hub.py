@@ -172,6 +172,8 @@ class SessionHub:
         self._active_task_id: str | None = None
         self._worker_threads: dict[str, threading.Thread] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
+        # 建卡后异步编排/出图；须挂住引用防 GC
+        self._bg_tasks: set[asyncio.Task[Any]] = set()
         # 入站幂等：同 message_id 处理中 / 已落盘则跳过，防刷新重发与 WS 重投
         self._inbound_inflight: set[str] = set()
         if history_path is None:
@@ -222,6 +224,19 @@ class SessionHub:
             fut.result(timeout=timeout)
             return
         asyncio.run(self.publish(message))
+
+    def broadcast_threadsafe(self, message: Message, *, timeout: float = 60.0) -> None:
+        """只广播、不落历史（LLM 直播增量用）。
+
+        直播路径**不** ``fut.result()``：否则每个 delta 都堵在 WS 发送上，
+        HTTP 流式读循环被拖成「攒一坨再吐」，前端看不到逐段涨字。
+        """
+        del timeout  # 直播火递；保留形参与 publish_threadsafe 对齐
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            asyncio.run_coroutine_threadsafe(self.broadcast(message), loop)
+            return
+        asyncio.run(self.broadcast(message))
 
     @property
     def history(self) -> list[Message]:
@@ -524,14 +539,41 @@ class SessionHub:
             await self.publish(err)
             return err
 
-        if task.status == "running":
-            return await self._append_while_running(task, goal, inbound=inbound)
-
         from fawai_avatar.brain.clarification import is_awaiting_clarification
+        from fawai_avatar.brain.plan_scheduler import (
+            is_awaiting_plan,
+            is_orchestrator_task,
+            list_plan_child_ids,
+        )
+
+        # 建卡后编排脑仍在判定/出图：勿追问抢跑或另开 sibling
+        if is_awaiting_plan(task.meta):
+            note = Message.progress(
+                "任务仍在编排（判定/出图），请稍候…",
+                task_id=resolved,
+                meta={
+                    "phase": "orchestrate",
+                    "inbound_id": inbound.message_id,
+                },
+            )
+            await self.publish(note)
+            return note
         from fawai_avatar.skills.review import (
             is_review_awaiting_apply,
             is_review_awaiting_approval,
         )
+
+        # 父计划仍 running、监管脑子任务停在澄清等待：本条视为澄清答复，勿走执行中追加。
+        if task.status == "running" and is_orchestrator_task(task.meta):
+            for cid in list_plan_child_ids(self.supervisor, resolved):
+                child = self.supervisor.get_task(cid)
+                if is_awaiting_clarification(child):
+                    return await self._answer_clarification(
+                        child, goal, inbound=inbound
+                    )
+
+        if task.status == "running":
+            return await self._append_while_running(task, goal, inbound=inbound)
 
         if is_awaiting_clarification(task):
             return await self._answer_clarification(task, goal, inbound=inbound)
@@ -896,6 +938,24 @@ class SessionHub:
         await self.publish(card)
         return card
 
+    def _spawn_bg(self, coro: Any) -> asyncio.Task[Any]:
+        """后台编排/出图：挂住 task 防 GC；异常记日志。"""
+        task = asyncio.create_task(coro)
+
+        def _done(t: asyncio.Task[Any]) -> None:
+            self._bg_tasks.discard(t)
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                logger.error(
+                    "background create/orchestrate failed: %s", exc, exc_info=exc
+                )
+
+        self._bg_tasks.add(task)
+        task.add_done_callback(_done)
+        return task
+
     async def _create_and_maybe_run(
         self,
         goal: str,
@@ -903,42 +963,197 @@ class SessionHub:
         inbound: Message,
         related_task_id: str | None = None,
     ) -> Message:
-        from fawai_avatar.brain.orchestrator import (
-            build_plan_graph,
-            decide_complexity,
-        )
-        from fawai_avatar.brain.plan_scheduler import (
-            bootstrap_parent_meta,
-            spawn_ready_children,
-        )
+        """先建卡 + 受理进度，再异步判定/出图，避免发消息后黑屏等 LLM。"""
+        from fawai_avatar.brain.plan_scheduler import META_AWAITING_PLAN
         from fawai_avatar.task.title import suggest_task_title
 
         title = suggest_task_title(goal)
         extra: dict[str, Any] = {
             "inbound_id": inbound.message_id,
+            "source": "session_hub",
+            "title": title,
+            "title_source": "heuristic",
+            META_AWAITING_PLAN: True,
         }
         if related_task_id:
             extra["related_task_id"] = related_task_id
             extra["parent_task_id"] = related_task_id
             extra["routed_from"] = "thread_new_task"
 
-        # 复杂度由编排脑判定；出图后自动调度，无人审确认
-        # 同步 LLM 必须进线程池，否则进模判定+出图可堵事件循环 1～2 分钟
-        complexity = await self._run_blocking(decide_complexity, goal)
+        task_id = self.supervisor.create_task(goal, meta=extra)
+        self.bind_inbound_to_task(inbound, task_id)
+        self._active_task_id = task_id
+        card = Message.card(
+            f"已创建任务「{title}」"
+            + (f"（从 {related_task_id[:8]}… 线程拆出）" if related_task_id else ""),
+            task_id=task_id,
+            meta={
+                "status": "pending",
+                "goal": goal[:200],
+                "title": title,
+                "title_source": "heuristic",
+                "mode": "create",
+                "awaiting_plan": True,
+                "related_task_id": related_task_id,
+                "parent_task_id": related_task_id,
+            },
+        )
+        await self.publish(card)
+        await self.publish(
+            Message.progress(
+                "已收到，正在处理…",
+                task_id=task_id,
+                meta={
+                    "phase": "accepted",
+                    "inbound_id": inbound.message_id,
+                    "timeline_segment": "new",
+                },
+            )
+        )
+        # 判定 + 出图放后台：建卡已回；同步 LLM 仍走 _run_blocking 不堵事件循环
+        self._spawn_bg(
+            self._finish_create_orchestrate(
+                task_id,
+                goal=goal,
+                title=title,
+                related_task_id=related_task_id,
+                inbound_id=inbound.message_id,
+            )
+        )
+        return card
+
+    async def _finish_create_orchestrate(
+        self,
+        task_id: str,
+        *,
+        goal: str,
+        title: str,
+        related_task_id: str | None,
+        inbound_id: str | None = None,
+    ) -> None:
+        """建卡后：编排脑判定 →（可选）出图调度，或拉普通 Worker。"""
+        from fawai_avatar.brain.orchestrator import (
+            build_plan_graph,
+            decide_complexity,
+        )
+        from fawai_avatar.brain.plan_scheduler import (
+            META_AWAITING_PLAN,
+            bootstrap_parent_meta,
+            is_awaiting_plan,
+            load_graph,
+            plan_graph_progress_meta,
+            spawn_ready_children,
+        )
+
+        def _still_awaiting() -> bool:
+            t = self.supervisor.get_task(task_id)
+            if t is None:
+                return False
+            if t.status in {"cancelled", "failed", "completed", "archived"}:
+                return False
+            return is_awaiting_plan(t.meta)
+
+        if not _still_awaiting():
+            return
+
+        from fawai_avatar.runtime.llm_live import LlmLiveProgress
+
+        def _emit_orch(text: str, *, phase: str, step: int = 0, **extra: Any) -> None:
+            # 不带 step：避免并进 Worker 的 #0 步骤簇
+            del step
+            meta = {"phase": phase, "inbound_id": inbound_id, **extra}
+            self.emit_progress(text, task_id=task_id, meta=meta)
+
+        orch_live = LlmLiveProgress(_emit_orch, phase="orchestrate", step=-1)
+
+        await self.publish(
+            Message.progress(
+                "正在判定是否进入计划模式…",
+                task_id=task_id,
+                meta={
+                    "phase": "orchestrate",
+                    "inbound_id": inbound_id,
+                },
+            )
+        )
+
+        def _run_decide() -> dict[str, Any]:
+            try:
+                return decide_complexity(goal, on_llm_delta=orch_live.on_delta)
+            finally:
+                orch_live.flush()
+
+        # 同步 LLM 必须进线程池，否则进模判定可堵事件循环数十秒
+        complexity = await self._run_blocking(_run_decide)
+        if not _still_awaiting():
+            return
+
+        reason = str(complexity.get("reason") or "")
+        source = str(complexity.get("source") or "")
+        decision = (
+            f"判定进计划模式（{source}）"
+            if bool(complexity.get("enter"))
+            else "按单任务执行（未进计划模式）"
+        )
+        if reason:
+            decision = f"{decision}：{reason}"
+        await self.publish(
+            Message.progress(
+                decision,
+                task_id=task_id,
+                meta={
+                    "phase": "orchestrate",
+                    "live": False,
+                    "complexity_reason": reason[:80],
+                    "complexity_source": source,
+                    "enter_plan": bool(complexity.get("enter")),
+                    "inbound_id": inbound_id,
+                    **orch_live.preview(),
+                },
+            )
+        )
+
         if bool(complexity.get("enter")):
-            graph = await self._run_blocking(build_plan_graph, goal)
-            extra["plan_complexity"] = {
-                "reason": str(complexity.get("reason") or "")[:80],
-                "source": str(complexity.get("source") or ""),
+            graph_live = LlmLiveProgress(_emit_orch, phase="plan_build", step=-1)
+            await self.publish(
+                Message.progress(
+                    "正在出任务图…",
+                    task_id=task_id,
+                    meta={
+                        "phase": "plan_build",
+                        "complexity_reason": reason,
+                        "complexity_source": source,
+                        "inbound_id": inbound_id,
+                    },
+                )
+            )
+
+            def _run_graph() -> Any:
+                try:
+                    return build_plan_graph(goal, on_llm_delta=graph_live.on_delta)
+                finally:
+                    graph_live.flush()
+
+            graph = await self._run_blocking(_run_graph)
+            if not _still_awaiting():
+                return
+
+            extra: dict[str, Any] = {
+                "inbound_id": inbound_id,
+                "plan_complexity": {
+                    "reason": reason[:80],
+                    "source": source,
+                },
             }
+            if related_task_id:
+                extra["related_task_id"] = related_task_id
+                extra["parent_task_id"] = related_task_id
+                extra["routed_from"] = "thread_new_task"
             meta = bootstrap_parent_meta(graph=graph, title=title, extra=extra)
-            task_id = self.supervisor.create_task(goal, meta=meta)
-            self.bind_inbound_to_task(inbound, task_id)
-            self._active_task_id = task_id
+            # bootstrap 不含 awaiting_plan；整表替换清掉闸门键
+            self.supervisor.replace_task_meta(task_id, meta)
             sketch = "\n".join(graph.summary_lines())
-            reason = str(complexity.get("reason") or "")
-            source = str(complexity.get("source") or "")
-            card = Message.card(
+            plan_card = Message.card(
                 f"计划模式「{title}」· {len(graph.nodes)} 节点",
                 task_id=task_id,
                 meta={
@@ -955,19 +1170,13 @@ class SessionHub:
                     "parent_task_id": related_task_id,
                 },
             )
-            await self.publish(card)
-            from fawai_avatar.brain.plan_scheduler import (
-                load_graph,
-                plan_graph_progress_meta,
-            )
+            await self.publish(plan_card)
 
             child_ids = spawn_ready_children(
                 self.supervisor, parent_task_id=task_id, graph=graph
             )
-            # 含 running 标注的图推前端；文案带编排判定摘要
             parent_after = self.supervisor.get_task(task_id)
             g2 = load_graph(parent_after.meta if parent_after else None) or graph
-            # 侧栏整任务态：出图后已调度则跟库态（通常 running），勿停在建卡时的 pending
             parent_status = str(
                 (parent_after.status if parent_after else "") or "pending"
             )
@@ -983,8 +1192,21 @@ class SessionHub:
             )
             await self.publish(
                 Message.progress(
-                    f"编排脑判定进计划模式（{source}）"
-                    f"{('：' + reason) if reason else ''}\n{sketch}",
+                    sketch or "任务图已生成",
+                    task_id=task_id,
+                    meta={
+                        "phase": "plan_build",
+                        "live": False,
+                        "complexity_reason": reason[:80],
+                        "complexity_source": source,
+                        "inbound_id": inbound_id,
+                        **graph_live.preview(),
+                    },
+                )
+            )
+            await self.publish(
+                Message.progress(
+                    "任务图已更新",
                     task_id=task_id,
                     meta=graph_meta,
                 )
@@ -998,35 +1220,16 @@ class SessionHub:
                         task_id=task_id,
                     )
                 )
-            return card
+            return
 
-        meta = {
-            "source": "session_hub",
-            "inbound_id": inbound.message_id,
-            "title": title,
-            "title_source": "heuristic",
-        }
-        meta.update(extra)
-        task_id = self.supervisor.create_task(goal, meta=meta)
-        self.bind_inbound_to_task(inbound, task_id)
-        self._active_task_id = task_id
-        card = Message.card(
-            f"已创建任务「{title}」"
-            + (f"（从 {related_task_id[:8]}… 线程拆出）" if related_task_id else ""),
-            task_id=task_id,
-            meta={
-                "status": "pending",
-                "goal": goal[:200],
-                "title": title,
-                "title_source": "heuristic",
-                "mode": "create",
-                "related_task_id": related_task_id,
-                "parent_task_id": related_task_id,
-            },
-        )
-        await self.publish(card)
+        # 简单任务：清闸门后拉 Worker
+        cur = self.supervisor.get_task(task_id)
+        if cur is None or not _still_awaiting():
+            return
+        cleared = dict(cur.meta or {})
+        cleared.pop(META_AWAITING_PLAN, None)
+        self.supervisor.replace_task_meta(task_id, cleared)
         await self._maybe_start_worker(task_id)
-        return card
 
     async def _answer_clarification(
         self, task: Any, followup: str, *, inbound: Message
@@ -1047,7 +1250,7 @@ class SessionHub:
         resolved, matched = match_answer(followup, options)
         if not resolved:
             err = Message.error("请回复选项编号、标签，或简短说明。", task_id=task_id)
-            await self.publish(err)
+            await self._publish_for_worker_task(err, worker_task_id=task_id)
             return err
         inject = format_answer_for_history(
             resolved, matched=matched, question=question
@@ -1085,7 +1288,7 @@ class SessionHub:
                 f"无法续跑澄清任务 {task_id[:8]}…（状态={task.status}）",
                 task_id=task_id,
             )
-            await self.publish(err)
+            await self._publish_for_worker_task(err, worker_task_id=task_id)
             return err
         self._active_task_id = task_id
         label = resolved
@@ -1102,7 +1305,7 @@ class SessionHub:
                 "timeline_segment": "new",
             },
         )
-        await self.publish(card)
+        await self._publish_for_worker_task(card, worker_task_id=task_id)
         await self._maybe_start_worker(task_id)
         return card
 
@@ -1248,6 +1451,95 @@ class SessionHub:
             },
         }
 
+    async def remove_plan_nodes(
+        self,
+        parent_task_id: str,
+        *,
+        node_ids: list[str],
+        reason: str = "手工删除节点",
+        inbound_id: str = "",
+    ) -> dict[str, Any]:
+        """从父计划活跃图删除节点并刷新会话进度。"""
+        from fawai_avatar.brain.plan_graph import PlanGraph
+        from fawai_avatar.brain.plan_scheduler import (
+            plan_graph_progress_meta,
+            plan_parent_stats_summary,
+            remove_plan_nodes as sched_remove,
+        )
+
+        task = self.supervisor.get_task(parent_task_id)
+        if task is None:
+            return {"ok": False, "message": "unknown task"}
+        rev = await self._run_blocking(
+            sched_remove,
+            self.supervisor,
+            parent_task_id=parent_task_id,
+            node_ids=node_ids,
+            reason=reason,
+            inbound_id=inbound_id,
+        )
+        if not rev.get("ok"):
+            return {
+                "ok": False,
+                "message": str(rev.get("reason") or "remove failed"),
+                **{
+                    k: rev.get(k)
+                    for k in ("removed", "skipped", "cancelled_children", "spawned", "graph")
+                },
+            }
+
+        self._active_task_id = parent_task_id
+        g_raw = rev.get("graph")
+        g_obj = PlanGraph.from_dict(g_raw) if isinstance(g_raw, dict) else None
+        graph_meta = plan_graph_progress_meta(g_obj)
+        parent_live = self.supervisor.get_task(parent_task_id)
+        parent_status = str(
+            rev.get("parent_status")
+            or (parent_live.status if parent_live else "")
+            or "running"
+        )
+        graph_meta.update(
+            {
+                "mode": "remove_nodes",
+                "parent_status": parent_status,
+                "status": parent_status,
+                "removed_nodes": list(rev.get("removed") or []),
+                "auto_dispatch": bool(rev.get("spawned")),
+            }
+        )
+        parent_stats = plan_parent_stats_summary(self.supervisor, parent_task_id)
+        if parent_stats is not None:
+            graph_meta["parent_stats"] = parent_stats
+            graph_meta["stats"] = parent_stats
+        sketch = str(rev.get("sketch") or "")
+        ids = ", ".join(rev.get("removed") or []) or "?"
+        await self.publish(
+            Message.progress(
+                f"已删除节点 {ids}\n{sketch}",
+                task_id=parent_task_id,
+                meta=graph_meta,
+            )
+        )
+        for cid in list(rev.get("spawned") or []):
+            await self._maybe_start_worker(cid)
+        return {
+            "ok": True,
+            "message": f"removed {ids}",
+            "parent_status": parent_status,
+            **{
+                k: rev.get(k)
+                for k in (
+                    "removed",
+                    "skipped",
+                    "cancelled_children",
+                    "spawned",
+                    "graph",
+                    "reason",
+                    "kind",
+                )
+            },
+        }
+
     async def _continue_plan_orchestrator(
         self,
         task: Any,
@@ -1256,7 +1548,12 @@ class SessionHub:
         cleaned_goal: str,
         inbound: Message,
     ) -> Message:
-        """编排器父计划续跑：失败默认重试失败节点；显式口令才整图重规划。"""
+        """编排器父计划续跑。
+
+        - 显式「整图重规划」口令 → 整图重做；
+        - 有 failed 节点 → 重试失败节点（保留已完成），并把追问约束带给新监管脑；
+        - 其余追加约束 → 软续跑（analyze_plan_append / 续未决），**禁止**默认整图。
+        """
         from fawai_avatar.brain.plan_graph import PlanGraph
         from fawai_avatar.brain.plan_scheduler import (
             load_graph,
@@ -1273,9 +1570,18 @@ class SessionHub:
         failed_ids = (
             [n.id for n in graph.nodes if n.status == "failed"] if graph else []
         )
+
+        # 追问约束写入父计划，供新 spawn 的监管脑 pending_appends 继承
+        note = (followup or "").strip()[:500]
+        if note:
+            self.supervisor.merge_task_meta(
+                task_id, {"plan_dispatch_note": note}
+            )
+
+        # failed / cancelled 且图上仍有 failed 节点时，默认重试失败节点
         prefer_retry = (
             not force_full
-            and str(task.status or "") == "failed"
+            and str(task.status or "") in {"failed", "cancelled"}
             and bool(failed_ids)
         )
         if prefer_retry:
@@ -1308,6 +1614,15 @@ class SessionHub:
                 await self.publish(err)
                 return err
             return card
+
+        if not force_full:
+            return await self._continue_plan_soft_append(
+                task,
+                followup=followup,
+                cleaned_goal=cleaned_goal,
+                inbound=inbound,
+                base_ts=base_ts,
+            )
 
         card = Message.card(
             f"已追问任务 {task_id[:8]}…（整图重规划）",
@@ -1386,8 +1701,349 @@ class SessionHub:
             )
         return card
 
+    async def _continue_plan_soft_append(
+        self,
+        task: Any,
+        *,
+        followup: str,
+        cleaned_goal: str,
+        inbound: Message,
+        base_ts: float,
+    ) -> Message:
+        """非显式整图的追问：保留已完成节点，按追加分析续跑未决。"""
+        from fawai_avatar.brain.orchestrator import analyze_plan_append
+        from fawai_avatar.brain.plan_scheduler import (
+            apply_append_to_running_supervisor,
+            apply_plan_revision,
+            load_graph,
+            plan_graph_progress_meta,
+            spawn_ready_children,
+        )
+
+        task_id = task.task_id
+        self._active_task_id = task_id
+        instruction = (followup or "").strip()[:500]
+        card = Message.card(
+            f"已追问任务 {task_id[:8]}…（保留已完成，续跑未决）",
+            task_id=task_id,
+            meta={
+                "status": "pending",
+                "goal": cleaned_goal[:200],
+                "mode": "plan_append",
+                "reopen": task.status in {"completed", "failed", "cancelled"},
+                "inbound_id": inbound.message_id,
+                "plan_mode": True,
+                "parent_status": "running",
+            },
+        )
+        card.ts = base_ts + 0.001
+        await self.publish(card)
+
+        parent = self.supervisor.get_task(task_id) or task
+        graph = load_graph(parent.meta)
+        if graph is None:
+            err = Message.error("无任务图，无法软续跑；请显式「整图重规划」。", task_id=task_id)
+            await self.publish(err)
+            return err
+
+        decision = await self._run_blocking(
+            analyze_plan_append,
+            root_goal=str(parent.goal or graph.root_goal or cleaned_goal),
+            graph=graph,
+            user_text=followup,
+            node_id=None,
+        )
+        kind = str(decision.get("kind") or "no_graph_change")
+        reason = str(decision.get("reason") or "")
+        source = str(decision.get("source") or "")
+        instr = str(decision.get("instruction") or instruction).strip() or instruction
+        await self.publish(
+            Message.progress(
+                f"计划追加 → {kind}（{source}）{('：' + reason) if reason else ''}",
+                task_id=task_id,
+                meta={
+                    "phase": "plan_append",
+                    "kind": kind,
+                    "reason": reason,
+                    "source": source,
+                    "inbound_id": inbound.message_id,
+                },
+            )
+        )
+
+        if instr:
+            self.supervisor.merge_task_meta(
+                task_id,
+                {
+                    "plan_dispatch_note": instr[:500],
+                    "last_plan_append_kind": kind,
+                    "mode": "plan_append",
+                },
+            )
+
+        if kind == "new_task":
+            return await self._create_and_maybe_run(
+                followup, inbound=inbound, related_task_id=task_id
+            )
+
+        # 终态父计划须重开，否则无法拉起未决节点
+        parent = self.supervisor.get_task(task_id) or parent
+        if parent.status in {"failed", "cancelled", "completed"}:
+            self.supervisor.requeue_task(task_id, reopen=True)
+        parent = self.supervisor.get_task(task_id) or parent
+        if parent.status in {"pending", "waiting", "paused"}:
+            if parent.status == "paused":
+                self.supervisor.resume(task_id)
+            self.supervisor.set_running(task_id)
+
+        if kind in {"reorder", "lease_adjust"}:
+            rev = apply_plan_revision(
+                self.supervisor,
+                parent_task_id=task_id,
+                kind=kind,
+                instruction=instr or followup[:80],
+                inbound_id=str(inbound.message_id or ""),
+            )
+            for cid in list(rev.get("spawned") or []):
+                await self._maybe_start_worker(cid)
+            parent2 = self.supervisor.get_task(task_id) or parent
+            g_rev = load_graph(parent2.meta if parent2 else None)
+            rev_meta = plan_graph_progress_meta(g_rev)
+            rev_meta.update(
+                {
+                    "kind": kind,
+                    "revision": True,
+                    "parent_status": str(parent2.status or "") if parent2 else "",
+                }
+            )
+            await self.publish(
+                Message.progress(
+                    str(rev.get("sketch") or "任务图已修订"),
+                    task_id=task_id,
+                    meta=rev_meta,
+                )
+            )
+            return card
+
+        # no_graph_change / dispatch_note：有失败则重试；否则下发 running + 拉就绪
+        parent = self.supervisor.get_task(task_id) or parent
+        graph = load_graph(parent.meta) or graph
+        failed_ids = [n.id for n in graph.nodes if n.status == "failed"]
+        if failed_ids:
+            result = await self.retry_plan_nodes(
+                task_id,
+                node_ids=None,
+                reason=f"追问续跑：{(followup or '')[:120]}",
+                inbound_id=str(inbound.message_id or ""),
+            )
+            if not result.get("ok"):
+                err = Message.error(
+                    f"续跑失败节点失败：{result.get('message') or 'unknown'}",
+                    task_id=task_id,
+                )
+                await self.publish(err)
+                return err
+            return card
+
+        targets: list[str] = []
+        for n in graph.nodes:
+            if n.status == "running" and n.task_id:
+                targets.append(n.task_id)
+                apply_append_to_running_supervisor(
+                    self.supervisor,
+                    child_task_id=n.task_id,
+                    instruction=instr or followup[:80],
+                    inbound_id=str(inbound.message_id or ""),
+                )
+        spawned = spawn_ready_children(
+            self.supervisor, parent_task_id=task_id, graph=graph
+        )
+        parent_live = self.supervisor.get_task(task_id)
+        g_meta = plan_graph_progress_meta(graph)
+        g_meta.update(
+            {
+                "mode": "plan_append",
+                "kind": kind,
+                "parent_status": str(parent_live.status or "running")
+                if parent_live
+                else "running",
+                "status": str(parent_live.status or "running")
+                if parent_live
+                else "running",
+            }
+        )
+        await self.publish(
+            Message.progress(
+                f"已下发追加约束 → running {len(targets)} · 新拉起 {len(spawned)}"
+                f"{('：' + instr[:80]) if instr else ''}",
+                task_id=task_id,
+                meta=g_meta,
+            )
+        )
+        for cid in spawned:
+            await self._maybe_start_worker(cid)
+        return card
+
+    def _resolve_excise_target(
+        self, task_id: str, *, plan_node_id: str = ""
+    ) -> tuple[Any | None, str]:
+        """解析挖步目标任务：监管脑子任务直接用；父计划须带 plan_node_id。"""
+        from fawai_avatar.brain.plan_scheduler import (
+            is_orchestrator_task,
+            is_supervisor_task,
+            load_graph,
+        )
+
+        task = self.supervisor.get_task(task_id)
+        if task is None:
+            return None, "unknown task"
+        meta = dict(task.meta or {})
+        if is_orchestrator_task(meta):
+            nid = (plan_node_id or "").strip()
+            if not nid:
+                return None, "计划父任务挖步须指定 plan_node_id"
+            graph = load_graph(meta)
+            if graph is None:
+                return None, "无任务图"
+            node = graph.get(nid)
+            if node is None:
+                return None, f"节点 {nid} 不在活跃图上"
+            child_id = str(node.task_id or "").strip()
+            if not child_id:
+                return None, f"节点 {nid} 尚无监管脑子任务"
+            child = self.supervisor.get_task(child_id)
+            if child is None:
+                return None, "监管脑子任务不存在"
+            if not is_supervisor_task(child.meta):
+                return None, "目标不是监管脑子任务"
+            return child, ""
+        if is_supervisor_task(meta):
+            return task, ""
+        # 普通单任务也可挖步（与 resume-from-step 对称）
+        return task, ""
+
+    async def excise_step(
+        self,
+        task_id: str,
+        step: int,
+        *,
+        plan_node_id: str = "",
+    ) -> dict[str, Any]:
+        """从执行上下文挖掉指定闭环步；不自动拉 Worker。
+
+        计划模式：须绑监管脑子任务（或父 id + plan_node_id）；禁对编排器父直接挖。
+        """
+        from fawai_avatar.brain.plan_scheduler import (
+            is_orchestrator_task,
+            session_publish_task_id,
+        )
+        from fawai_avatar.runtime.checkpoint import (
+            CHECKPOINT_KEY,
+            excise_step_from_context,
+        )
+
+        target, err = self._resolve_excise_target(task_id, plan_node_id=plan_node_id)
+        if target is None:
+            return {"ok": False, "message": err or "unknown task"}
+        worker_id = target.task_id
+        if is_orchestrator_task(target.meta):
+            return {
+                "ok": False,
+                "message": "计划父任务请对节点步骤「删除此步」",
+                "status": target.status,
+            }
+        if self.has_live_worker(worker_id) or target.status == "running":
+            return {
+                "ok": False,
+                "message": "任务执行中，请先停止再删除步骤",
+                "status": target.status,
+            }
+        if target.status == "archived":
+            return {"ok": False, "message": "已归档任务无法挖步"}
+        try:
+            step_n = int(step)
+        except (TypeError, ValueError):
+            return {"ok": False, "message": "invalid step"}
+        if step_n < 0:
+            return {"ok": False, "message": "step must be >= 0"}
+
+        meta = dict(target.meta or {})
+        try:
+            patch = excise_step_from_context(meta, step=step_n)
+        except KeyError:
+            return {"ok": False, "message": f"步骤 {step_n} 不存在"}
+        except ValueError as exc:
+            return {"ok": False, "message": str(exc)}
+
+        meta[CHECKPOINT_KEY] = patch[CHECKPOINT_KEY]
+        meta["steps"] = list(patch.get("steps") or [])
+        meta["excised_step"] = step_n
+        meta["excise_at"] = time.time()
+        self.supervisor.replace_task_meta(worker_id, meta)
+
+        session_id, mirror_extra = session_publish_task_id(self.supervisor, worker_id)
+        self._active_task_id = session_id or worker_id
+        card_meta: dict[str, Any] = {
+            "ok": True,
+            "status": str(target.status or ""),
+            "phase": "excise_step",
+            "mode": "excise_step",
+            "step": step_n,
+            "excised_step": step_n,
+            "next_step": patch.get("next_step"),
+        }
+        if mirror_extra:
+            card_meta.update(mirror_extra)
+        await self.publish(
+            Message.progress(
+                f"已从上下文删除步骤 {step_n}",
+                task_id=session_id or worker_id,
+                meta=card_meta,
+            )
+        )
+        self.log_system(
+            "excise_step",
+            message=f"挖掉步骤 {step_n}",
+            ok=True,
+            task_id=session_id or worker_id,
+            actor="api",
+            detail={
+                "step": step_n,
+                "worker_task_id": worker_id,
+                "next_step": patch.get("next_step"),
+                "plan_node_id": (mirror_extra or {}).get("plan_node_id"),
+            },
+        )
+        out: dict[str, Any] = {
+            "ok": True,
+            "task_id": worker_id,
+            "step": step_n,
+            "excised_step": step_n,
+            "next_step": patch.get("next_step"),
+            "status": target.status,
+            "message": f"excised step {step_n}",
+        }
+        if session_id and session_id != worker_id:
+            out["parent_task_id"] = session_id
+            if mirror_extra and mirror_extra.get("plan_node_id"):
+                out["plan_node_id"] = mirror_extra.get("plan_node_id")
+        return out
+
     async def resume_from_step(self, task_id: str, step: int) -> dict[str, Any]:
-        """从指定闭环步骤恢复：写入检查点 → reopen/resume → 拉 Worker。"""
+        """从指定闭环步骤恢复：写入检查点 → reopen/resume → 拉 Worker。
+
+        计划模式监管脑子任务：同时把图节点标回 running、重开终态父计划；
+        会话卡归并到父计划（不绑编排器父 id 做步骤恢复）。
+        """
+        from fawai_avatar.brain.plan_scheduler import (
+            is_orchestrator_task,
+            is_supervisor_task,
+            plan_graph_progress_meta,
+            plan_parent_stats_summary,
+            resume_plan_child_node,
+            session_publish_task_id,
+        )
+        from fawai_avatar.brain.plan_graph import PlanGraph
         from fawai_avatar.runtime.checkpoint import (
             CHECKPOINT_KEY,
             prepare_resume_from_step,
@@ -1396,6 +2052,13 @@ class SessionHub:
         task = self.supervisor.get_task(task_id)
         if task is None:
             return {"ok": False, "message": "unknown task"}
+        meta0 = dict(task.meta or {})
+        if is_orchestrator_task(meta0):
+            return {
+                "ok": False,
+                "message": "计划父任务请从节点步骤「从此恢复」，或使用「重试本节点」",
+                "status": task.status,
+            }
         if self.has_live_worker(task_id) or task.status == "running":
             return {
                 "ok": False,
@@ -1410,6 +2073,22 @@ class SessionHub:
             return {"ok": False, "message": "invalid step"}
         if step_n < 0:
             return {"ok": False, "message": "step must be >= 0"}
+
+        plan_extra: dict[str, Any] = {}
+        if is_supervisor_task(meta0):
+            plan_extra = resume_plan_child_node(
+                self.supervisor, child_task_id=task_id
+            )
+            if not plan_extra.get("ok"):
+                return {
+                    "ok": False,
+                    "message": str(plan_extra.get("reason") or "计划节点无法从步骤恢复"),
+                    "status": task.status,
+                    **{
+                        k: plan_extra.get(k)
+                        for k in ("parent_task_id", "plan_node_id", "graph")
+                    },
+                }
 
         meta = dict(task.meta or {})
         meta[CHECKPOINT_KEY] = prepare_resume_from_step(meta, step=step_n)
@@ -1453,33 +2132,58 @@ class SessionHub:
                     "status": status_before,
                 }
 
-        self._active_task_id = task_id
+        session_id, mirror_extra = session_publish_task_id(self.supervisor, task_id)
+        self._active_task_id = session_id or task_id
         started = await self._maybe_start_worker(task_id)
         updated = self.supervisor.get_task(task_id)
         status = updated.status if updated else "pending"
+        parent_status = str(plan_extra.get("parent_status") or "")
+        if mirror_extra and not parent_status:
+            parent_live = self.supervisor.get_task(session_id)
+            parent_status = str(parent_live.status or "") if parent_live else ""
+        card_meta: dict[str, Any] = {
+            "ok": True,
+            "status": parent_status or status,
+            "phase": "resumed",
+            "mode": "resume_from_step",
+            "step": step_n,
+            "timeline_segment": "new",
+            "worker_started": started,
+        }
+        if mirror_extra:
+            card_meta.update(mirror_extra)
+            card_meta["node_status"] = "running"
+            if parent_status:
+                card_meta["parent_status"] = parent_status
+            g_raw = plan_extra.get("graph")
+            if isinstance(g_raw, dict):
+                g_meta = plan_graph_progress_meta(PlanGraph.from_dict(g_raw))
+                card_meta.update(g_meta)
+            parent_stats = plan_parent_stats_summary(self.supervisor, session_id)
+            if parent_stats is not None:
+                card_meta["parent_stats"] = parent_stats
         card = Message.card(
             f"从步骤 {step_n} 恢复执行…",
-            task_id=task_id,
-            meta={
-                "ok": True,
-                "status": status,
-                "phase": "resumed",
-                "mode": "resume_from_step",
-                "step": step_n,
-                "timeline_segment": "new",
-                "worker_started": started,
-            },
+            task_id=session_id,
+            meta=card_meta,
         )
         await self.publish(card)
         self.log_system(
             "resume_from_step",
             message=f"从步骤 {step_n} 恢复",
             ok=True,
-            task_id=task_id,
+            task_id=session_id,
             actor="api",
-            detail={"step": step_n, "status": status, "worker_started": started},
+            detail={
+                "step": step_n,
+                "status": status,
+                "worker_started": started,
+                "worker_task_id": task_id,
+                "plan_node_id": plan_extra.get("plan_node_id"),
+                "parent_status": parent_status or None,
+            },
         )
-        return {
+        out: dict[str, Any] = {
             "ok": True,
             "task_id": task_id,
             "step": step_n,
@@ -1487,6 +2191,13 @@ class SessionHub:
             "worker_started": started,
             "message": f"resumed from step {step_n}",
         }
+        if plan_extra.get("ok"):
+            out["parent_task_id"] = plan_extra.get("parent_task_id")
+            out["plan_node_id"] = plan_extra.get("plan_node_id")
+            out["parent_status"] = parent_status or plan_extra.get("parent_status")
+            if isinstance(plan_extra.get("graph"), dict):
+                out["graph"] = plan_extra["graph"]
+        return out
 
     def has_live_worker(self, task_id: str) -> bool:
         with self._lock:
@@ -1505,8 +2216,14 @@ class SessionHub:
             return False
         task = self.supervisor.get_task(task_id)
         if task is not None:
-            from fawai_avatar.brain.plan_scheduler import is_orchestrator_task
+            from fawai_avatar.brain.plan_scheduler import (
+                is_awaiting_plan,
+                is_orchestrator_task,
+            )
 
+            if is_awaiting_plan(task.meta):
+                # 建卡后编排未完成，禁止抢跑逐步 Worker
+                return False
             if is_orchestrator_task(task.meta):
                 # 父计划只编排，不跑逐步执行脑
                 return False
@@ -1525,15 +2242,26 @@ class SessionHub:
             return True
 
     def recover_interrupted_tasks(self) -> list[str]:
-        """网关启动：为孤儿 running/waiting/blocked/pending 补拉 Worker（同步）。"""
+        """网关启动：为孤儿 running/waiting/blocked/pending 补拉 Worker（同步）。
+
+        ``awaiting_plan`` 的 pending 不拉 Worker，改在已绑定事件循环后重跑编排。
+        """
         if not (self._auto_run_worker and self._worker is not None):
             return []
         started: list[str] = []
-        from fawai_avatar.brain.plan_scheduler import is_orchestrator_task
+        awaiting_plan_ids: list[str] = []
+        from fawai_avatar.brain.plan_scheduler import (
+            is_awaiting_plan,
+            is_orchestrator_task,
+        )
+        from fawai_avatar.task.title import suggest_task_title
 
         for task_id in self.supervisor.list_recoverable_task_ids():
             task = self.supervisor.get_task(task_id)
             if task is not None and is_orchestrator_task(task.meta):
+                continue
+            if task is not None and is_awaiting_plan(task.meta):
+                awaiting_plan_ids.append(task_id)
                 continue
             with self._lock:
                 existing = self._worker_threads.get(task_id)
@@ -1551,6 +2279,39 @@ class SessionHub:
             self.log_system(
                 "recover",
                 message=f"进程恢复续跑 {task_id[:8]}…",
+                ok=True,
+                task_id=task_id,
+                actor="runtime",
+            )
+        loop = self._loop
+        for task_id in awaiting_plan_ids:
+            task = self.supervisor.get_task(task_id)
+            if task is None:
+                continue
+            title = str((task.meta or {}).get("title") or "") or suggest_task_title(
+                task.goal or ""
+            )
+            related = str((task.meta or {}).get("related_task_id") or "") or None
+            inbound_id = str((task.meta or {}).get("inbound_id") or "") or None
+            if loop is not None and loop.is_running():
+                self._spawn_bg(
+                    self._finish_create_orchestrate(
+                        task_id,
+                        goal=task.goal or "",
+                        title=title,
+                        related_task_id=related,
+                        inbound_id=inbound_id,
+                    )
+                )
+            else:
+                # lifespan 里 bind_loop 后调用；无 loop 时记日志，下回启动再试
+                logger.warning(
+                    "awaiting_plan recover skipped (no loop) task=%s", task_id[:8]
+                )
+            started.append(task_id)
+            self.log_system(
+                "recover",
+                message=f"进程恢复编排 {task_id[:8]}…",
                 ok=True,
                 task_id=task_id,
                 actor="runtime",
@@ -1638,6 +2399,8 @@ class SessionHub:
             )
             options = list((clar or {}).get("options") or [])
             card_text = format_clarification_text(question, options)
+            # 有选项时 PWA 在澄清卡内渲染可点按钮；无选项时卡文案已写「请直接回复」。
+            # 不再另发 tip 文本——计划节点下 tip 会进 notes 并随恢复重复叠加。
             self.publish_threadsafe(
                 Message.card(
                     card_text,
@@ -1654,13 +2417,6 @@ class SessionHub:
                     ),
                 )
             )
-            tip = Message.text_assistant(
-                "请回复编号或选项标签后继续。",
-                task_id=session_id,
-            )
-            if mirror_extra:
-                tip.meta = _pub_meta()
-            self.publish_threadsafe(tip)
             return
         image_path = _first_image_from_result(result)
         # 监管脑归并到父会话时：节点终态写 node_status，父计划 status 仍取父任务库态
@@ -1820,8 +2576,18 @@ class SessionHub:
                         )
                     )
                     if p_thought:
+                        # plan_conclusion：PWA 把结论文挂到节点卡之后（#msgsTail）
                         self.publish_threadsafe(
-                            Message.text_assistant(p_thought, task_id=parent_id)
+                            Message.text_assistant(
+                                p_thought,
+                                task_id=parent_id,
+                                meta={
+                                    "mode": "plan_finish",
+                                    "plan_conclusion": True,
+                                    "status": p_status,
+                                    "parent_status": p_status,
+                                },
+                            )
                         )
         except Exception:  # noqa: BLE001 — 计划调度失败不影响子任务已发出的终态
             logger.exception("plan advance after worker failed task_id=%s", task_id)
@@ -2873,12 +3639,29 @@ class SessionHub:
                         pub_meta["parent_stats"] = parent_stats
             except Exception:  # noqa: BLE001
                 pub_id = task_id
-        self.publish_threadsafe(Message.progress(text, task_id=pub_id, meta=pub_meta))
+        msg = Message.progress(text, task_id=pub_id, meta=pub_meta)
+        # 直播增量：只推前端，避免 token 级刷爆 session_history
+        if pub_meta.get("live"):
+            self.broadcast_threadsafe(msg)
+        else:
+            self.publish_threadsafe(msg)
 
     def _session_publish_id(self, task_id: str) -> tuple[str, dict[str, Any]]:
         from fawai_avatar.brain.plan_scheduler import session_publish_task_id
 
         return session_publish_task_id(self.supervisor, task_id)
+
+    async def _publish_for_worker_task(
+        self, message: Message, *, worker_task_id: str
+    ) -> None:
+        """监管脑子任务出站归并到父计划会话（澄清答复卡等）。"""
+        session_id, extra = self._session_publish_id(worker_task_id)
+        message.task_id = session_id
+        if extra:
+            meta = dict(message.meta or {})
+            meta.update(extra)
+            message.meta = meta
+        await self.publish(message)
 
     async def _handle_diff_control(self, control: str, task_id: str) -> Message:
         from fawai_avatar.control.background import BackgroundTools
@@ -3050,7 +3833,7 @@ def _success_summary(result: dict[str, Any]) -> str | None:
     """面向用户的最终回复：优先收尾 thought，禁止无条件转发 shell stdout。"""
     thought = _final_success_thought(result)
     if thought:
-        return _clip_user_text(thought)
+        return _clip_user_text(thought, limit=8000)
 
     for step in reversed(result.get("steps") or []):
         for r in reversed((step or {}).get("results") or []):

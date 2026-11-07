@@ -483,7 +483,8 @@ class BackgroundTools:
                 data["weak_write_reasons"] = list(assessment.reasons)
         except Exception:  # noqa: BLE001 — 标注失败不阻断写入
             pass
-        return ExecResult(ok=True, message=f"{kind} {path}", data=data)
+        # 稳定成功标记 · applied：供 expect/contains 与规划对齐；禁止臆造「patch applied」口令
+        return ExecResult(ok=True, message=f"{kind} {path} · applied", data=data)
 
     def _pend(
         self,

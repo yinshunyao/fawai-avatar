@@ -11,9 +11,6 @@ ROLE_ENABLE_THINKING: dict[str, bool] = {
     "obs_reflect": False,
 }
 
-# 主脑开启思考时的默认预算（防 runaway）；档案 / 显式参数可覆盖。
-DEFAULT_MAIN_THINKING_BUDGET = 1024
-
 
 def normalize_thinking_role(role: str | None) -> str | None:
     raw = (role or "").strip().lower()
@@ -68,9 +65,7 @@ def resolve_thinking(
             budget = int(thinking_budget)
         elif profile_budget is not None and int(profile_budget) > 0:
             budget = int(profile_budget)
-        elif role == "main":
-            budget = int(DEFAULT_MAIN_THINKING_BUDGET)
-        # 其它角色若强制开思考且无预算，不传 budget（供应商默认）
+        # 0/空不封顶，不传 thinking_budget。禁止再注入角色默认预算。
 
     return {
         "enable_thinking": enabled,
@@ -83,8 +78,15 @@ def provider_supports_thinking_extra(
     *,
     base_url: str | None = None,
     model: str | None = None,
+    provider_id: str | None = None,
 ) -> bool:
-    """仅对 DashScope / 千问系写入 ``enable_thinking``，避免其它兼容口报未知参数。"""
+    """对已接线供应商写入 ``enable_thinking``，避免未知兼容口报参数错误。
+
+    已接线：DashScope / 千问系、内置小黄（``kklt`` / ``kklt.lol``）。
+    """
+    pid = (provider_id or "").strip().lower()
+    if pid in {"dashscope", "kklt"}:
+        return True
     blob = f"{base_url or ''} {model or ''}".lower()
     return any(
         x in blob
@@ -93,6 +95,7 @@ def provider_supports_thinking_extra(
             "aliyuncs.com",
             "qwen",
             "tongyi",
+            "kklt.lol",
         )
     )
 
@@ -102,11 +105,14 @@ def thinking_extra_body(
     *,
     base_url: str | None = None,
     model: str | None = None,
+    provider_id: str | None = None,
 ) -> dict[str, Any]:
-    """DashScope / 千问兼容：``extra_body`` 字段。"""
+    """已接线供应商：``extra_body`` 的 ``enable_thinking`` / ``thinking_budget``。"""
     if not isinstance(resolved, dict):
         return {}
-    if not provider_supports_thinking_extra(base_url=base_url, model=model):
+    if not provider_supports_thinking_extra(
+        base_url=base_url, model=model, provider_id=provider_id
+    ):
         return {}
     out: dict[str, Any] = {}
     enabled = resolved.get("enable_thinking")

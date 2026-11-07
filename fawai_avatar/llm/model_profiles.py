@@ -75,7 +75,7 @@ PARAM_SCHEMA: tuple[dict[str, Any], ...] = (
         "label": "Thinking Budget",
         "kind": "int",
         "step": "1",
-        "hint": "思考 token 上限；0/空=主脑用默认 1024，其它角色不限制；仅思考开启时生效",
+        "hint": "思考 token 上限；0/空=不限制；仅思考开启且填了正整数时写入请求",
     },
 )
 
@@ -206,7 +206,25 @@ def _legacy_env_seed() -> dict[str, Any]:
 
 
 def load_profile(model: str, *, data_dir: str | None = None) -> dict[str, Any] | None:
-    path = profile_path(model, data_dir=data_dir)
+    mid = (model or "").strip()
+    if not mid:
+        return None
+    # 优先 SQLite
+    try:
+        from fawai_avatar.llm.settings_store import get_store
+
+        store = get_store(data_dir=data_dir)
+        if store.has_profile(mid):
+            return {
+                "model": mid,
+                "params": normalize_params(store.get_profile_params(mid)),
+                "path": store.db_path,
+                "updated_at": None,
+                "source": "sqlite",
+            }
+    except Exception:
+        pass
+    path = profile_path(mid, data_dir=data_dir)
     if not path.is_file():
         return None
     try:
@@ -215,13 +233,14 @@ def load_profile(model: str, *, data_dir: str | None = None) -> dict[str, Any] |
         return None
     if not isinstance(data, dict):
         return None
-    mid = str(data.get("model") or model).strip() or model
+    mid2 = str(data.get("model") or mid).strip() or mid
     params = normalize_params(data.get("params") if isinstance(data.get("params"), dict) else data)
     return {
-        "model": mid,
+        "model": mid2,
         "params": params,
         "path": str(path),
         "updated_at": data.get("updated_at"),
+        "source": "file",
     }
 
 
@@ -234,19 +253,29 @@ def save_profile(
     mid = (model or "").strip()
     if not mid:
         raise ValueError("empty model id")
-    path = profile_path(mid, data_dir=data_dir)
+    clean = normalize_params(params)
+    from fawai_avatar.llm.settings_store import get_store
+
+    store = get_store(data_dir=data_dir) if data_dir else get_store()
+    store.set_profile_params(mid, clean)
+    # 同步写一份文件，便于外部查看
+    path = profile_path(mid, data_dir=data_dir or store.data_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "model": mid,
-        "params": normalize_params(params),
+        "params": clean,
         "updated_at": int(time.time()),
     }
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    try:
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        path = Path(store.db_path)
     return {
         "model": mid,
-        "params": payload["params"],
+        "params": clean,
         "path": str(path),
         "updated_at": payload["updated_at"],
+        "source": "sqlite",
     }
 
 
@@ -256,7 +285,7 @@ def ensure_profile(
     data_dir: str | None = None,
     seed_from_env: bool = True,
 ) -> dict[str, Any]:
-    """选定模型后保证有配置文件；已有则原样返回。"""
+    """选定模型后保证有档案；已有则原样返回。"""
     mid = (model or "").strip()
     if not mid:
         raise ValueError("empty model id")
@@ -264,7 +293,6 @@ def ensure_profile(
     if existing is not None:
         return existing
     seed = _legacy_env_seed() if seed_from_env else empty_params()
-    # 仅当种子里至少有一个非空值时写入种子；否则写空档案
     if not any(v is not None for v in seed.values()):
         seed = empty_params()
     return save_profile(mid, seed, data_dir=data_dir)
@@ -321,6 +349,8 @@ _KIND_CAPABILITIES: dict[str, tuple[str, ...]] = {
     "text": ("TG",),
     "vlm": ("VU",),
     "asr": ("ASR",),
+    # OCR 与多模态同属视觉目录；启发式再按模型名收窄
+    "ocr": ("VU",),
     "embed": ("TR",),
 }
 
@@ -335,6 +365,7 @@ _KIND_ALIASES: dict[str, str] = {
     "multimodal": "vlm",
     "asr": "asr",
     "speech": "asr",
+    "ocr": "ocr",
     "embed": "embed",
     "embedding": "embed",
 }
@@ -370,6 +401,8 @@ def _heuristic_kind(model_id: str) -> str:
         return "embed"
     if any(x in s for x in ("asr", "paraformer", "fun-asr", "speech-02", "speech-2.")):
         return "asr"
+    if "ocr" in s:
+        return "ocr"
     if any(
         x in s
         for x in (
@@ -519,6 +552,10 @@ def _list_dashscope_catalog(
                 break
             page += 1
 
+    if kind == "ocr":
+        models = [m for m in models if "ocr" in str(m.get("id") or "").lower()]
+    elif kind == "vlm":
+        models = [m for m in models if "ocr" not in str(m.get("id") or "").lower()]
     models.sort(key=lambda m: str(m.get("id") or "").lower())
     return {
         "ok": True,
@@ -596,6 +633,7 @@ def list_remote_models(
     base_url: str | None = None,
     timeout_sec: float | None = None,
     kind: str | None = None,
+    provider_id: str | None = None,
 ) -> dict[str, Any]:
     """
     在线拉取可选模型。
@@ -603,16 +641,41 @@ def list_remote_models(
     - DashScope（base 含 dashscope）：优先原生 ``/api/v1/models``，按 kind 过滤
       （text=TG / vlm=VU / asr=ASR / embed=TR）
     - 其它 OpenAI 兼容：``GET /models`` + 启发式分类
+    - 可传 ``provider_id`` 从设置库取凭证
     """
     from fawai_avatar.config import LlmConfig
+    from fawai_avatar.llm.settings_store import get_store
 
     cfg = LlmConfig.from_env()
-    key = (api_key if api_key is not None else cfg.api_key) or ""
-    url = base_url if base_url is not None else cfg.base_url
-    timeout = timeout_sec if timeout_sec is not None else cfg.timeout_sec
+    key = (api_key if api_key is not None else "") or ""
+    url = base_url if base_url is not None else None
+    timeout = timeout_sec
+    pid = (provider_id or "").strip()
+    if pid:
+        prov = get_store().get_provider(pid)
+        if not prov:
+            return {"ok": False, "error": f"未知供应商: {pid}", "models": [], "kind": normalize_model_kind(kind)}
+        if url is None:
+            url = prov.get("base_url") or None
+        if not key.strip():
+            key = str(prov.get("api_key") or "")
+        if timeout is None:
+            timeout = prov.get("timeout_sec")
+    if url is None:
+        url = cfg.base_url
+    if not key.strip():
+        key = (cfg.api_key or "") if api_key is None else ""
+    if timeout is None:
+        timeout = cfg.timeout_sec
     kind_n = normalize_model_kind(kind)
     if not key.strip():
-        return {"ok": False, "error": "未配置 API Key", "models": [], "kind": kind_n}
+        return {
+            "ok": False,
+            "error": "未配置 API Key" + (f"（供应商 {pid}）" if pid else ""),
+            "models": [],
+            "kind": kind_n,
+            "provider_id": pid or None,
+        }
 
     host = dashscope_catalog_host(url)
     if host:

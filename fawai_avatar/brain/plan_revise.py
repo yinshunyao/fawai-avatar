@@ -144,6 +144,9 @@ def _heuristic_reorder(graph: PlanGraph, *, instruction: str) -> PlanRevisionPla
         source="revise_heuristic",
         retired=retired,
     )
+    from fawai_avatar.brain.shared_facts import copy_shared_facts
+
+    copy_shared_facts(graph, new_graph)
     return PlanRevisionPlan(
         kind="reorder",
         graph=new_graph,
@@ -222,6 +225,9 @@ def _revise_lease(graph: PlanGraph, *, instruction: str) -> PlanRevisionPlan:
         source="revise_lease",
         retired=list(graph.retired),
     )
+    from fawai_avatar.brain.shared_facts import copy_shared_facts
+
+    copy_shared_facts(graph, new_graph)
     return PlanRevisionPlan(
         kind="lease_adjust",
         graph=new_graph,
@@ -365,6 +371,9 @@ def _llm_reorder(
         source="revise_llm",
         retired=retired,
     )
+    from fawai_avatar.brain.shared_facts import copy_shared_facts
+
+    copy_shared_facts(graph, new_graph)
     # 校验 depends 不指向未知 id
     known = {n.id for n in new_graph.nodes}
     for n in new_graph.nodes:

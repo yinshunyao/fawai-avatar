@@ -26,7 +26,7 @@ English: [README.md](README.md).
 
 - **会话网关 + PWA**：本机 HTTP/WS；手机同 Wi‑Fi 打开口令页即可聊；可选 frpc 公网穿透、云端中继骨架
 - **任务线程**：一任务一条对话；新任务 / 追问 / 执行中软追加（pending 注入；追问不拼进 goal / 同泡）；粘贴图片挂附件再发；归档 API 仍可用（PWA 入口暂隐）
-- **对话内步骤流**：progress 直接插进线程（无独立时间线菜单）；同步簇合并折叠；簇头粘住本步业务意图 `step_label`；facts 展示模型 · 思考开/关 · token · 耗时；口令脱敏暂关闭（规划可读凭据，安全后续再做）
+- **对话内步骤流**：progress 直接插进线程（无独立时间线菜单）；同步簇合并折叠；簇头粘住本步业务意图 `step_label`；facts 展示模型 · 思考开/关 · token · 耗时；等待模型时深度思考与普通输出直播进步骤卡（`meta.live`，不落历史）；口令脱敏暂关闭（规划可读凭据，安全后续再做）
 - **从步骤恢复**：步骤卡悬停（桌面）或常显（窄屏）「从此恢复」；重启后孤儿任务按检查点续跑
 - **语音输入**：麦克风 → ASR 填入输入框
 - **界面中/英**：随时切换（宽屏顶栏 + 系统配置；窄屏仅系统配置）；模型配置、系统配置、服务运维分栏
@@ -34,7 +34,7 @@ English: [README.md](README.md).
 ### 理解与规划
 
 - **LLM 接入**：OpenAI 兼容；纯文本 / 多模态智能路由；远端 `/models` 列表；生成参数按模型档案；深度思考按角色 + 档案（主脑开 / 快模型与观察反省关）；Web「模型配置」；重启后路由以磁盘 `.env` 为准
-- **主脑委派快模型**：规划时可把子目标交给 `FAWAI_LLM_FAST_MODEL`（空则关闭）；段末摘要回灌主脑验收
+- **主脑委派快模型**：规划时可把子目标交给模型配置里的快模型路由（空则关闭）；段末摘要回灌主脑验收
 - **复杂任务计划模式**：编排脑自动判复杂度 → 出任务图并立即调度（无人审）；三层 = 编排脑 → 监管脑 → 执行脑；追加可真改 `reorder` / `lease_adjust`；失败默认**重试失败节点**（保留已完成）；仅显式口令 / 按钮才整图重规划；侧栏只见父计划，线程内节点卡 + 右上角有向图浮层；关：`FAWAI_PLAN_MODE=0`
 - **能力清单选型**：只从登记能力出招；文件类目标强制 `fs_*`，禁止用 GUI 假装写文件
 - **规划提示档**：按本轮目的裁剪 system / 是否附图（vision / fs / gui / full）
@@ -145,13 +145,14 @@ English: [README.md](README.md).
 ### 下一步 Todo
 
 - [x] **C3 窄场景 GUI 闭环**：TextEdit + AX `obs_ax` / `ui_*` / 界面回证（见功能「自主操控」）
-- [ ] **C3 深化**：Electron（Cursor/Chrome）控件级点准（VLM/OCR 或专用桥）；任意桌面
+- [x] **截屏识别接地**：模型配置可选 VLM / OCR；OCR 默认 `qwen3.5-ocr` 出框表 + `ui_click(ocrN)`
+- [ ] **C3 深化**：Electron（Cursor/Chrome）控件级点准加强；任意桌面；图标检测
 - [ ] **GUI 与结构化路径体感对齐**：继续压「后台强、桌面飘」的残余缺口
 - [ ] **闸门可观测与可排障**：统一闸门台账 / 命中原因外显，降低多约束叠加时的调试成本
 - [x] **复杂任务计划模式**：编排脑出图自动调度、reorder/lease、失败节点重试、显式整图重规划、会话有向图 + 节点卡
 - [x] **脚本铲子生命周期**：`shovel_search` + 写前/写后软闸（台账 `fawai_shovels/`）
 - [x] **多屏观察**：`displays` / `screen_target` / `app_focus`（真机双屏 / Space 仍待核）
-- [ ] **步级成本与延迟**：主脑委派快模型已落地（`FAWAI_LLM_FAST_MODEL`）；继续压反省 / 观察反省 / 观察选型调用
+- [ ] **步级成本与延迟**：主脑委派快模型已落地（模型配置 `fast` 路由）；继续压反省 / 观察反省 / 观察选型调用
 - [ ] **取消与子进程生命周期**：协作停步之外，明确可强杀 / 可回收的 OS 子进程边界
 - [ ] **记忆与进化质量门**：Skill / lore / 铲子写入与复盘清单的人审或自动质量门槛；按需蒸馏策略落地
 - [ ] **计划模式会话拖拽改图**：当前只读有向图 + 机读修订；人机拖拽改依赖为可选后置
@@ -168,6 +169,7 @@ English: [README.md](README.md).
 | `doc/测试/` | 冒烟 / 系统 / 端到端任务说明 |
 | `doc/版本/` | 各版加权评测总分 |
 | `doc/术语与称呼索引.md` | 规范名与工具 id 真源 |
+| `study/介绍案例/小红书宣传/fawai-avatar/` | 对外宣传文案与 PWA 实拍配图（工作区 study，非本仓 `doc/`） |
 
 ## 运行
 
@@ -179,13 +181,14 @@ pip install -e "./fawai_lore[vector]"  # 可选：sqlite-vec 笔记向量（装�
 pip install -e .                 # 无界面 / 编码·文件·shell / 网关；macOS 会按平台条件装 GUI
 # pip install -e ".[gui]"        # Linux 有 DISPLAY 时补桌面截屏与键鼠
 # pip install -e ".[browser]" && playwright install chromium  # 可选：无头浏览器
-cp .env.example .env   # 填写 FAWAI_LLM_API_KEY；.env 已 gitignore
+cp .env.example .env   # 系统项；LLM 在 Web「模型配置」写库；.env 已 gitignore
 # 默认路由：纯文本 qwen3.7-plus；多模态 qwen3-vl-plus
-# 可选：FAWAI_LLM_FAST_MODEL=qwen-flash  # 主脑委派快模型
+# LLM / 快模型路由请在 Web「模型配置」设置（写入 llm_settings.sqlite）
 # 可选：FAWAI_PLAN_MODE=0               # 关闭复杂任务计划模式（默认 auto）
 export FAWAI_DRY_RUN=1
 .venv/bin/python -m fawai_avatar.llm.client        # 试跑文本路由
 .venv/bin/python -m fawai_avatar.demo_thinking     # 深度思考按角色/档案
+.venv/bin/python -m fawai_avatar.demo_llm_live     # 直播节流自检（无网）
 .venv/bin/python -m fawai_avatar.demo_smoke
 .venv/bin/python -m fawai_avatar.demo_platform     # 平台/headless 闸门
 .venv/bin/python -m fawai_avatar.demo_browser      # 浏览器工具（可选 FAWAI_BROWSER_LIVE=1）

@@ -69,6 +69,7 @@ class PlanGraph:
     root_goal: str
     nodes: list[PlanNode] = field(default_factory=list)
     artifacts: dict[str, Any] = field(default_factory=dict)
+    shared_facts: list[Any] = field(default_factory=list)
     version: int = 1
     source: str = "heuristic"
     # 被重排/租约修订淘汰的节点（审计用，不参与就绪集与完成判定）
@@ -81,6 +82,7 @@ class PlanGraph:
             "nodes": [n.to_dict() for n in self.nodes],
             "retired": [n.to_dict() for n in self.retired],
             "artifacts": dict(self.artifacts),
+            "shared_facts": [f.to_dict() for f in (self.shared_facts or [])],
             "version": int(self.version),
             "source": self.source,
         }
@@ -91,15 +93,23 @@ class PlanGraph:
         retired = [
             PlanNode.from_dict(x) for x in (data.get("retired") or []) if isinstance(x, dict)
         ]
-        return cls(
+        from fawai_avatar.brain.shared_facts import shared_facts_from_raw
+
+        graph = cls(
             plan_id=str(data.get("plan_id") or "").strip(),
             root_goal=str(data.get("root_goal") or ""),
             nodes=nodes,
             artifacts=dict(data.get("artifacts") or {}),
+            shared_facts=shared_facts_from_raw(data.get("shared_facts")),
             version=int(data.get("version") or 1),
             source=str(data.get("source") or "heuristic"),
             retired=retired,
         )
+        if graph.shared_facts:
+            from fawai_avatar.brain.shared_facts import apply_shared_facts
+
+            apply_shared_facts(graph)
+        return graph
 
     def node_map(self) -> dict[str, PlanNode]:
         return {n.id: n for n in self.nodes}
@@ -197,6 +207,9 @@ class PlanGraph:
         art.pop("error", None)
         art["retried"] = True
         n.artifact = art
+        from fawai_avatar.brain.shared_facts import clear_shared_facts_produced_by
+
+        clear_shared_facts_produced_by(self, node_id)
         return old_tid
 
     def mark_cancelled(self, node_id: str, *, reason: str = "") -> None:
@@ -216,6 +229,15 @@ class PlanGraph:
         self.nodes = [x for x in self.nodes if x.id != node_id]
         self.retired.append(n)
         return n
+
+    def strip_dependency(self, removed_id: str) -> None:
+        """下游 depends_on 去掉已删除节点 id。"""
+        rid = (removed_id or "").strip()
+        if not rid:
+            return
+        for n in self.nodes:
+            if rid in n.depends_on:
+                n.depends_on = [d for d in n.depends_on if d != rid]
 
     def summary_lines(self) -> list[str]:
         lines = [

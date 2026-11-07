@@ -106,10 +106,12 @@ def digest_text(
     label: str = "stdout",
     data_dir: str | Path | None = None,
     soft_override: int | None = None,
+    lead: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """压缩大段工具文本；返回 (展示串, meta)。
 
     soft_override：检索 hits 等可传入更高阈值，避免误用 stdout 紧门。
+    lead：替换默认导语。默认导语要求读落盘全文；反省入模传入自己的非原文规则，避免再下令补读。
     """
     raw = text if isinstance(text, str) else str(text)
     meta: dict[str, Any] = {
@@ -165,13 +167,21 @@ def digest_text(
         rel_hint = f"；工作区内相对路径 `{rel}`（优先用此 path 做 fs_read）"
     except Exception:  # noqa: BLE001 — 相对路径提示失败不影响压缩
         rel_hint = ""
-    parts: list[str] = [
-        (
+    if lead is None:
+        opening = (
             f"（已压缩：原 {meta['chars']} 字符 / {meta['lines']} 行；"
             f"全文落盘 {dump_path}{rel_hint}；"
             "请用 fs_read 读该文件后再总结，禁止 shell cat 代替；"
             "禁止臆造 grep_result_*.txt）"
-        ),
+        )
+    else:
+        opening = (
+            lead.rstrip()
+            + f"\n（压缩摘录：原 {meta['chars']} 字符 / {meta['lines']} 行。"
+            "这不是原文，只用于分析处置策略，不能作为原文处理。）"
+        )
+    parts: list[str] = [
+        opening,
         f"--- 头 {len(head)} 行 ---",
         "\n".join(head),
     ]
@@ -262,6 +272,14 @@ def format_tool_observation(
         lines.append(head)
 
         data = result.data or {}
+        # mutate 落盘后的 diff 小窗：expect 假失败或成功验收都能看到现状
+        if data.get("write_landed_despite_expect") or (
+            not result.ok and data.get("expect_pre_ok") and data.get("diff")
+        ):
+            diff = str(data.get("diff") or "").strip()
+            if diff:
+                preview = diff if len(diff) <= 480 else (diff[:479] + "…")
+                lines.append(f"  已落盘 diff 小窗:\n{preview}")
         digested_keys = set()
         for key, label in (
             ("stdout", "stdout"),

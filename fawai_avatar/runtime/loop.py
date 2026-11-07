@@ -2,6 +2,7 @@
 # term:会话通道  doc:doc/功能/会话通道/说明.md
 # term:执行反省  doc:doc/功能/执行反省/说明.md
 # term:观察反省  doc:doc/功能/观察反省/说明.md
+# term:步骤分类与执行流  doc:doc/功能/步骤分类与执行流/说明.md
 # term:步骤重复  doc:doc/功能/步骤重复/说明.md
 # term:进程中断续跑  doc:doc/功能/进程中断续跑/说明.md
 # term:守规约束  doc:doc/功能/守规约束/说明.md
@@ -119,6 +120,11 @@ from fawai_avatar.brain.write_effect import (
     thought_admits_no_visible_effect,
     thought_ok_for_visible_effect,
 )
+from fawai_avatar.brain.action_segment import (
+    apply_expect_to_result,
+    format_mechanical_obs_summary,
+    should_skip_obs_reflect_llm,
+)
 from fawai_avatar.brain.obs_reflect import (
     format_obs_reflection_for_history,
     obs_reflect_enabled,
@@ -145,6 +151,13 @@ from fawai_avatar.brain.reflect import (
     step_repeat_enabled,
     step_repeat_threshold,
 )
+from fawai_avatar.brain.step_kind import (
+    coerce_observe_kinds_skip_shallow,
+    parallel_worker_count,
+    should_execute_parallel,
+    should_skip_shallow_env_observe,
+    step_kind_label,
+)
 from fawai_avatar.control.executor import Controller
 from fawai_avatar.observe.methods import (
     choose_observe_methods,
@@ -155,6 +168,7 @@ from fawai_avatar.observe.methods import (
     resolve_observe_methods,
 )
 from fawai_avatar.observe.tool_digest import format_tool_observation
+from fawai_avatar.brain.step_todos import normalize_todos, task_keeps_step_todos
 from fawai_avatar.runtime.checkpoint import (
     CHECKPOINT_KEY,
     dump_checkpoint,
@@ -258,6 +272,24 @@ class WorkerLoop:
         if self._run_state is None:
             self._run_state = {}
         self._run_state.update(fields)
+
+    def _take_plan_memory(
+        self,
+        plan: Any,
+        *,
+        history_compact: dict[str, Any],
+        step_todos: list[dict[str, str]],
+        allow_todos: bool,
+    ) -> tuple[dict[str, Any], list[dict[str, str]]]:
+        if plan is None:
+            return history_compact, step_todos
+        cache = getattr(self.brain, "_history_compact_out", None)
+        if isinstance(cache, dict):
+            history_compact = dict(cache)
+        raw = plan.raw if isinstance(getattr(plan, "raw", None), dict) else {}
+        if allow_todos and "todos" in raw:
+            step_todos = normalize_todos(raw.get("todos"))
+        return history_compact, step_todos
 
     def _save_run_checkpoint(self, task_id: str, *, next_step: int) -> None:
         """步末/暂停前落盘，供进程重启后继续。"""
@@ -537,6 +569,25 @@ class WorkerLoop:
         except Exception:  # noqa: BLE001 — 进度出站不得打断任务
             pass
 
+    def _llm_live(
+        self,
+        task_id: str,
+        *,
+        phase: str,
+        step: int,
+        **base_extra: Any,
+    ) -> Any:
+        """规划/反省等待模型时的节流直播（思考正文 + 普通输出）。"""
+        from fawai_avatar.runtime.llm_live import LlmLiveProgress
+
+        return LlmLiveProgress(
+            self._progress,
+            phase=phase,
+            step=step,
+            cancelled=lambda: self._task_control(task_id) == "cancelled",
+            **base_extra,
+        )
+
     def _task_title_for_step(self, task_id: str) -> str:
         """规划前簇头兜底：任务短标题。"""
         from fawai_avatar.task.title import normalize_step_label
@@ -568,9 +619,18 @@ class WorkerLoop:
 
     def _step_label_extra(
         self, task_id: str, plan: Plan | None = None
-    ) -> dict[str, str]:
+    ) -> dict[str, Any]:
         labeled = self._resolve_progress_step_label(task_id, plan)
-        return {"step_label": labeled} if labeled else {}
+        out: dict[str, Any] = {}
+        if labeled:
+            out["step_label"] = labeled
+        kind = ""
+        if plan is not None:
+            kind = str(getattr(plan, "step_kind", "") or "").strip()
+        if kind:
+            out["step_kind"] = kind
+            out["step_kind_label"] = step_kind_label(kind)
+        return out
 
     def _stats_progress_extra(self) -> dict[str, Any]:
         return {"stats": task_stats.summary_for_api(self._run_stats)}
@@ -739,7 +799,14 @@ class WorkerLoop:
             pending_observe_args = resumed.get("pending_observe_args")
             if not isinstance(pending_observe_args, dict):
                 pending_observe_args = None
+            pending_step_kind = str(resumed.get("pending_step_kind") or "").strip() or None
             format_abort_softened = bool(resumed.get("format_abort_softened"))
+            history_compact = (
+                dict(resumed.get("history_compact"))
+                if isinstance(resumed.get("history_compact"), dict)
+                else {}
+            )
+            step_todos = normalize_todos(resumed.get("step_todos"))
             start_step = int(resumed.get("next_step") or 0)
             self._progress(
                 f"进程恢复，从步骤 {start_step} 继续执行…",
@@ -786,7 +853,10 @@ class WorkerLoop:
             read_ok_paths = []
             pending_observe_kinds = None
             pending_observe_args = None
+            pending_step_kind = None
             format_abort_softened = False
+            history_compact = {}
+            step_todos = []
             # 追问不再并入 goal：新 run 把 meta.followups 注入 history，大脑仍能看到增量
             history = self._seed_followup_history(task, history)
             # status=running 给会话页左侧徽章实时切「执行中」
@@ -838,8 +908,11 @@ class WorkerLoop:
                 read_ok_paths=read_ok_paths,
                 pending_observe_kinds=pending_observe_kinds,
                 pending_observe_args=pending_observe_args,
+                pending_step_kind=pending_step_kind,
                 last_reflection=last_reflection,
                 format_abort_softened=format_abort_softened,
+                history_compact=history_compact,
+                step_todos=step_todos,
             )
             self._save_run_checkpoint(task_id, next_step=next_step)
 
@@ -940,6 +1013,13 @@ class WorkerLoop:
                 fingerprint_fails[primary_fp] += 1
             fail_count = int(fingerprint_fails[primary_fp]) if primary_fp else 1
             can_replan = self._can_continue(step)
+            t_reflect = time.perf_counter()
+            crash_live = self._llm_live(
+                task_id,
+                phase="reflect",
+                step=step,
+                fingerprint=primary_fp or None,
+            )
             reflect_fn = getattr(self.brain, "reflect", None)
             if callable(reflect_fn):
                 reflection = reflect_fn(
@@ -950,6 +1030,7 @@ class WorkerLoop:
                     fail_count=fail_count,
                     history=history,
                     prior_alternate_fps=prior_alternate_fps,
+                    on_llm_delta=crash_live.on_delta,
                 )
             else:
                 reflection = run_reflect(
@@ -962,6 +1043,8 @@ class WorkerLoop:
                     prior_alternate_fps=prior_alternate_fps,
                     llm=None,
                 )
+            crash_live.flush()
+            reflect_ms = int((time.perf_counter() - t_reflect) * 1000)
             reflection = coerce_reflection_no_abort(reflection)
             reflect_count += 1
             last_reflection = reflection.to_dict()
@@ -993,6 +1076,9 @@ class WorkerLoop:
                 step=step,
                 decision=reflection.decision,
                 reflect_count=reflect_count,
+                **_llm_raw_progress_meta(
+                    getattr(reflection, "raw", None), elapsed_ms=reflect_ms
+                ),
                 **self._stats_progress_extra(),
             )
             # 反省不再 abort：仅步数用尽时失败；止损由下一轮规划 status=failed
@@ -1082,47 +1168,116 @@ class WorkerLoop:
                     self._progress("整理面向用户的结论…", phase="finalize", step=step)
 
                 crash_phase = "observe"
+                skipped_shallow = should_skip_shallow_env_observe(
+                    pending_observe_kinds,
+                    prev_step_kind=pending_step_kind,
+                )
+                obs_requested = coerce_observe_kinds_skip_shallow(
+                    pending_observe_kinds,
+                    prev_step_kind=pending_step_kind,
+                )
                 methods = resolve_observe_methods(
                     task.goal,
                     capture=self.capture,
-                    requested=pending_observe_kinds,
+                    requested=obs_requested,
                 )
+                observe_extra: dict[str, Any] = {}
+                if pending_step_kind:
+                    observe_extra["step_kind"] = pending_step_kind
+                    observe_extra["step_kind_label"] = step_kind_label(
+                        pending_step_kind
+                    )
+                if skipped_shallow:
+                    observe_extra["skipped_shallow_env"] = True
+                step_label_extra = self._step_label_extra(task_id)
                 self._progress(
                     progress_observe_text(methods, pending=True),
                     phase="observe",
                     step=step,
                     observe_methods=methods,
                     observe_label="、".join(observe_label(m) for m in methods),
-                    **self._step_label_extra(task_id),
+                    **observe_extra,
+                    **step_label_extra,
                 )
                 t_obs = time.perf_counter()
+                progress_base = {
+                    "step": step,
+                    **observe_extra,
+                    **step_label_extra,
+                }
+
+                def _observe_progress(text: str, *, phase: str, **extra: Any) -> None:
+                    self._progress(text, phase=phase, **extra)
+
                 obs = self._observe(
                     task.goal,
                     methods=methods,
                     observe_args=pending_observe_args,
+                    on_progress=_observe_progress,
+                    progress_base=progress_base,
                 )
                 obs = self._attach_title_context(task_id, obs)
                 obs_ms = int((time.perf_counter() - t_obs) * 1000)
                 obs_meta = obs.meta or {}
                 done_methods = list(obs_meta.get("observe_methods") or methods)
-                self._progress(
-                    progress_observe_text(
-                        done_methods,
-                        pending=False,
-                        preview=str(obs.summary or ""),
-                    ),
-                    phase="observe",
-                    step=step,
-                    elapsed_ms=obs_ms,
-                    observe_methods=done_methods,
-                    observe_method=obs_meta.get("observe_method"),
-                    observe_label=obs_meta.get("observe_label"),
-                    paths=_paths_from_observation(obs),
-                    frontmost_app=obs_meta.get("frontmost_app"),
-                    frontmost_window=obs_meta.get("frontmost_window"),
-                    frontmost_ok=obs_meta.get("frontmost_ok"),
-                    **self._step_label_extra(task_id),
-                )
+                stages = {
+                    str(x)
+                    for x in (obs_meta.get("progress_stages") or [])
+                    if x
+                }
+                # 截屏本机完成（及 OCR API）已由 collect 分卡发射时，勿再合成一张「观察完成」
+                if "observe" not in stages:
+                    done_preview = str(obs.summary or "")
+                    if skipped_shallow and done_methods == ["none"]:
+                        done_preview = (
+                            "跳过浅环境观察（上一段执行/分析后沿用工具结果；"
+                            "未截屏、未刷工作区顶层列表）。\n"
+                            + done_preview
+                        )
+                    self._progress(
+                        progress_observe_text(
+                            done_methods,
+                            pending=False,
+                            preview=done_preview,
+                        ),
+                        phase="observe",
+                        step=step,
+                        elapsed_ms=obs_ms,
+                        observe_methods=done_methods,
+                        observe_method=obs_meta.get("observe_method"),
+                        observe_label=obs_meta.get("observe_label"),
+                        paths=_paths_from_observation(obs),
+                        frontmost_app=obs_meta.get("frontmost_app"),
+                        frontmost_window=obs_meta.get("frontmost_window"),
+                        frontmost_ok=obs_meta.get("frontmost_ok"),
+                        **observe_extra,
+                        **step_label_extra,
+                    )
+                else:
+                    # 刷新截屏卡：补前台窗 facts；正文不含 OCR 表
+                    self._progress(
+                        progress_observe_text(
+                            ["obs_screen"],
+                            pending=False,
+                            preview=str(
+                                (obs.summary or "").split("OCR 观察")[0]
+                            ).strip(),
+                        ),
+                        phase="observe",
+                        step=step,
+                        elapsed_ms=int(
+                            obs_meta.get("capture_elapsed_ms") or obs_ms
+                        ),
+                        observe_methods=["obs_screen"],
+                        observe_method="obs_screen",
+                        observe_label=observe_label("obs_screen"),
+                        paths=_paths_from_observation(obs),
+                        frontmost_app=obs_meta.get("frontmost_app"),
+                        frontmost_window=obs_meta.get("frontmost_window"),
+                        frontmost_ok=obs_meta.get("frontmost_ok"),
+                        **observe_extra,
+                        **step_label_extra,
+                    )
 
                 crash_phase = "plan"
                 self._progress(
@@ -1132,11 +1287,33 @@ class WorkerLoop:
                     **self._step_label_extra(task_id),
                 )
                 t_plan = time.perf_counter()
+                plan_live = self._llm_live(
+                    task_id,
+                    phase="plan",
+                    step=step,
+                    **self._step_label_extra(task_id),
+                )
+                allow_todos = task_keeps_step_todos(task.meta)
                 plan, plan_cancelled = self._call_cancellable(
                     task_id,
-                    lambda: self.brain.plan(task.goal, obs, history=history),
+                    lambda hc=dict(history_compact), td=list(step_todos), allow=allow_todos: self.brain.plan(
+                        task.goal,
+                        obs,
+                        history=history,
+                        on_llm_delta=plan_live.on_delta,
+                        history_compact=hc,
+                        step_todos=td,
+                        allow_todos=allow,
+                    ),
                     label="plan",
                 )
+                history_compact, step_todos = self._take_plan_memory(
+                    plan,
+                    history_compact=history_compact,
+                    step_todos=step_todos,
+                    allow_todos=allow_todos,
+                )
+                plan_live.flush()
                 if plan_cancelled:
                     return self._finish(
                         task_id,
@@ -1161,10 +1338,11 @@ class WorkerLoop:
                         done=True,
                         status="success" if plan.status != "failed" else "failed",
                         raw=plan.raw,
-                        observe_kinds=list(plan.observe_kinds),
+                        observe_kinds=list(plan.observe_kinds) or ["none"],
                         observe_args=dict(plan.observe_args or {}),
                         title=plan.title or "",
                         step_label=plan.step_label or "整理结论",
+                        step_kind="finalize",
                         delegate=None,
                     )
                 plan_write_paths = write_paths_from_plan(plan)
@@ -1181,10 +1359,17 @@ class WorkerLoop:
                 pending_observe_args = (
                     dict(plan.observe_args) if plan.observe_args else None
                 )
+                pending_step_kind = (
+                    str(plan.step_kind or "").strip() or None
+                )
                 thought_preview = (plan.thought or "").strip()
                 if len(thought_preview) > 200:
                     thought_preview = thought_preview[:200] + "…"
                 planned_text = f"规划完成（{plan.status}）"
+                if plan.step_kind:
+                    planned_text = (
+                        f"{planned_text}；步型：{step_kind_label(plan.step_kind)}"
+                    )
                 if plan.observe_kinds:
                     labels = "、".join(observe_label(m) for m in plan.observe_kinds)
                     planned_text = f"{planned_text}；下一步观察：{labels}"
@@ -1244,7 +1429,7 @@ class WorkerLoop:
                             {
                                 "role": "user",
                                 "content": (
-                                    "【委派未执行】未配置 FAWAI_LLM_FAST_MODEL。"
+                                    "【委派未执行】未配置快模型路由（或供应商无 API Key）。"
                                     "请主脑自行规划 actions 完成子目标，勿再输出 delegate。"
                                     f"原委派：{delegate_spec.goal}"
                                 ),
@@ -1383,10 +1568,17 @@ class WorkerLoop:
                     persist(next_step=step + 1)
                     continue
 
+                run_parallel = should_execute_parallel(
+                    plan.step_kind or "", plan.actions
+                )
                 if plan.actions:
                     act_extra = _actions_progress_meta(plan.actions)
+                    act_text = _format_act_progress(plan.actions)
+                    if run_parallel:
+                        act_text = f"并行（{len(plan.actions)}）· {act_text}"
+                        act_extra["act_parallel"] = True
                     self._progress(
-                        _format_act_progress(plan.actions),
+                        act_text,
                         phase="act",
                         step=step,
                         **act_extra,
@@ -1395,7 +1587,10 @@ class WorkerLoop:
                 crash_phase = "act"
                 t_act = time.perf_counter()
                 results = self._execute_actions(
-                    task_id, plan.actions, write_set=write_set
+                    task_id,
+                    plan.actions,
+                    write_set=write_set,
+                    parallel=run_parallel,
                 )
                 act_total_ms = int((time.perf_counter() - t_act) * 1000)
                 for action in plan.actions:
@@ -1809,6 +2004,14 @@ class WorkerLoop:
                         step=step,
                         fingerprint=primary_fp or None,
                     )
+                    t_reflect = time.perf_counter()
+                    reflect_live = self._llm_live(
+                        task_id,
+                        phase="reflect",
+                        step=step,
+                        fingerprint=primary_fp or None,
+                        **self._step_label_extra(task_id, plan),
+                    )
                     reflect_fn = getattr(self.brain, "reflect", None)
                     if callable(reflect_fn):
                         reflection = reflect_fn(
@@ -1819,6 +2022,7 @@ class WorkerLoop:
                             fail_count=fail_count,
                             history=history,
                             prior_alternate_fps=prior_alternate_fps,
+                            on_llm_delta=reflect_live.on_delta,
                         )
                     else:
                         reflection = run_reflect(
@@ -1831,6 +2035,8 @@ class WorkerLoop:
                             prior_alternate_fps=prior_alternate_fps,
                             llm=None,
                         )
+                    reflect_live.flush()
+                    reflect_ms = int((time.perf_counter() - t_reflect) * 1000)
                     # 反省不再 abort；兼容旧模型若仍输出 abort → alternate
                     reflection = coerce_reflection_no_abort(reflection)
                     reflect_count += 1
@@ -1874,6 +2080,9 @@ class WorkerLoop:
                         step=step,
                         decision=reflection.decision,
                         reflect_count=reflect_count,
+                        **_llm_raw_progress_meta(
+                            getattr(reflection, "raw", None), elapsed_ms=reflect_ms
+                        ),
                         **self._stats_progress_extra(),
                     )
 
@@ -1951,6 +2160,7 @@ class WorkerLoop:
                     continue
 
                 # 成功路径：工具结果观察后轻量思考反省（软建议；≠ 执行反省）
+                # 机械只读整批成功 → 规则摘要，默认跳过 LLM（动作段预期闸）
                 if (
                     obs_reflect_enabled()
                     and plan.actions
@@ -1958,65 +2168,102 @@ class WorkerLoop:
                     and all(r.ok for r in results)
                     and not awaiting_user_answer
                 ):
-                    self._progress(
-                        "观察反省中…",
-                        phase="obs_reflect",
-                        step=step,
-                        **self._step_label_extra(task_id, plan),
-                    )
-                    obs_reflect_fn = getattr(self.brain, "obs_reflect", None)
-                    obs_data_dir = str(self.supervisor.data_dir)
-                    if callable(obs_reflect_fn):
-                        obs_reflection = obs_reflect_fn(
-                            task.goal,
-                            plan.actions,
-                            results,
-                            tool_feedback=tool_feedback_for_obs,
-                            data_dir=obs_data_dir,
+                    if should_skip_obs_reflect_llm(plan.actions, results):
+                        rule_blob = format_mechanical_obs_summary(
+                            plan.actions, results
+                        )
+                        history.append({"role": "user", "content": rule_blob})
+                        self.supervisor.report(
+                            task_id,
+                            "obs_reflect: skipped_mechanical",
+                            {
+                                "obs_reflection": {
+                                    "progress": "advanced",
+                                    "skipped": True,
+                                    "mode": "mechanical_rule",
+                                }
+                            },
+                        )
+                        self._progress(
+                            "观察反省：跳过（机械成功·规则摘要）",
+                            phase="obs_reflect",
+                            step=step,
+                            progress="advanced",
+                            skipped=True,
+                            **self._step_label_extra(task_id, plan),
+                            **self._stats_progress_extra(),
                         )
                     else:
-                        obs_reflection = run_obs_reflect(
-                            task.goal,
-                            plan.actions,
-                            results,
-                            tool_feedback=tool_feedback_for_obs,
-                            data_dir=obs_data_dir,
-                            llm=None,
+                        self._progress(
+                            "观察反省中…",
+                            phase="obs_reflect",
+                            step=step,
+                            **self._step_label_extra(task_id, plan),
                         )
-                    history.append(
-                        {
-                            "role": "user",
-                            "content": format_obs_reflection_for_history(
-                                obs_reflection
-                            ),
-                        }
-                    )
-                    self.supervisor.report(
-                        task_id,
-                        f"obs_reflect: {obs_reflection.progress}",
-                        {"obs_reflection": obs_reflection.to_dict()},
-                    )
-                    obs_extra: dict[str, Any] = {}
-                    obs_raw = getattr(obs_reflection, "raw", None) or {}
-                    if isinstance(obs_raw, dict):
-                        usage = obs_raw.get("usage")
-                        if isinstance(usage, dict) and usage:
-                            obs_extra["tokens"] = usage
-                        thinking = obs_raw.get("thinking")
-                        if isinstance(thinking, dict) and thinking:
-                            obs_extra["thinking"] = thinking
-                        if obs_raw.get("model"):
-                            obs_extra["model"] = obs_raw.get("model")
-                    self._progress(
-                        f"观察反省：{obs_reflection.progress} — "
-                        f"{(obs_reflection.thought or '')[:160]}",
-                        phase="obs_reflect",
-                        step=step,
-                        progress=obs_reflection.progress,
-                        **obs_extra,
-                        **self._step_label_extra(task_id, plan),
-                        **self._stats_progress_extra(),
-                    )
+                        t_obs_ref = time.perf_counter()
+                        obs_live = self._llm_live(
+                            task_id,
+                            phase="obs_reflect",
+                            step=step,
+                            **self._step_label_extra(task_id, plan),
+                        )
+                        obs_reflect_fn = getattr(self.brain, "obs_reflect", None)
+                        obs_data_dir = str(self.supervisor.data_dir)
+                        if callable(obs_reflect_fn):
+                            obs_reflection = obs_reflect_fn(
+                                task.goal,
+                                plan.actions,
+                                results,
+                                tool_feedback=tool_feedback_for_obs,
+                                data_dir=obs_data_dir,
+                                on_llm_delta=obs_live.on_delta,
+                            )
+                        else:
+                            obs_reflection = run_obs_reflect(
+                                task.goal,
+                                plan.actions,
+                                results,
+                                tool_feedback=tool_feedback_for_obs,
+                                data_dir=obs_data_dir,
+                                llm=None,
+                            )
+                        obs_live.flush()
+                        obs_ref_ms = int((time.perf_counter() - t_obs_ref) * 1000)
+                        history.append(
+                            {
+                                "role": "user",
+                                "content": format_obs_reflection_for_history(
+                                    obs_reflection
+                                ),
+                            }
+                        )
+                        self.supervisor.report(
+                            task_id,
+                            f"obs_reflect: {obs_reflection.progress}",
+                            {"obs_reflection": obs_reflection.to_dict()},
+                        )
+                        obs_extra: dict[str, Any] = {}
+                        obs_raw = getattr(obs_reflection, "raw", None) or {}
+                        if isinstance(obs_raw, dict):
+                            usage = obs_raw.get("usage")
+                            if isinstance(usage, dict) and usage:
+                                obs_extra["tokens"] = usage
+                            obs_extra["elapsed_ms"] = obs_ref_ms
+                            thinking = obs_raw.get("thinking")
+                            if isinstance(thinking, dict) and thinking:
+                                obs_extra["thinking"] = thinking
+                            if obs_raw.get("model"):
+                                obs_extra["model"] = obs_raw.get("model")
+                        self._progress(
+                            f"观察反省：{obs_reflection.progress} — "
+                            f"{(obs_reflection.thought or '')[:160]}",
+                            phase="obs_reflect",
+                            step=step,
+                            progress=obs_reflection.progress,
+                            **obs_extra,
+                            **self._step_label_extra(task_id, plan),
+                            **self._stats_progress_extra(),
+                        )
 
                 # 成功路径：改文件目标连续只读探索过久 → 注入 / 强制改写 / 止损
                 repeated_paths = hot_repeated_paths(read_path_counts)
@@ -2420,6 +2667,7 @@ class WorkerLoop:
                                 hit_count=hit_count,
                                 prior_judged=prior_judged,
                             )
+                            t_stag = time.perf_counter()
                             stag_fn = getattr(self.brain, "stagnation", None)
                             stag_kwargs = {
                                 "fingerprint": step_fp,
@@ -2444,6 +2692,7 @@ class WorkerLoop:
                                     **stag_kwargs,
                                 )
                             reflection = coerce_reflection_no_abort(reflection)
+                            stag_ms = int((time.perf_counter() - t_stag) * 1000)
                             stagnation_count += 1
                             self._run_stagnation_count = stagnation_count
                             last_reflection = reflection.to_dict()
@@ -2473,6 +2722,9 @@ class WorkerLoop:
                                 decision=reflection.decision,
                                 stagnation_count=stagnation_count,
                                 forced=bool(reflection.forced),
+                                **_llm_raw_progress_meta(
+                                    getattr(reflection, "raw", None), elapsed_ms=stag_ms
+                                ),
                                 **self._stats_progress_extra(),
                             )
                             # continue / alternate：注入约束后进入下一轮；止损由规划 failed
@@ -2872,12 +3124,16 @@ class WorkerLoop:
                                 or None,
                             )
                         else:
+                            from fawai_avatar.brain.prompt_profile import (
+                                report_delivery_rule,
+                            )
+
                             content = (
-                                "请根据以上执行结果，给出面向用户的最终自然语言回答："
+                                "请根据以上执行结果，给出面向用户的最终回答。"
                                 "直接回答用户目标（例如高不高、是否成功、关键数字含义）；"
-                                "若含多字段配置/硬件，用短结论 + 分项列表或表写全证据已有字段；"
                                 "不要复述或粘贴原始 stdout/top 全文；不要写出明文口令。"
-                                "本步必须 status=success、done=true、actions 为空数组；"
+                                + report_delivery_rule(task.goal)
+                                + "本步必须 status=success、done=true、actions 为空数组；"
                                 "thought 即为给用户看的最终回复。"
                             )
                         history.append(
@@ -3152,7 +3408,10 @@ class WorkerLoop:
         self, task_id: str, plan: Plan, *, step: int
     ) -> None:
         """首轮（或启发式占位时）用规划里的 title 落盘并推进度。"""
+        from fawai_avatar.task.title import commit_task_title
+
         proposed = normalize_task_title(plan.title or "")
+        source = "llm" if proposed else "heuristic"
         if not proposed:
             # 规划未给 title 时：若仍无标题，用 goal 启发式兜底一次
             task = self.supervisor.get_task(task_id)
@@ -3160,32 +3419,55 @@ class WorkerLoop:
                 return
             meta = dict(task.meta or {})
             if meta.get("title"):
+                # 本任务已有标题，仍可能要把已有 llm 名提升到父计划会话
+                existing = normalize_task_title(str(meta.get("title") or ""))
+                existing_source = str(meta.get("title_source") or "")
+                if existing and existing_source == "llm":
+                    try:
+                        from fawai_avatar.brain.plan_scheduler import (
+                            promote_title_to_plan_parent,
+                        )
+
+                        if promote_title_to_plan_parent(
+                            self.supervisor, task_id, existing, source="llm"
+                        ):
+                            self._progress(
+                                f"任务命名：{existing}",
+                                phase="title",
+                                step=step,
+                                title=existing,
+                                title_source="llm",
+                            )
+                    except Exception:  # noqa: BLE001
+                        pass
                 return
             proposed = suggest_task_title(task.goal)
             source = "heuristic"
-        else:
-            source = "llm"
-            task = self.supervisor.get_task(task_id)
-            if task is None:
-                return
-            meta = dict(task.meta or {})
-            existing = normalize_task_title(str(meta.get("title") or ""))
-            existing_source = str(meta.get("title_source") or "")
-            # 已有正式 LLM 标题则不覆盖；启发式可被首轮 LLM 覆盖
-            if existing and existing_source == "llm":
-                return
-            if existing == proposed and existing_source == source:
-                return
 
-        self.supervisor.merge_task_meta(
-            task_id,
-            {"title": proposed, "title_source": source},
+        written = commit_task_title(
+            self.supervisor, task_id, proposed, source=source
         )
+        named = written or proposed
+        promoted = ""
+        # 计划子任务正式名：提升到父会话 meta.title，避免刷新后仍显示启发式路径截断
+        if source == "llm" and named:
+            try:
+                from fawai_avatar.brain.plan_scheduler import (
+                    promote_title_to_plan_parent,
+                )
+
+                promoted = promote_title_to_plan_parent(
+                    self.supervisor, task_id, named, source="llm"
+                )
+            except Exception:  # noqa: BLE001
+                promoted = ""
+        if not written and not promoted:
+            return
         self._progress(
-            f"任务命名：{proposed}",
+            f"任务命名：{named}",
             phase="title",
             step=step,
-            title=proposed,
+            title=named,
             title_source=source,
         )
 
@@ -3195,6 +3477,8 @@ class WorkerLoop:
         *,
         methods: list[str] | None = None,
         observe_args: dict[str, Any] | None = None,
+        on_progress: Any | None = None,
+        progress_base: dict[str, Any] | None = None,
     ) -> Observation:
         chosen = methods or choose_observe_methods(goal, capture=self.capture)
         store = getattr(self.controller, "system_log", None)
@@ -3244,6 +3528,8 @@ class WorkerLoop:
             goal=goal,
             capture=self.capture,
             observe_args=observe_args,
+            on_progress=on_progress,
+            progress_base=progress_base,
         )
         meta = obs.meta or {}
         if obs.image_path and (
@@ -3340,6 +3626,7 @@ class WorkerLoop:
         pending_args = (
             dict(pending_observe_args) if isinstance(pending_observe_args, dict) else None
         )
+        fast_compact: dict[str, Any] = {}
 
         for _ in range(int(spec.max_steps)):
             halted = self._halt_if_stopped(
@@ -3384,31 +3671,67 @@ class WorkerLoop:
                 delegate_tier="fast",
             )
             t_obs = time.perf_counter()
+            progress_base = {"step": step, "delegate_tier": "fast"}
+
+            def _observe_progress_fast(
+                text: str, *, phase: str, **extra: Any
+            ) -> None:
+                self._progress(text, phase=phase, **extra)
+
             obs = self._observe(
-                sub_goal, methods=methods, observe_args=pending_args
+                sub_goal,
+                methods=methods,
+                observe_args=pending_args,
+                on_progress=_observe_progress_fast,
+                progress_base=progress_base,
             )
             obs = self._attach_title_context(task_id, obs)
             obs_ms = int((time.perf_counter() - t_obs) * 1000)
             obs_meta = obs.meta or {}
             done_methods = list(obs_meta.get("observe_methods") or methods)
-            self._progress(
-                progress_observe_text(
-                    done_methods,
-                    pending=False,
-                    preview=str(obs.summary or ""),
-                ),
-                phase="observe",
-                step=step,
-                elapsed_ms=obs_ms,
-                observe_methods=done_methods,
-                observe_method=obs_meta.get("observe_method"),
-                observe_label=obs_meta.get("observe_label"),
-                paths=_paths_from_observation(obs),
-                frontmost_app=obs_meta.get("frontmost_app"),
-                frontmost_window=obs_meta.get("frontmost_window"),
-                frontmost_ok=obs_meta.get("frontmost_ok"),
-                delegate_tier="fast",
-            )
+            stages = {
+                str(x) for x in (obs_meta.get("progress_stages") or []) if x
+            }
+            if "observe" not in stages:
+                self._progress(
+                    progress_observe_text(
+                        done_methods,
+                        pending=False,
+                        preview=str(obs.summary or ""),
+                    ),
+                    phase="observe",
+                    step=step,
+                    elapsed_ms=obs_ms,
+                    observe_methods=done_methods,
+                    observe_method=obs_meta.get("observe_method"),
+                    observe_label=obs_meta.get("observe_label"),
+                    paths=_paths_from_observation(obs),
+                    frontmost_app=obs_meta.get("frontmost_app"),
+                    frontmost_window=obs_meta.get("frontmost_window"),
+                    frontmost_ok=obs_meta.get("frontmost_ok"),
+                    delegate_tier="fast",
+                )
+            else:
+                self._progress(
+                    progress_observe_text(
+                        ["obs_screen"],
+                        pending=False,
+                        preview=str(
+                            (obs.summary or "").split("OCR 观察")[0]
+                        ).strip(),
+                    ),
+                    phase="observe",
+                    step=step,
+                    elapsed_ms=int(obs_meta.get("capture_elapsed_ms") or obs_ms),
+                    observe_methods=["obs_screen"],
+                    observe_method="obs_screen",
+                    observe_label=observe_label("obs_screen"),
+                    paths=_paths_from_observation(obs),
+                    frontmost_app=obs_meta.get("frontmost_app"),
+                    frontmost_window=obs_meta.get("frontmost_window"),
+                    frontmost_ok=obs_meta.get("frontmost_ok"),
+                    delegate_tier="fast",
+                )
 
             self._progress(
                 "快模型规划中…",
@@ -3417,17 +3740,34 @@ class WorkerLoop:
                 model=model,
                 delegate_tier="fast",
             )
+            fast_live = self._llm_live(
+                task_id,
+                phase="plan",
+                step=step,
+                model=model,
+                delegate_tier="fast",
+            )
             plan, plan_cancelled = self._call_cancellable(
                 task_id,
-                lambda: self.brain.plan(
+                lambda hc=fast_compact: self.brain.plan(
                     sub_goal,
                     obs,
                     history=history,
                     model=model,
                     planner_role="fast",
+                    on_llm_delta=fast_live.on_delta,
+                    history_compact=hc,
+                    allow_todos=False,
                 ),
                 label="plan_fast",
             )
+            fast_compact, _todos = self._take_plan_memory(
+                plan,
+                history_compact=fast_compact,
+                step_todos=[],
+                allow_todos=False,
+            )
+            fast_live.flush()
             if plan_cancelled:
                 return {
                     "history": history,
@@ -3551,7 +3891,12 @@ class WorkerLoop:
         actions: list[Action],
         *,
         write_set: list[str] | None = None,
+        parallel: bool = False,
     ) -> list[ExecResult]:
+        if parallel and len(actions) >= 2:
+            return self._execute_actions_parallel(
+                task_id, actions, write_set=write_set
+            )
         results: list[ExecResult] = []
         for action in actions:
             # 动作间隙协作停步：取消后不再开新动作（当前正在跑的 shell 仍可能跑完）
@@ -3573,85 +3918,163 @@ class WorkerLoop:
             if state not in {"ok"}:
                 results.append(ExecResult(ok=False, message=f"stopped:{state}"))
                 break
-            if action.needs_foreground:
-                if not self.supervisor.holding_foreground(task_id):
-                    if not self.supervisor.claim_foreground(task_id):
-                        results.append(
-                            ExecResult(ok=False, message="cannot claim foreground_lease")
-                        )
-                        break
-            if action.write_resources:
-                items = [
-                    ResourceItem(kind="file", key=path, mode="write")
-                    for path in action.write_resources
-                ]
-                if not self.supervisor.allows_writes(task_id, list(action.write_resources)):
-                    if not self.supervisor.claim_resources(task_id, items):
-                        results.append(
-                            ExecResult(ok=False, message="cannot claim resource_lease")
-                        )
-                        break
+            action, result = self._execute_one_action(
+                task_id, action, write_set=write_set
+            )
+            results.append(result)
+            # expect 失败视为衔接中断：无论只读与否都停批
+            if (not result.ok) and str(result.message or "").startswith(
+                "expect failed:"
+            ):
+                break
+            if should_break_action_batch(action, result):
+                break
+        return results
+
+    def _execute_actions_parallel(
+        self,
+        task_id: str,
+        actions: list[Action],
+        *,
+        write_set: list[str] | None = None,
+    ) -> list[ExecResult]:
+        """不冲突的一批动作并行；不合格项不应进入本路径（调用方已闸）。"""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        state = self._task_control(task_id)
+        if state == "cancelled":
+            return [ExecResult(ok=False, message="cancelled") for _ in actions]
+        if state not in {"ok", "paused"}:
+            return [
+                ExecResult(ok=False, message=f"stopped:{state}") for _ in actions
+            ]
+        while self._task_control(task_id) == "paused":
+            time.sleep(0.25)
+        if self._task_control(task_id) == "cancelled":
+            return [ExecResult(ok=False, message="cancelled") for _ in actions]
+
+        prepared: list[Action] = []
+        for action in actions:
             kind = (action.kind or "").strip().lower()
-            # 空 code_check：用本任务已写路径回填，避免「写后空调 check」假失败
             if kind == "code_check":
                 from fawai_avatar.workspace.check import fill_code_check_args
 
                 filled = fill_code_check_args(action.args, write_set=write_set)
                 if filled != dict(action.args or {}):
-                    action = Action(
-                        kind=action.kind,
-                        args=filled,
-                        needs_foreground=action.needs_foreground,
-                        write_resources=list(action.write_resources),
-                    )
-            # click 族：注入最近截屏 origin / 尺寸 / Retina scale（图内 → 全局）
-            if kind in {"click", "double_click", "right_click"}:
-                args = dict(action.args or {})
-                space = str(
-                    args.get("coord_space") or args.get("coords") or "image"
-                ).strip().lower()
-                frame = self._last_screen_frame or self._last_screen_origin
-                if (
-                    space not in {"global", "screen", "absolute", "desktop"}
-                    and frame
-                ):
-                    injected = dict(args)
-                    if injected.get("origin_x") is None and injected.get("origin_y") is None:
-                        injected["origin_x"] = frame.get("origin_x", 0)
-                        injected["origin_y"] = frame.get("origin_y", 0)
-                    for key in (
-                        "image_width",
-                        "image_height",
-                        "capture_width",
-                        "capture_height",
-                        "coord_scale_x",
-                        "coord_scale_y",
-                    ):
-                        if injected.get(key) is None and frame.get(key) is not None:
-                            injected[key] = frame[key]
-                    if injected != args:
-                        action = Action(
-                            kind=action.kind,
-                            args=injected,
-                            needs_foreground=action.needs_foreground,
-                            write_resources=list(action.write_resources),
-                        )
-            # confirm 模式 / 会话 Diff 需要 task_id
+                    action = action.evolve(args=filled)
             if "task_id" not in (action.args or {}):
-                action = Action(
-                    kind=action.kind,
+                action = action.evolve(
                     args={**dict(action.args), "task_id": task_id},
-                    needs_foreground=action.needs_foreground,
-                    write_resources=list(action.write_resources),
                 )
+            prepared.append(action)
+
+        workers = min(parallel_worker_count(), len(prepared))
+        results: list[ExecResult | None] = [None] * len(prepared)
+
+        def _run_one(idx: int, act: Action) -> tuple[int, ExecResult]:
             bg = getattr(self.controller, "_background", None)
             if bg is not None:
                 bg.task_id = task_id
-            result = self.controller.execute(action, task_id=task_id)
-            results.append(result)
-            if should_break_action_batch(action, result):
-                break
-        return results
+            try:
+                result = self.controller.execute(act, task_id=task_id)
+            except Exception as exc:  # noqa: BLE001
+                result = ExecResult(
+                    ok=False,
+                    message=f"parallel execute error: {exc}",
+                    data={"exc_type": type(exc).__name__},
+                )
+            result = apply_expect_to_result(act, result)
+            return idx, result
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = [
+                pool.submit(_run_one, i, act) for i, act in enumerate(prepared)
+            ]
+            for fut in as_completed(futs):
+                idx, result = fut.result()
+                results[idx] = result
+
+        out: list[ExecResult] = []
+        for r in results:
+            out.append(
+                r
+                if r is not None
+                else ExecResult(ok=False, message="parallel slot missing")
+            )
+        return out
+
+    def _execute_one_action(
+        self,
+        task_id: str,
+        action: Action,
+        *,
+        write_set: list[str] | None = None,
+    ) -> tuple[Action, ExecResult]:
+        """执行单动作（串行路径）；租约失败时仍返回 (action, failed result)。"""
+        if action.needs_foreground:
+            if not self.supervisor.holding_foreground(task_id):
+                if not self.supervisor.claim_foreground(task_id):
+                    return action, ExecResult(
+                        ok=False, message="cannot claim foreground_lease"
+                    )
+        if action.write_resources:
+            items = [
+                ResourceItem(kind="file", key=path, mode="write")
+                for path in action.write_resources
+            ]
+            if not self.supervisor.allows_writes(
+                task_id, list(action.write_resources)
+            ):
+                if not self.supervisor.claim_resources(task_id, items):
+                    return action, ExecResult(
+                        ok=False, message="cannot claim resource_lease"
+                    )
+        kind = (action.kind or "").strip().lower()
+        # 空 code_check：用本任务已写路径回填，避免「写后空调 check」假失败
+        if kind == "code_check":
+            from fawai_avatar.workspace.check import fill_code_check_args
+
+            filled = fill_code_check_args(action.args, write_set=write_set)
+            if filled != dict(action.args or {}):
+                action = action.evolve(args=filled)
+        # click 族：注入最近截屏 origin / 尺寸 / Retina scale（图内 → 全局）
+        if kind in {"click", "double_click", "right_click"}:
+            args = dict(action.args or {})
+            space = str(
+                args.get("coord_space") or args.get("coords") or "image"
+            ).strip().lower()
+            frame = self._last_screen_frame or self._last_screen_origin
+            if (
+                space not in {"global", "screen", "absolute", "desktop"}
+                and frame
+            ):
+                injected = dict(args)
+                if injected.get("origin_x") is None and injected.get("origin_y") is None:
+                    injected["origin_x"] = frame.get("origin_x", 0)
+                    injected["origin_y"] = frame.get("origin_y", 0)
+                for key in (
+                    "image_width",
+                    "image_height",
+                    "capture_width",
+                    "capture_height",
+                    "coord_scale_x",
+                    "coord_scale_y",
+                ):
+                    if injected.get(key) is None and frame.get(key) is not None:
+                        injected[key] = frame[key]
+                if injected != args:
+                    action = action.evolve(args=injected)
+        # confirm 模式 / 会话 Diff 需要 task_id
+        if "task_id" not in (action.args or {}):
+            action = action.evolve(
+                args={**dict(action.args), "task_id": task_id},
+            )
+        bg = getattr(self.controller, "_background", None)
+        if bg is not None:
+            bg.task_id = task_id
+        result = self.controller.execute(action, task_id=task_id)
+        result = apply_expect_to_result(action, result)
+        return action, result
 
 
 def run_worker_once(
@@ -3690,6 +4113,26 @@ def _results_indicate_stop(results: list[ExecResult]) -> bool:
     return False
 
 
+def _llm_raw_progress_meta(
+    raw: dict[str, Any] | None, *, elapsed_ms: int | None = None
+) -> dict[str, Any]:
+    """单次 LLM 的 usage / 模型 / 思考 / 耗时，供步骤簇汇总 token。"""
+    meta: dict[str, Any] = {}
+    if isinstance(raw, dict):
+        usage = raw.get("usage")
+        if isinstance(usage, dict) and usage:
+            meta["tokens"] = usage
+        model = raw.get("model")
+        if model:
+            meta["model"] = model
+        thinking = raw.get("thinking")
+        if isinstance(thinking, dict) and thinking:
+            meta["thinking"] = thinking
+    if elapsed_ms is not None:
+        meta["elapsed_ms"] = max(0, int(elapsed_ms))
+    return meta
+
+
 def _llm_progress_meta(plan: Plan, *, fallback_elapsed_ms: int) -> dict[str, Any]:
     raw = plan.raw or {}
     meta: dict[str, Any] = {}
@@ -3703,6 +4146,9 @@ def _llm_progress_meta(plan: Plan, *, fallback_elapsed_ms: int) -> dict[str, Any
     thinking = raw.get("thinking")
     if isinstance(thinking, dict) and thinking:
         meta["thinking"] = thinking
+    thinking_text = raw.get("thinking_text")
+    if isinstance(thinking_text, str) and thinking_text.strip():
+        meta["thinking_text"] = thinking_text.strip()
     return meta
 
 
@@ -3754,8 +4200,14 @@ def _action_progress_meta(action: Action) -> dict[str, Any]:
 def _actions_progress_meta(actions: list[Action]) -> dict[str, Any]:
     if not actions:
         return {}
+    commands = [
+        summarize_action_line(a.kind or "", a.args or {}, max_len=240) for a in actions[:8]
+    ]
     if len(actions) == 1:
-        return _action_progress_meta(actions[0])
+        meta = _action_progress_meta(actions[0])
+        if commands:
+            meta["commands"] = commands
+        return meta
     tools = [(a.kind or "?").strip() or "?" for a in actions]
     paths: list[str] = []
     cmds: list[str] = []
@@ -3767,6 +4219,8 @@ def _actions_progress_meta(actions: list[Action]) -> dict[str, Any]:
         if c:
             cmds.append(_clip_progress_text(c, max_len=200))
     meta: dict[str, Any] = {"tool": ", ".join(tools[:8])}
+    if commands:
+        meta["commands"] = commands
     if cmds:
         meta["cmd"] = " | ".join(cmds[:4])
     if paths:
@@ -3793,31 +4247,121 @@ def _clip_progress_text(text: str, *, max_len: int = 320) -> str:
     return s[: max_len - 1] + "…"
 
 
-def _summarize_action(action: Action, *, max_len: int = 320) -> str:
-    """会话时间线用的动作摘要：优先展示 shell 命令 / 文件路径等关键参数。"""
-    kind = (action.kind or "?").strip() or "?"
-    args = action.args or {}
-    cmd = args.get("cmd") or args.get("command")
-    if cmd is None and isinstance(args.get("argv"), list) and args["argv"]:
-        cmd = " ".join(str(x) for x in args["argv"])
-    path = args.get("path")
-    text = args.get("text") or args.get("keys")
-    seconds = args.get("seconds")
+# 会话上要露出的参数。大段正文（content/old/new）不进这一行。
+_ACTION_LINE_FIRST = (
+    "pattern",
+    "glob",
+    "q",
+    "query",
+    "queries",
+    "path",
+    "paths",
+    "target",
+    "file",
+    "src",
+    "dst",
+    "head_limit",
+    "offset",
+    "limit",
+    "script",
+    "module",
+    "packages",
+    "keys",
+    "text",
+    "seconds",
+    "command",
+)
+_ACTION_LINE_SKIP = {
+    "content",
+    "old",
+    "new",
+    "hunks",
+    "doc_refs",
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "api_key",
+    "cmd",
+    "argv",
+}
 
-    detail = ""
-    if cmd is not None and str(cmd).strip():
-        detail = _clip_progress_text(cmd, max_len=max_len)
-    elif path is not None and str(path).strip():
-        detail = f"path={_clip_progress_text(path, max_len=max_len)}"
-    elif isinstance(text, list) and text:
-        detail = _clip_progress_text("+".join(str(x) for x in text), max_len=max_len)
-    elif text is not None and str(text).strip():
-        detail = f"text={_clip_progress_text(text, max_len=max_len)!r}"
-    elif seconds is not None:
-        detail = f"{seconds}s"
-    if detail:
-        return f"{kind}: {detail}"
-    return kind
+
+def _fmt_action_arg(key: str, value: Any, *, max_len: int) -> str:
+    if isinstance(value, bool):
+        text = "true" if value else "false"
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        text = str(value)
+    elif isinstance(value, list):
+        bits = [str(x).strip() for x in value[:6] if str(x).strip()]
+        if not bits:
+            return ""
+        text = ",".join(bits)
+        if len(value) > 6:
+            text += ",…"
+    elif isinstance(value, dict):
+        return ""
+    else:
+        text = str(value).replace("\n", " ").strip()
+    if not text:
+        return ""
+    text = _clip_progress_text(text, max_len=max_len)
+    if any(ch in text for ch in " \t\"'"):
+        text = '"' + text.replace('"', "'") + '"'
+    return f"{key}={text}"
+
+
+def summarize_action_line(kind: str, args: dict[str, Any] | None, *, max_len: int = 320) -> str:
+    """一条动作的会话摘要：种类 + 能区分这次调用的参数（pattern/path/命令）。"""
+    name = (kind or "?").strip() or "?"
+    raw = args if isinstance(args, dict) else {}
+    if name in {"shell", "shell_verify"}:
+        cmd = raw.get("cmd") or raw.get("command")
+        if cmd is None and isinstance(raw.get("argv"), list) and raw["argv"]:
+            cmd = " ".join(str(x) for x in raw["argv"])
+        if cmd is not None and str(cmd).strip():
+            return f"{name}: {_clip_progress_text(str(cmd), max_len=max_len)}"
+    parts: list[str] = []
+    used: set[str] = set()
+    for key in _ACTION_LINE_FIRST:
+        if key not in raw:
+            continue
+        token = _fmt_action_arg(key, raw.get(key), max_len=160)
+        if not token:
+            continue
+        parts.append(token)
+        used.add(key)
+        if len(parts) >= 6:
+            break
+    if len(parts) < 6:
+        for key, val in raw.items():
+            if key in used or key in _ACTION_LINE_SKIP:
+                continue
+            if isinstance(val, (dict, list)) and key not in {
+                "paths",
+                "keys",
+                "queries",
+                "packages",
+                "files",
+            }:
+                continue
+            token = _fmt_action_arg(str(key), val, max_len=80)
+            if not token:
+                continue
+            parts.append(token)
+            if len(parts) >= 6:
+                break
+    if not parts:
+        return name
+    line = f"{name}: {' '.join(parts)}"
+    if len(line) <= max_len:
+        return line
+    return _clip_progress_text(line, max_len=max_len)
+
+
+def _summarize_action(action: Action, *, max_len: int = 320) -> str:
+    """会话时间线用的动作摘要：优先展示 shell 命令 / 检索式 / 路径等关键参数。"""
+    return summarize_action_line(action.kind or "", action.args or {}, max_len=max_len)
 
 
 def _format_act_progress(actions: list[Action]) -> str:
@@ -3902,9 +4446,10 @@ def _clip_args(args: dict[str, Any]) -> dict[str, Any]:
 
 def _traces_to_dict(traces: list[StepTrace]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
-    for tr in traces:
+    for i, tr in enumerate(traces):
         out.append(
             {
+                "step": int(i),
                 "observation": tr.observation.to_dict() if tr.observation else None,
                 "plan": tr.plan.to_dict() if tr.plan else None,
                 "results": [r.to_dict() for r in tr.results],

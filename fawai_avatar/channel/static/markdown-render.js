@@ -98,8 +98,14 @@
         // Apply syntax highlighting to code blocks
         if (typeof hljs !== 'undefined') {
             element.querySelectorAll('pre code').forEach((block) => {
+                if (block.classList.contains('language-mermaid') || block.classList.contains('lang-mermaid')) {
+                    return;
+                }
                 hljs.highlightElement(block);
             });
+        }
+        if (typeof hydrateMermaid === 'function') {
+            hydrateMermaid(element);
         }
     }
 
@@ -157,6 +163,67 @@
         });
     }
 
+    let mermaidLoader = null;
+    let mermaidSeq = 0;
+
+    function loadMermaidLibrary() {
+        if (typeof mermaid !== 'undefined') {
+            return Promise.resolve();
+        }
+        if (mermaidLoader) return mermaidLoader;
+        mermaidLoader = new Promise((resolve, reject) => {
+            const script = document.createElement('script');
+            script.src = 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js';
+            script.onload = () => {
+                try {
+                    mermaid.initialize({
+                        startOnLoad: false,
+                        securityLevel: 'strict',
+                        theme: 'neutral',
+                    });
+                } catch (e) {
+                    console.warn('Mermaid init:', e);
+                }
+                resolve();
+            };
+            script.onerror = () => {
+                mermaidLoader = null;
+                reject(new Error('mermaid load failed'));
+            };
+            document.head.appendChild(script);
+        });
+        return mermaidLoader;
+    }
+
+    async function hydrateMermaid(root) {
+        if (!root || !root.querySelector) return;
+        const codes = root.querySelectorAll('code.language-mermaid, code.lang-mermaid');
+        if (!codes.length) return;
+        try {
+            await loadMermaidLibrary();
+        } catch (e) {
+            return;
+        }
+        if (typeof mermaid === 'undefined') return;
+        for (const code of codes) {
+            const pre = code.parentElement;
+            if (!pre || pre.dataset.mermaidDone) continue;
+            const src = (code.textContent || '').trim();
+            if (!src) continue;
+            pre.dataset.mermaidDone = '1';
+            const id = 'fawai-mmd-' + (++mermaidSeq);
+            try {
+                const out = await mermaid.render(id, src);
+                const wrap = document.createElement('div');
+                wrap.className = 'mermaid';
+                wrap.innerHTML = out.svg || '';
+                pre.replaceWith(wrap);
+            } catch (e) {
+                console.warn('Mermaid render:', e);
+            }
+        }
+    }
+
     // Initialize markdown support
     async function initialize() {
         try {
@@ -193,9 +260,11 @@
         render: renderMarkdown,
         processElement: processMessageElement,
         processAll: processAllMessages,
-        reinitialize: initialize
+        reinitialize: initialize,
+        hydrateMermaid: hydrateMermaid
     };
 
     // Expose as global function for direct calls from index.html
     window.renderMarkdown = renderMarkdown;
+    window.hydrateMermaid = hydrateMermaid;
 })();

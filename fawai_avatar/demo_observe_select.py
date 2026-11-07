@@ -6,6 +6,7 @@ from fawai_avatar.observe.methods import (
     candidate_observe_methods,
     choose_observe_methods,
     collect_observation,
+    goal_screen_unrelated,
     resolve_observe_methods,
 )
 from fawai_avatar.observe.tool_digest import digest_text, format_tool_observation
@@ -34,6 +35,23 @@ def main() -> None:
     assert resolve_observe_methods(
         gui_goal, capture=True, requested=["obs_screen"]
     ) == ["obs_screen"]
+
+    doc_goal = "总结这张说明文档里的流程，图片内容如下\n[image:data/session_media/doc.png]"
+    assert goal_screen_unrelated(doc_goal)
+    assert "obs_screen" not in candidate_observe_methods(doc_goal, capture=True)
+    assert "obs_ax" not in candidate_observe_methods(doc_goal, capture=True)
+    assert choose_observe_methods(doc_goal, capture=True) == ["none"]
+    assert resolve_observe_methods(
+        doc_goal, capture=True, requested=["obs_screen"]
+    ) == ["none"]
+
+    pdf_goal = "根据说明.pdf 整理章节结构"
+    assert "obs_screen" not in candidate_observe_methods(pdf_goal, capture=True)
+    assert choose_observe_methods(pdf_goal, capture=True) == ["none"]
+
+    click_doc = "点击文档窗口里的保存按钮"
+    assert not goal_screen_unrelated(click_doc)
+    assert "obs_screen" in candidate_observe_methods(click_doc, capture=True)
 
     cursor_goal = "cursor ide现在打开的任务有哪些，状态如何"
     assert not _looks_structured(cursor_goal)

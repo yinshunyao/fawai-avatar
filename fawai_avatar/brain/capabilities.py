@@ -260,7 +260,8 @@ CAPABILITIES: tuple[Capability, ...] = (
         modality="background",
         when_to_use=(
             "在 data/sessions/{task_id}/ 新建或覆盖临时脚本/结果文件；"
-            "args.path 相对会话根 + content；临时算数/脚本优先于此，改产品源码仍用 fs_patch"
+            "args.path 相对会话根 + content；临时算数/脚本优先于此，改产品源码仍用 fs_patch。"
+            "新建脚本尽最大努力 stdout 打一行 OK 或 FAIL:原因，失败非零退出，便于调用侧 expect（精确或模糊）；非硬闸"
         ),
         action_kind="py_write",
     ),
@@ -280,7 +281,8 @@ CAPABILITIES: tuple[Capability, ...] = (
         modality="background",
         when_to_use=(
             "用主程序解释器跑会话脚本/临时代码/模块；三选一 script|code|module；"
-            "stdout/stderr/meta 落盘 runs/{ts}/；可选 result_path；不做 pdb"
+            "stdout/stderr/meta 落盘 runs/{ts}/；可选 result_path；不做 pdb。"
+            "多步执行时倾向带 expect（contains 精确，或 contains_any 模糊）；非硬闸"
         ),
         action_kind="py_run",
     ),
@@ -456,7 +458,8 @@ CAPABILITIES: tuple[Capability, ...] = (
         modality="background",
         when_to_use=(
             "系统查询或非工作区命令（args.cmd）；写工作区文件优先用 fs_*；"
-            "探测多 CLI 用 `command -v a b c || true`，勿用 which 多参后因缺一个失败"
+            "探测多 CLI 用 `command -v a b c || true`，勿用 which 多参后因缺一个失败。"
+            "多步执行流倾向带 expect（精确 contains 或模糊 contains_any）；非硬闸"
         ),
         action_kind="shell",
     ),
@@ -578,7 +581,8 @@ CAPABILITIES: tuple[Capability, ...] = (
         name="浏览器·打开",
         modality="background",
         when_to_use=(
-            "打开/跳转网页；args.url；Playwright 无头默认可；"
+            "打开/跳转网页；args.url；可选 viewport=mobile|iphone|{width,height}"
+            "（窄屏/@media 验收）；Playwright 无头默认可；"
             "不占 foreground_lease；勿用桌面点 Chrome 代替"
         ),
         action_kind="browser_navigate",
@@ -727,7 +731,7 @@ def capabilities_prompt_block(
         if kinds is not None and not kinds.isdisjoint(_BROWSER_KINDS):
             rules += (
                 "网页：browser_navigate→browser_snapshot→browser_click/type(ref)；"
-                "勿用桌面点 Chrome 代替；无头默认可。"
+                "窄屏验收加 viewport=mobile；勿用桌面点/截 Chrome 冒充手机；无头默认可。"
             )
         if kinds is not None and kinds.isdisjoint(_GUI_KINDS):
             rules += "本轮提示未列 GUI；勿规划 click/type/hotkey/ui_*。"
@@ -764,7 +768,9 @@ def capabilities_prompt_block(
         "定向读文件用 fs_read 的 offset+limit（1-based，0 按文件头；也认 start_line/end_line）；"
         "写后用 code_check（或 shell_verify）回证，须带 path/paths；编码类目标未 check 不得直接 success；"
         "Git 用 git_status/git_diff/git_commit（不 push）；多文件改动须 write_resources 列全路径；"
-        "编码任务每步优先 1～2 个 actions（逐步工具调用）；"
+        "不冲突的读和写可一段 4～8 actions 并 act_parallel；同一路径不要同批；前台和高风险 shell 不要与其它动作同批；"
+        "多步倾向 expect（精确 contains 或模糊 contains_any，非硬闸）；"
+        "新建脚本 stdout 打 OK/FAIL:原因；"
         "Skill/教训 → skill_write / skill_search / skill_get；"
         "造临时脚本前 → shovel_search（先查 fawai_shovels）；能调已有铲则 shell 调；"
         "临时算数 → py_write→py_run；需求参数化/env；通用性≥3 再升铲或 skill_write；"

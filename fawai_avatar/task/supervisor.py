@@ -151,7 +151,8 @@ class Supervisor:
     def list_recoverable_task_ids(self, *, limit: int = 200) -> list[str]:
         """进程重启后应自动拉 Worker 的任务（running/waiting/blocked/pending）。
 
-        澄清等待 / 复盘 waiting 跳过，须等用户回复后再拉。
+        执行中澄清 awaiting_input 必须跳过（否则会反复 need_input、叠加澄清卡）。
+        复盘 waiting 仍可恢复，便于取消后续跑。
         """
         from fawai_avatar.brain.clarification import should_skip_auto_recover
         from fawai_avatar.runtime.checkpoint import RECOVER_STATUSES
@@ -159,7 +160,8 @@ class Supervisor:
         out: list[str] = []
         for status in sorted(RECOVER_STATUSES):
             for t in self.list_tasks(status=status, limit=limit, archived=False):
-                # 移除澄清/复盘等待跳过限制，允许取消任务复盘追加执行
+                if should_skip_auto_recover(t):
+                    continue
                 out.append(t.task_id)
         return out
 

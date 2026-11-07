@@ -26,7 +26,7 @@ Source of truth: [`doc/功能/【总表】功能一览.md`](doc/功能/【总表
 
 - **Session gateway + PWA**: local HTTP/WS; open the passcode page on phone (same Wi‑Fi); optional frpc tunnel and cloud-relay skeleton
 - **Task threads**: one conversation per task; new task / follow-up / soft append while running (pending inject; follow-ups stay out of the goal bubble); paste image as attachment then send; archive API still available (PWA entry temporarily hidden)
-- **In-chat step stream**: progress folds into the thread (no separate timeline menu); same-step clusters merge/collapse; cluster headers keep step business intent `step_label`; facts show model · thinking on/off · tokens · elapsed; secret redaction temporarily off (planner can read credentials; security later)
+- **In-chat step stream**: progress folds into the thread (no separate timeline menu); same-step clusters merge/collapse; cluster headers keep step business intent `step_label`; facts show model · thinking on/off · tokens · elapsed; while waiting on the model, deep-thinking + normal output stream live into the step card (`meta.live`, not history); secret redaction temporarily off (planner can read credentials; security later)
 - **Resume from step**: hover (desktop) or always-on (narrow) “resume from here” on a step card; checkpoint / restart resume for orphan tasks
 - **Voice input**: mic → ASR into the compose box
 - **UI zh/en**: switch anytime (widescreen top bar + System; narrow: System only); separate Model / System / Service panels
@@ -34,7 +34,7 @@ Source of truth: [`doc/功能/【总表】功能一览.md`](doc/功能/【总表
 ### Understanding & planning
 
 - **LLM access**: OpenAI-compatible; text / multimodal routing; remote `/models` list; generation params per model profile; deep thinking by role + profile (main on / fast & obs_reflect off); Web model settings; after restart, routes follow disk `.env`
-- **Brain → fast delegate**: main planner may hand a sub-goal to `FAWAI_LLM_FAST_MODEL` (empty = off); segment summary returns to the main brain
+- **Brain → fast delegate**: main planner may hand a sub-goal to the fast-model route in Web model settings (empty = off); segment summary returns to the main brain
 - **Complex-task plan mode**: orchestrator auto-judges complexity → emits a graph and schedules immediately (no human gate); three layers = orchestrator → supervisor → executor; mid-run append can truly `reorder` / `lease_adjust`; on failure default **retry failed nodes** (keep completed); full-graph replan only with explicit phrase / button; sidebar shows parent plan only, in-thread node cards + top-right digraph float; off with `FAWAI_PLAN_MODE=0`
 - **Capability registry**: only registered tools; file goals must use `fs_*` (no GUI pretending to write files)
 - **Prompt profiles**: trim system prompt / images by round purpose (`vision` / `fs` / `gui` / `full`)
@@ -145,13 +145,14 @@ Capability suite: **C1 LLM / C2 complete-task / C4 self-evolution** are in place
 ### Next Todo
 
 - [x] **C3 narrow GUI closed loop**: TextEdit + AX `obs_ax` / `ui_*` / UI verify (see feature「自主操控」)
-- [ ] **C3 deepen**: Electron (Cursor/Chrome) widget click (VLM/OCR or bridge); arbitrary desktop
+- [x] **Screenshot grounding**: model settings choose VLM vs OCR; OCR defaults to `qwen3.5-ocr` → box table + `ui_click(ocrN)`
+- [ ] **C3 deepen**: stronger Electron (Cursor/Chrome) grounding; arbitrary desktop; icon detectors
 - [ ] **Align GUI with structured paths**: keep closing residual “coding strong / desktop weak” gaps
 - [ ] **Gate observability**: unified gate ledger / hit reasons surfaced for cheaper debugging under stacked constraints
 - [x] **Complex-task plan mode**: orchestrator graph auto-schedule, reorder/lease, failed-node retry, explicit full replan, in-chat digraph + node cards
 - [x] **Script shovel lifecycle**: `shovel_search` + pre/post soft gates (catalog `fawai_shovels/`)
 - [x] **Multi-display observe**: `displays` / `screen_target` / `app_focus` (real dual-monitor / Space still to verify)
-- [ ] **Per-step cost & latency**: main→fast delegate landed (`FAWAI_LLM_FAST_MODEL`); keep trimming reflect / obs-reflect / observe LLM calls
+- [ ] **Per-step cost & latency**: main→fast delegate landed (Web model route `fast`); keep trimming reflect / obs-reflect / observe LLM calls
 - [ ] **Cancel & child-process lifecycle**: beyond cooperative stop, define hard-kill / reclaim boundaries for OS subprocesses
 - [ ] **Memory & evolution quality**: human or auto quality bars for Skill/lore/shovel writes and review checklists; on-demand distill policy
 - [ ] **Plan-mode drag-to-edit graph**: read-only digraph + machine revisions today; human drag of deps is optional later
@@ -179,13 +180,14 @@ pip install -e "./fawai_lore[vector]"  # optional: sqlite-vec (then FAWAI_LORE_V
 pip install -e .                 # headless / coding·files·shell / gateway; macOS pulls GUI deps by platform marker
 # pip install -e ".[gui]"        # Linux with DISPLAY: desktop capture & input
 # pip install -e ".[browser]" && playwright install chromium  # optional: headless browser
-cp .env.example .env   # set FAWAI_LLM_API_KEY; .env is gitignored
+cp .env.example .env   # system knobs; LLM credentials live in Web model settings DB; .env is gitignored
 # default routes: text → qwen3.7-plus; multimodal → qwen3-vl-plus
-# optional: FAWAI_LLM_FAST_MODEL=qwen-flash  # brain → fast delegate
+# LLM / fast-model routes: configure in Web model settings (llm_settings.sqlite)
 # optional: FAWAI_PLAN_MODE=0               # disable complex-task plan mode (default auto)
 export FAWAI_DRY_RUN=1
 .venv/bin/python -m fawai_avatar.llm.client        # smoke-test text route
 .venv/bin/python -m fawai_avatar.demo_thinking     # deep thinking by role / profile
+.venv/bin/python -m fawai_avatar.demo_llm_live     # live progress throttle (offline)
 .venv/bin/python -m fawai_avatar.demo_smoke
 .venv/bin/python -m fawai_avatar.demo_platform     # platform / headless gate
 .venv/bin/python -m fawai_avatar.demo_browser      # browser tools (optional FAWAI_BROWSER_LIVE=1)
