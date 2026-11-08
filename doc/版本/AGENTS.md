@@ -12,6 +12,7 @@
 | 根目录唯一总表 `【总表】版本评测一览.md` | 第二份总览；与功能/测试总表混成一张 |
 | 真源量表 `评分量表.md`（维度 / 权重 / 锚点 / 公式） | 每个版本私自改权重却不改量表 |
 | `{版本号}/评测结果.md` 文字报告 | 密钥、口令、未脱敏客户路径 |
+| `{版本号}/RELEASE_NOTES.md`（**英文默认**）与可选 `RELEASE_NOTES.zh-CN.md` | 只写中文说明却当 GitHub Release 正文、相对链接在 Release 页 404 |
 | 链到 `doc/测试/` 任务与 `doc/功能/` | 把未跑任务写成满分；无依据猜高分 |
 
 ## 目录结构
@@ -23,10 +24,14 @@ doc/版本/
   【总表】版本评测一览.md
   v{主}.{次}.{修订}/
     评测结果.md
+    RELEASE_NOTES.md          # 英文默认；GitHub Release 正文用这份
+    RELEASE_NOTES.zh-CN.md    # 中文；文首互链英文
 ```
 
 - 版本号与 `pyproject.toml` 的 `project.version` 对齐；预发布可加后缀（如 `v0.1.0-rc1`）。
 - 根目录除 `AGENTS.md`、`评分量表.md`、总表外，不放其它散文件。
+- **GitHub Release 正文**须用英文 `RELEASE_NOTES.md`，且指向评测/中文说明时用 **blob 绝对 URL**（`…/blob/vX.Y.Z/doc/版本/…`），禁止只写 `./评测结果.md`（Release 页会解析到仓库根导致 404）。
+- 仓内互链可用相对路径；中英文说明文首须互相可跳。
 
 ## 何时必须写评测（强制）
 
