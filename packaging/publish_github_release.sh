@@ -47,7 +47,13 @@ fi
 if [[ -n "$NOTES_FILE" ]]; then
   ARGS+=( --notes-file "$NOTES_FILE" )
 else
-  ARGS+=( --generate-notes )
+  # Prefer English RELEASE_NOTES.md under doc/版本/{version}/ (must use absolute links for Release page)
+  VER_DIR="$ROOT/doc/版本/${TAG#v}"
+  if [[ -f "$VER_DIR/RELEASE_NOTES.md" ]]; then
+    ARGS+=( --notes-file "$VER_DIR/RELEASE_NOTES.md" )
+  else
+    ARGS+=( --generate-notes )
+  fi
 fi
 
 # If release already exists, upload assets instead

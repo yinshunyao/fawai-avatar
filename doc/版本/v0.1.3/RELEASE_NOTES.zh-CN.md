@@ -1,14 +1,13 @@
 # fawai-avatar v0.1.3 发布说明
 
-**语言：** [English (default)](./RELEASE_NOTES.md) · 中文  
-**在 GitHub 上打开：** [English notes](https://github.com/yinshunyao/fawai-avatar/blob/v0.1.3/doc/%E7%89%88%E6%9C%AC/v0.1.3/RELEASE_NOTES.md) · [评测结果](https://github.com/yinshunyao/fawai-avatar/blob/v0.1.3/doc/%E7%89%88%E6%9C%AC/v0.1.3/%E8%AF%84%E6%B5%8B%E7%BB%93%E6%9E%9C.md)
+**语言：** [English (default)](https://github.com/yinshunyao/fawai-avatar/blob/v0.1.3/doc/%E7%89%88%E6%9C%AC/v0.1.3/RELEASE_NOTES.md) · 中文
 
 | 项 | 内容 |
 |:---|:---|
 | 版本 | `0.1.3`（`pyproject.toml`） |
 | 日期 | 2026-11-08 |
-| 相对 | [v0.1.2 评测](../v0.1.2/评测结果.md) |
-| 评测 | [评测结果.md](./评测结果.md) — **79.5 / B** · [绝对链接](https://github.com/yinshunyao/fawai-avatar/blob/v0.1.3/doc/%E7%89%88%E6%9C%AC/v0.1.3/%E8%AF%84%E6%B5%8B%E7%BB%93%E6%9E%9C.md) |
+| 相对 | [v0.1.2 评测](https://github.com/yinshunyao/fawai-avatar/blob/v0.1.3/doc/%E7%89%88%E6%9C%AC/v0.1.2/%E8%AF%84%E6%B5%8B%E7%BB%93%E6%9E%9C.md) |
+| 评测 | [评测结果](https://github.com/yinshunyao/fawai-avatar/blob/v0.1.3/doc/%E7%89%88%E6%9C%AC/v0.1.3/%E8%AF%84%E6%B5%8B%E7%BB%93%E6%9E%9C.md) — **79.5 / B**（仓内路径：`doc/版本/v0.1.3/评测结果.md`） |
 
 面向 PC / 手机的操作分身：本版在 **0.1.2 计划模式与 C3 窄场景** 之上，补齐**消费安装包**、**记忆/全文检索面**、**任务内上下文召回**，并加固 Web 出站脱敏与复盘进度体验。
 

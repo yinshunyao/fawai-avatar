@@ -1,14 +1,13 @@
 # fawai-avatar v0.1.3 Release Notes
 
-**Language:** English (default) · [中文](./RELEASE_NOTES.zh-CN.md)  
-**On GitHub:** [中文说明](https://github.com/yinshunyao/fawai-avatar/blob/v0.1.3/doc/%E7%89%88%E6%9C%AC/v0.1.3/RELEASE_NOTES.zh-CN.md) · [Evaluation report (zh)](https://github.com/yinshunyao/fawai-avatar/blob/v0.1.3/doc/%E7%89%88%E6%9C%AC/v0.1.3/%E8%AF%84%E6%B5%8B%E7%BB%93%E6%9E%9C.md)
+**Language:** English (default) · [中文](https://github.com/yinshunyao/fawai-avatar/blob/v0.1.3/doc/%E7%89%88%E6%9C%AC/v0.1.3/RELEASE_NOTES.zh-CN.md)
 
 | Item | Value |
 |:---|:---|
 | Version | `0.1.3` (`pyproject.toml`) |
 | Date | 2026-11-08 |
-| Previous | [v0.1.2 eval](../v0.1.2/评测结果.md) |
-| Evaluation | [评测结果.md](./评测结果.md) (Chinese report) — **79.5 / B** · [absolute link](https://github.com/yinshunyao/fawai-avatar/blob/v0.1.3/doc/%E7%89%88%E6%9C%AC/v0.1.3/%E8%AF%84%E6%B5%8B%E7%BB%93%E6%9E%9C.md) |
+| Previous | [v0.1.2 eval](https://github.com/yinshunyao/fawai-avatar/blob/v0.1.3/doc/%E7%89%88%E6%9C%AC/v0.1.2/%E8%AF%84%E6%B5%8B%E7%BB%93%E6%9E%9C.md) |
+| Evaluation | [Evaluation report / 评测结果](https://github.com/yinshunyao/fawai-avatar/blob/v0.1.3/doc/%E7%89%88%E6%9C%AC/v0.1.3/%E8%AF%84%E6%B5%8B%E7%BB%93%E6%9E%9C.md) — **79.5 / B** (path: `doc/版本/v0.1.3/评测结果.md`) |
 
 PC / phone operation avatar. On top of **0.1.2** (plan mode + narrow C3 GUI), this release adds **consumer install packages**, a **memory / full-text search surface**, **same-task context recall**, plus stronger Web egress redaction and review progress UX.
 
