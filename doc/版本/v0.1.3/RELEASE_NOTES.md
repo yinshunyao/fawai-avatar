@@ -77,4 +77,7 @@ bash packaging/publish_github_release.sh   # 需 gh auth
 
 ## GitHub
 
-标签：`v0.1.3` → Actions 构建三端安装包并发布 Release。
+- 标签 / 提交：`v0.1.3`（`main`）
+- Release：https://github.com/yinshunyao/fawai-avatar/releases/tag/v0.1.3
+- 已上传：`fawai-avatar-0.1.3-darwin-arm64.tar.gz`（+ sha256）
+- Actions `release-packages` 将补齐 linux / windows / darwin-x64（跑完后自动上传）
