@@ -1343,6 +1343,23 @@ class SessionHub:
 
         # 终态续跑须 reopen（archived 已在 dispatch 拒绝）
         reopen = task.status in {"completed", "failed", "cancelled"}
+        if reopen:
+            # 检查点会在成功/失败时清掉；重开前快照结论与 steps，供下一跑垫上下文
+            snap: dict[str, Any] = {}
+            cur_meta = dict(task.meta or {})
+            ft = str(cur_meta.get("final_thought") or "").strip()
+            if ft and not str(cur_meta.get("prior_final_thought") or "").strip():
+                snap["prior_final_thought"] = ft[:4000]
+            steps = cur_meta.get("steps")
+            if (
+                isinstance(steps, list)
+                and steps
+                and not isinstance(cur_meta.get("prior_steps"), list)
+            ):
+                # 只留末几步，避免 meta 膨胀
+                snap["prior_steps"] = steps[-12:]
+            if snap:
+                self.supervisor.merge_task_meta(task_id, snap)
         if not self.supervisor.requeue_task(task_id, reopen=reopen):
             err = Message.error(f"无法续跑任务 {task_id[:8]}…（状态={task.status}）", task_id=task_id)
             await self.publish(err)
@@ -3128,13 +3145,22 @@ class SessionHub:
         guidance = str(parsed.get("guidance") or "").strip()
         followups = list((task.meta or {}).get("followups") or [])
         followups.append(
-            {"text": followup[:500], "inbound_id": inbound.message_id, "ts": inbound.ts}
+            {
+                "text": followup[:500],
+                "inbound_id": inbound.message_id,
+                "ts": inbound.ts,
+                "mode": "review",
+            }
         )
+        hist = list((task.meta or {}).get("user_guidance_history") or [])
+        if guidance and (not hist or hist[-1] != guidance):
+            hist.append(guidance)
         self.supervisor.merge_task_meta(
             task_id,
             {
                 "review_phase": "analyzing",
                 "user_guidance": guidance,
+                "user_guidance_history": hist[-12:],
                 "followups": followups[-20:],
                 "last_inbound_id": inbound.message_id,
             },
@@ -3157,7 +3183,14 @@ class SessionHub:
             },
         )
         await self.publish(card)
-        await self.publish(Message.progress(tip, task_id=task_id))
+        # 与普通任务规划同口径：立刻给出 phase=analyzing 步骤卡，后续由分析线程直播/心跳
+        await self.publish(
+            Message.progress(
+                tip,
+                task_id=task_id,
+                meta={"phase": "analyzing", "step": 0, "status": "running"},
+            )
+        )
         threading.Thread(
             target=self._run_review_analyze_safe,
             args=(task_id,),
@@ -3186,7 +3219,12 @@ class SessionHub:
 
         followups = list(meta.get("followups") or [])
         followups.append(
-            {"text": followup[:500], "inbound_id": inbound.message_id, "ts": inbound.ts}
+            {
+                "text": followup[:500],
+                "inbound_id": inbound.message_id,
+                "ts": inbound.ts,
+                "mode": "review",
+            }
         )
         self.supervisor.merge_task_meta(
             task_id,
@@ -3200,7 +3238,7 @@ class SessionHub:
             self.supervisor.merge_task_meta(
                 task_id,
                 {
-                    "review_phase": "idle",  # 允许重新复盘
+                    "review_phase": "completed",
                     "ok": True,
                     "final_thought": tip,
                     "last_review": {
@@ -3211,11 +3249,17 @@ class SessionHub:
                     },
                 },
             )
-            # 不调用 complete()，保持任务可继续复盘
+            # 与说明一致：裸取消 → completed + last_review.cancelled（可再开新复盘任务）
+            self.supervisor.complete(task_id)
             card = Message.card(
                 tip,
                 task_id=task_id,
-                meta={"ok": True, "control": "review_cancel", "phase": "completed"},
+                meta={
+                    "ok": True,
+                    "control": "review_cancel",
+                    "phase": "completed",
+                    "status": "completed",
+                },
             )
             await self.publish(card)
             await self.publish(Message.text_assistant(tip, task_id=task_id))
@@ -3223,11 +3267,19 @@ class SessionHub:
 
         if mode == "revise":
             guidance = str(parsed.get("revise_guidance") or "").strip()
+            # 保留上一轮 review_analysis / review_items，供分析线程回灌；只刷新 guidance
+            hist = list(meta.get("user_guidance_history") or [])
+            prev_g = str(meta.get("user_guidance") or "").strip()
+            if prev_g and (not hist or hist[-1] != prev_g):
+                hist.append(prev_g)
+            if guidance and (not hist or hist[-1] != guidance):
+                hist.append(guidance)
             self.supervisor.merge_task_meta(
                 task_id,
                 {
                     "review_phase": "analyzing",
                     "user_guidance": guidance,
+                    "user_guidance_history": hist[-12:],
                 },
             )
             tip = "已收到改写建议，重新分析清单…"
@@ -3237,7 +3289,13 @@ class SessionHub:
                 meta={"ok": True, "control": "review_revise", "phase": "analyzing"},
             )
             await self.publish(card)
-            await self.publish(Message.progress(tip, task_id=task_id))
+            await self.publish(
+                Message.progress(
+                    tip,
+                    task_id=task_id,
+                    meta={"phase": "analyzing", "step": 0, "status": "running"},
+                )
+            )
             threading.Thread(
                 target=self._run_review_analyze_safe,
                 args=(task_id,),
@@ -3271,7 +3329,18 @@ class SessionHub:
             },
         )
         await self.publish(card)
-        await self.publish(Message.progress(tip, task_id=task_id))
+        await self.publish(
+            Message.progress(
+                tip,
+                task_id=task_id,
+                meta={
+                    "phase": "applying",
+                    "step": 0,
+                    "status": "running",
+                    "selected_ids": selected,
+                },
+            )
+        )
         threading.Thread(
             target=self._run_review_apply_safe,
             args=(task_id, selected),
@@ -3368,9 +3437,19 @@ class SessionHub:
         stats = self._review_stats_load(review_task_id)
         self._review_stats_begin(review_task_id, stats)
 
+        def _review_progress(
+            text: str, *, phase: str = "analyzing", step: int = 0, **extra: Any
+        ) -> None:
+            meta_p: dict[str, Any] = {"phase": phase, "step": step, **extra}
+            self.emit_progress(text, task_id=review_task_id, meta=meta_p)
+
         guidance = str(meta.get("user_guidance") or "").strip() or None
         distill = bool(meta.get("distill", True))
         ratchet = bool(meta.get("ratchet", False))
+        # 改写轮：回灌上一轮分析/清单 + 复盘会话多轮（材料契约见 skills/review.py）
+        prior_analysis = str(meta.get("review_analysis") or "").strip() or None
+        prior_items = list(meta.get("review_items") or []) or None
+        review_followups = list(meta.get("followups") or []) or None
         try:
             result = analyze_review_tasks(
                 self.supervisor,
@@ -3378,7 +3457,11 @@ class SessionHub:
                 distill=distill,
                 ratchet=ratchet,
                 user_guidance=guidance,
+                prior_analysis=prior_analysis,
+                prior_items=prior_items,
+                review_followups=review_followups,
                 stats=stats,
+                on_progress=_review_progress,
             )
         except Exception as exc:  # noqa: BLE001
             summary = self._review_stats_finish_segment(review_task_id, stats)
@@ -3406,7 +3489,13 @@ class SessionHub:
         summary = self._review_stats_finish_segment(review_task_id, stats)
         text = str(result.get("message") or "复盘分析结束")
         ok = bool(result.get("ok"))
-        progress_meta = {"stats": summary} if summary else None
+        progress_meta: dict[str, Any] = {
+            "phase": "analyzing",
+            "step": 0,
+            "live": False,
+        }
+        if summary:
+            progress_meta["stats"] = summary
         self.publish_threadsafe(
             Message.progress(
                 "全维分析完成，等待勾选优化项…",
@@ -3552,7 +3641,13 @@ class SessionHub:
         summary = self._review_stats_finish_segment(review_task_id, stats)
         text = str(result.get("message") or "复盘执行结束")
         ok = bool(result.get("ok"))
-        progress_meta = {"stats": summary} if summary else None
+        progress_meta = {
+            "phase": "applying",
+            "step": 0,
+            "live": False,
+        }
+        if summary:
+            progress_meta["stats"] = summary
         self.publish_threadsafe(
             Message.progress(
                 "优化执行完成，整理结果…",

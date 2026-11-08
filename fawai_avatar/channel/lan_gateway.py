@@ -67,7 +67,10 @@ class ConnectionManager:
             self._clients.discard(ws)
 
     async def broadcast(self, message: Message) -> None:
-        payload = message.to_dict()
+        from fawai_avatar.channel.redact import message_dict_for_client
+
+        # 出站脱敏：落盘/枢纽仍保留原文，仅 Web 载荷抠口令
+        payload = message_dict_for_client(message)
         async with self._lock:
             clients = list(self._clients)
         dead: list[WebSocket] = []
@@ -105,7 +108,24 @@ def create_app(
             from fawai_avatar.runtime.console_log import cprint
 
             cprint(f"  续跑恢复: {len(recovered)} 个任务")
+        try:
+            from fawai_avatar.memory_index.watch import start_memory_index_watch
+            from fawai_avatar.runtime.console_log import cprint
+
+            w = start_memory_index_watch()
+            if w.get("watching"):
+                cprint(f"  记忆索引监视: {len(w.get('roots') or [])} 根")
+        except Exception as exc:  # noqa: BLE001
+            from fawai_avatar.runtime.console_log import cprint
+
+            cprint(f"  记忆索引监视未启动: {exc}")
         yield
+        try:
+            from fawai_avatar.memory_index.watch import stop_memory_index_watch
+
+            stop_memory_index_watch()
+        except Exception:
+            pass
         if relay_client is not None:
             await relay_client.disconnect()
 
@@ -379,14 +399,32 @@ def create_app(
         clear_list = [str(x) for x in clear_raw] if isinstance(clear_raw, list) else []
         scope = str(body.get("scope") or "all")
         profiles = body.get("model_profiles") if isinstance(body.get("model_profiles"), dict) else None
+        index_policy = body.get("index_policy") if isinstance(body.get("index_policy"), dict) else None
         result = update_settings(
             values=values,
             clear=clear_list,
             scope=scope,
             model_profiles=profiles,
+            index_policy=index_policy,
         )
         if not result.get("ok", True) and result.get("errors"):
             raise HTTPException(status_code=400, detail={"errors": result["errors"]})
+        # 工作区/可读区/索引策略变更后重挂文件监视
+        updated = set(result.get("updated") or [])
+        if updated & {
+            "FAWAI_WORK_ROOT",
+            "FAWAI_READ_ROOTS",
+            "FAWAI_DATA_DIR",
+            "FAWAI_INDEX_POLICY",
+            "FAWAI_NAME_INDEX",
+            "FAWAI_FTS5",
+        } or index_policy is not None:
+            try:
+                from fawai_avatar.memory_index.watch import start_memory_index_watch
+
+                start_memory_index_watch(force_restart=True)
+            except Exception:
+                pass
         return JSONResponse(result)
 
     @app.get("/api/llm/settings")
@@ -569,7 +607,9 @@ def create_app(
             t.task_id for t in listed if _is_hidden_plan_child(t)
         ]
         # 仅引导近段；打开线程时再按任务拉齐执行时间线（见 GET /api/tasks/{id}/history）
-        history = [m.to_dict() for m in hub.history[-120:]]
+        from fawai_avatar.channel.redact import message_dict_for_client
+
+        history = [message_dict_for_client(m) for m in hub.history[-120:]]
         runtime = None
         if release_store is not None:
             runtime = {
@@ -724,18 +764,146 @@ def create_app(
             raise HTTPException(status_code=code, detail=err)
         return JSONResponse(result)
 
+    @app.post("/api/lore/entries/clear")
+    async def lore_entries_clear_api(
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        """清空已入库 KV + 笔记。"""
+        _check_token(x_fawai_token)
+        from fawai_avatar.lore_api import lore_entries_clear_all
+
+        return JSONResponse(lore_entries_clear_all())
+
+    @app.post("/api/lore/purge-short-kv")
+    async def lore_purge_short_kv_api(
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        """清空待确认缓冲 + 已入库短 KV/笔记 + 旁路日志。"""
+        _check_token(x_fawai_token)
+        from fawai_avatar.lore_api import lore_purge_short_kv_data
+
+        return JSONResponse(lore_purge_short_kv_data())
+
+    @app.get("/api/lore/search")
+    async def lore_search_http(
+        q: str = "",
+        limit: int = 10,
+        scopes: str = "",
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        """记忆工具自测：关键词检索；scopes=逗号分隔范围 id（可空=混合）。"""
+        _check_token(x_fawai_token)
+        from fawai_avatar.lore_api import lore_search
+
+        scope_arg: str | None = scopes.strip() or None
+        return JSONResponse(lore_search(query=q, limit=limit, scopes=scope_arg))
+
+    @app.get("/api/lore/get")
+    async def lore_get_http(
+        key: str = "",
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        """记忆工具自测：按 key / 笔记 id 读取。"""
+        _check_token(x_fawai_token)
+        from fawai_avatar.lore_api import lore_get
+
+        result = lore_get(key=key)
+        if not result.get("ok"):
+            err = str(result.get("error") or "not found")
+            code = 404 if "not found" in err else 400
+            raise HTTPException(status_code=code, detail=err)
+        return JSONResponse(result)
+
     @app.post("/api/lore/vector/reindex")
     async def lore_vector_reindex_http(
         x_fawai_token: str | None = Header(default=None),
+        wait: int = 0,
     ) -> JSONResponse:
-        """重建笔记向量索引（需向量策略开启且已装 sqlite-vec）。"""
+        """重建笔记向量索引。默认后台；``wait=1`` 同步。"""
         _check_token(x_fawai_token)
-        from fawai_avatar.lore_api import lore_vector_reindex_api
+        from fawai_avatar.lore_api import lore_vector_reindex_api, start_reindex_job
+        from fawai_avatar.memory_index.progress import run_job
 
-        result = lore_vector_reindex_api()
-        if not result.get("ok"):
-            raise HTTPException(status_code=400, detail=result.get("error") or result)
+        if int(wait or 0):
+            result = run_job("vector", lore_vector_reindex_api)
+            if not result.get("ok"):
+                raise HTTPException(status_code=400, detail=result.get("error") or result)
+            return JSONResponse(result)
+        result = start_reindex_job(which="vector")
+        if result.get("busy"):
+            raise HTTPException(status_code=409, detail=result.get("error") or "busy")
         return JSONResponse(result)
+
+    @app.post("/api/lore/fts/reindex")
+    async def lore_fts_reindex_http(
+        x_fawai_token: str | None = Header(default=None),
+        wait: int = 0,
+    ) -> JSONResponse:
+        """重建知识库笔记 FTS5。默认后台启动；``wait=1`` 同步等结果。"""
+        _check_token(x_fawai_token)
+        from fawai_avatar.lore_api import lore_fts_reindex_api, start_reindex_job
+        from fawai_avatar.memory_index.progress import run_job
+
+        if int(wait or 0):
+            result = run_job("lore_fts", lore_fts_reindex_api)
+            if not result.get("ok"):
+                raise HTTPException(status_code=400, detail=result.get("error") or result)
+            return JSONResponse(result)
+        result = start_reindex_job(which="lore_fts")
+        if result.get("busy"):
+            raise HTTPException(status_code=409, detail=result.get("error") or "busy")
+        return JSONResponse(result)
+
+    @app.post("/api/memory/index/reindex")
+    async def memory_index_reindex_http(
+        which: str = "all",
+        wait: int = 0,
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        """重建文件名 / 正文 FTS（which=all|name|fts）。默认后台；``wait=1`` 同步。"""
+        _check_token(x_fawai_token)
+        from fawai_avatar.lore_api import memory_index_reindex_api, start_reindex_job
+        from fawai_avatar.memory_index.progress import run_job
+
+        which_n = str(which or "all").strip().lower() or "all"
+        if int(wait or 0):
+            return JSONResponse(run_job(which_n, lambda: memory_index_reindex_api(which=which_n)))
+        result = start_reindex_job(which=which_n)
+        if result.get("busy"):
+            raise HTTPException(status_code=409, detail=result.get("error") or "busy")
+        return JSONResponse(result)
+
+    @app.get("/api/memory/index/progress")
+    async def memory_index_progress_http(
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        """重建进度快照（轮询）。"""
+        _check_token(x_fawai_token)
+        from fawai_avatar.lore_api import reindex_progress_api
+
+        return JSONResponse(reindex_progress_api())
+
+    @app.get("/api/memory/index/names")
+    async def memory_name_search_http(
+        q: str = "",
+        limit: int = 50,
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.memory_index import search_names
+
+        return JSONResponse(search_names(q, limit=limit))
+
+    @app.get("/api/memory/index/fts")
+    async def memory_fts_search_http(
+        q: str = "",
+        limit: int = 40,
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.memory_index import search_content
+
+        return JSONResponse(search_content(q, limit=limit))
 
     @app.get("/api/system-logs")
     async def list_system_logs_api(
@@ -989,12 +1157,14 @@ def create_app(
         task = _resolve_task(task_id)
         if task is None:
             raise HTTPException(status_code=404, detail="unknown task")
+        from fawai_avatar.channel.redact import message_dict_for_client
+
         messages = hub.history_for_task(task.task_id)
         return JSONResponse(
             {
                 "ok": True,
                 "task_id": task.task_id,
-                "history": [m.to_dict() for m in messages],
+                "history": [message_dict_for_client(m) for m in messages],
                 "count": len(messages),
             }
         )
@@ -1302,15 +1472,17 @@ def create_app(
         payload: dict[str, Any],
         x_fawai_token: str | None = Header(default=None),
     ) -> JSONResponse:
+        from fawai_avatar.channel.redact import message_dict_for_client
+
         _check_token(x_fawai_token)
         msg = Message.from_dict({**payload, "role": "user"})
         out = await hub.handle_inbound(msg)
         return JSONResponse(
             {
                 "ok": True,
-                "echo": out.to_dict() if out else None,
+                "echo": message_dict_for_client(out) if out else None,
                 # 与 upload 对齐：带回落盘入站，供 PWA 用稳定 message_id 合并乐观气泡
-                "inbound": msg.to_dict(),
+                "inbound": message_dict_for_client(msg),
             }
         )
 
@@ -1336,12 +1508,14 @@ def create_app(
             task_id=(task_id or "").strip() or None,
             message_id=mid or secrets.token_hex(16),
         )
+        from fawai_avatar.channel.redact import message_dict_for_client
+
         out = await hub.handle_inbound(msg)
         return JSONResponse(
             {
                 "ok": True,
-                "echo": out.to_dict() if out else None,
-                "inbound": msg.to_dict(),
+                "echo": message_dict_for_client(out) if out else None,
+                "inbound": message_dict_for_client(msg),
             }
         )
 
@@ -1437,8 +1611,10 @@ def create_app(
                 except Exception as exc:  # noqa: BLE001 — 解析失败不拆连接
                     logger.exception("ws inbound parse failed")
                     try:
+                        from fawai_avatar.channel.redact import message_dict_for_client
+
                         err = Message.error(f"处理失败: {exc}")
-                        await websocket.send_json(err.to_dict())
+                        await websocket.send_json(message_dict_for_client(err))
                     except Exception:  # noqa: BLE001
                         pass
         except WebSocketDisconnect:
@@ -1482,6 +1658,12 @@ def _is_hidden_plan_child(t: Any) -> bool:
     return str(meta.get("plan_role") or "") == "supervisor"
 
 
+def _client_text(text: str) -> str:
+    from fawai_avatar.channel.redact import redact_for_client
+
+    return redact_for_client(text or "")
+
+
 def _task_summary(t: Any, *, supervisor: Any = None) -> dict[str, Any]:
     from fawai_avatar.brain.plan_scheduler import resolve_session_title
 
@@ -1491,12 +1673,12 @@ def _task_summary(t: Any, *, supervisor: Any = None) -> dict[str, Any]:
         "task_id": t.task_id,
         "title": title,
         "title_source": title_source or "heuristic",
-        "goal": (t.goal or "")[:160],
+        "goal": _client_text((t.goal or "")[:160]),
         "status": t.status,
         "updated_at": getattr(t, "updated_at", 0),
         "created_at": getattr(t, "created_at", 0),
         "has_steps": bool(meta.get("steps")),
-        "final_thought": str(meta.get("final_thought") or "")[:200],
+        "final_thought": _client_text(str(meta.get("final_thought") or "")[:200]),
     }
     plan_role = str(meta.get("plan_role") or "")
     if plan_role:
@@ -1530,6 +1712,8 @@ def _task_summary(t: Any, *, supervisor: Any = None) -> dict[str, Any]:
 
 
 def _task_detail(t: Any, *, supervisor: Any = None) -> dict[str, Any]:
+    from fawai_avatar.channel.redact import redact_tree_for_client
+
     data = _task_summary(t, supervisor=supervisor)
     meta = dict(getattr(t, "meta", None) or {})
     detail_meta: dict[str, Any] = {
@@ -1563,7 +1747,8 @@ def _task_detail(t: Any, *, supervisor: Any = None) -> dict[str, Any]:
             "question": clar.get("question"),
             "options": clar.get("options") or [],
         }
-    data["meta"] = detail_meta
+    # steps / final_thought 等可能含 ssh 口令；仅 API 出站脱敏，库内原文不动
+    data["meta"] = redact_tree_for_client(detail_meta)
     return data
 
 

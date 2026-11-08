@@ -1,0 +1,33 @@
+---
+description: fawai-avatar：发给 Web 前端的载荷须脱敏；后端/规划处理不抠口令
+alwaysApply: true
+---
+
+# Web 出站脱敏（强制）
+
+## 原则
+
+| 面 | 口令 / 裸密钥 |
+|:---|:---|
+| **后端处理**（规划 history、工具回灌、落盘 `session_history` / task meta、SSH 执行） | **不限制**：须可读凭据，禁止把「配置下一行口令」抠成 `***` 害模型误判缺密码 |
+| **发给 Web 前端**（本机 PWA WebSocket、HTTP JSON、云中继出站） | **必须脱敏** |
+
+## 强制落点
+
+1. 脱敏真源：`fawai_avatar/channel/redact.py`
+   - 规划侧：`redact_secrets`（透传）
+   - 出站：`redact_for_client` / `redact_tree_for_client` / `message_dict_for_client`
+2. 新增或改 Web/中继出站时：序列化前走上述 client API；**禁止**对规划回灌改回 `_redact_secrets_impl` 默认启用。
+3. 落盘与枢纽内存可留原文；脱敏只发生在出站拷贝，不改原 `Message`。
+4. 任务列表/详情里的 `goal` / `final_thought` / `meta.steps` 等经 HTTP 返回时同样脱敏。
+
+## 禁止
+
+- 只在前端用正则「假装脱敏」、后端 WS/HTTP 仍推明文口令
+- 为省事对规划 history 全局启用脱敏
+- 在规则/工具台账/铲子 meta 写入真实口令（另遵铲子与 tools 脱敏约定）
+
+## 自检
+
+- [ ] 新出站路径是否调用 `message_dict_for_client` 或 `redact_tree_for_client`
+- [ ] `demo_compliance` / 相关冒烟是否仍断言：规划透传 + client 侧抠掉样例口令

@@ -38,6 +38,8 @@ _CODING_TOOL_KINDS = frozenset(
         "py_pip",
         "py_run",
         "shovel_search",
+        "task_context_search",
+        "task_context_get",
         "version_snapshot",
         "version_list",
         "version_rollback",
@@ -296,6 +298,44 @@ _TOOL_PARAMETER_SCHEMAS: dict[str, dict[str, Any]] = {
             "limit": {"type": "integer", "description": "命中上限，默认 20"},
         },
         "required": ["query"],
+        "additionalProperties": True,
+    },
+    "task_context_search": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "搜本任务历史（追问/工具结果细节）；近窗没有时用",
+            },
+            "limit": {"type": "integer", "description": "命中上限，默认 8"},
+            "kind": {
+                "type": "string",
+                "description": "可选过滤：user|assistant|tool|compact",
+            },
+        },
+        "required": ["query"],
+        "additionalProperties": True,
+    },
+    "task_context_get": {
+        "type": "object",
+        "properties": {
+            "msg_id": {
+                "type": "string",
+                "description": "search 命中的 msg_id",
+            },
+            "index": {
+                "type": "integer",
+                "description": "历史消息下标（与 msg_id 二选一）",
+            },
+            "observe_path": {
+                "type": "string",
+                "description": "observe/tool_* dump 路径；读落盘全文切片",
+            },
+            "max_chars": {
+                "type": "integer",
+                "description": "回灌字符硬顶，默认约 6000",
+            },
+        },
         "additionalProperties": True,
     },
 }

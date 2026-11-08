@@ -26,7 +26,7 @@ Source of truth: [`doc/功能/【总表】功能一览.md`](doc/功能/【总表
 
 - **Session gateway + PWA**: local HTTP/WS; open the passcode page on phone (same Wi‑Fi); optional frpc tunnel and cloud-relay skeleton
 - **Task threads**: one conversation per task; new task / follow-up / soft append while running (pending inject; follow-ups stay out of the goal bubble); paste image as attachment then send; archive API still available (PWA entry temporarily hidden)
-- **In-chat step stream**: progress folds into the thread (no separate timeline menu); same-step clusters merge/collapse; cluster headers keep step business intent `step_label`; facts show model · thinking on/off · tokens · elapsed; while waiting on the model, deep-thinking + normal output stream live into the step card (`meta.live`, not history); secret redaction temporarily off (planner can read credentials; security later)
+- **In-chat step stream**: progress folds into the thread (no separate timeline menu); same-step clusters merge/collapse; cluster headers keep step business intent `step_label`; facts show model · thinking on/off · tokens · elapsed; while waiting on the model, deep-thinking + normal output stream live into the step card (`meta.live`, not history); planner/disk keep credentials readable; **Web outbound redacts secrets** (`channel/redact.message_dict_for_client`)
 - **Resume from step**: hover (desktop) or always-on (narrow) “resume from here” on a step card; checkpoint / restart resume for orphan tasks
 - **Voice input**: mic → ASR into the compose box
 - **UI zh/en**: switch anytime (widescreen top bar + System; narrow: System only); separate Model / System / Service panels
@@ -225,6 +225,18 @@ export FAWAI_DRY_RUN=0          # real file edits / shell
 .venv/bin/python -m fawai_avatar.demo_platform
 .venv/bin/python -m fawai_avatar.channel.lan_gateway
 ```
+
+## Consumer install packages (GitHub Releases)
+
+Prefix packages for end users (private Python; no system Python / venv required):
+
+```bash
+python3 packaging/build_release.py --target auto   # build for this host
+# Push a v* tag → Actions builds all targets and uploads a GitHub Release
+# Or: bash packaging/publish_github_release.sh
+```
+
+Details + launcher zh/en: [`packaging/README.en.md`](packaging/README.en.md). After extract, run Start; local browser opens `http://127.0.0.1:7980/`; phones open the LAN URL manually.
 
 ## Cross-device session (LAN PWA)
 

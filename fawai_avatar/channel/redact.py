@@ -1,20 +1,19 @@
 # term:会话通道  doc:doc/功能/会话通道/说明.md
-"""进度 / 回放 / 工具回灌文案的口令处理。
+"""口令 / 敏感串处理：规划侧保留可读凭据，Web 出站强制脱敏。
 
-当前策略（暂定）：``redact_secrets`` **原样透传**，不做替换。
+分流（强制）：
 
-原因：``云服务重要信息.md`` 等「ssh 行下一行裸口令」被脱敏成 ``***`` 后，规划
-history 读不到凭据，会误判「配置缺密码」并空 SSH。调用点仍经本函数，便于以后
-恢复。
+- **后端处理 / 规划 history / 工具回灌**：``redact_secrets`` **透传**，不抠口令
+  （否则「ssh 下一行裸口令」变成 ``***`` 后模型会误判缺密码）。
+- **发给 Web 前端**（WebSocket、HTTP history/session/task 摘要等）：必须走
+  ``redact_for_client`` / ``message_dict_for_client`` / ``redact_tree_for_client``。
 
-后续安全（未做）：宜拆「仅 UI/进度脱敏」与「规划回灌保留可用口令」；恢复时把
-``_redact_secrets_impl`` 接回 ``redact_secrets``，或按通道分流。
+落盘 ``session_history.jsonl`` 与任务 meta 仍可保留原文；脱敏只发生在出站序列化。
 """
 from __future__ import annotations
 
 import re
-
-# --- 历史实现保留，供后续安全分流恢复（当前未调用）---
+from typing import Any
 
 _REDACT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(sshpass\s+-p\s*)(['\"])([^'\"]*)\2", re.I), r"\1\2***\2"),
@@ -32,6 +31,20 @@ _SSH_LINE = re.compile(
     r"(?im)^([ \t]*ssh\s+[^\n]*)$\n([^\s#][^\s\n]{5,80})$"
 )
 
+# 出站 meta 里这些键即使未命中正则也整段脱敏（命令行常夹口令）
+_CLIENT_FORCE_REDACT_KEYS = frozenset(
+    {
+        "cmd",
+        "command",
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "api_key",
+        "apikey",
+    }
+)
+
 
 def _redact_ssh_followup_password(text: str) -> str:
     def repl(m: re.Match[str]) -> str:
@@ -46,7 +59,7 @@ def _redact_ssh_followup_password(text: str) -> str:
 
 
 def _redact_secrets_impl(text: str) -> str:
-    """历史脱敏实现；当前未启用。"""
+    """实际脱敏实现（Web 出站与 durable_memory 等显式调用）。"""
     s = text or ""
     for pat, repl in _REDACT_PATTERNS:
         s = pat.sub(repl, s)
@@ -55,5 +68,40 @@ def _redact_secrets_impl(text: str) -> str:
 
 
 def redact_secrets(text: str) -> str:
-    """口令处理入口：暂透传（见模块说明）。恢复脱敏时改为 ``return _redact_secrets_impl(text)``。"""
+    """规划 / 工具回灌入口：**透传**，保留可用凭据。"""
     return text or ""
+
+
+def redact_for_client(text: str) -> str:
+    """发给 Web / 中继前端的文本：强制脱敏。"""
+    return _redact_secrets_impl(text or "")
+
+
+def redact_tree_for_client(value: Any, *, key: str | None = None) -> Any:
+    """递归脱敏 JSON 树；``key`` 命中强制键时对该字符串必跑脱敏。"""
+    if isinstance(value, str):
+        if key and key.lower() in _CLIENT_FORCE_REDACT_KEYS:
+            return redact_for_client(value)
+        return redact_for_client(value)
+    if isinstance(value, list):
+        return [redact_tree_for_client(v, key=key) for v in value]
+    if isinstance(value, tuple):
+        return tuple(redact_tree_for_client(v, key=key) for v in value)
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for k, v in value.items():
+            sk = str(k)
+            out[sk] = redact_tree_for_client(v, key=sk)
+        return out
+    return value
+
+
+def message_dict_for_client(message: Any) -> dict[str, Any]:
+    """``Message.to_dict()`` 后再脱敏，供 WebSocket / HTTP 出站。不改原信封。"""
+    if hasattr(message, "to_dict"):
+        raw = message.to_dict()
+    elif isinstance(message, dict):
+        raw = dict(message)
+    else:
+        raise TypeError(f"unsupported message type: {type(message)!r}")
+    return redact_tree_for_client(raw)

@@ -859,6 +859,15 @@ class WorkerLoop:
             step_todos = []
             # 追问不再并入 goal：新 run 把 meta.followups 注入 history，大脑仍能看到增量
             history = self._seed_followup_history(task, history)
+            # 终态 reopen 无检查点：垫入此前结论/steps/会话记录，供规划与 task_context_*
+            from fawai_avatar.brain.task_context import merge_prior_into_history
+
+            history = merge_prior_into_history(
+                history,
+                meta=getattr(task, "meta", None),
+                data_dir=self.supervisor.data_dir,
+                task_id=task_id,
+            )
             # status=running 给会话页左侧徽章实时切「执行中」
             self._progress("开始执行任务", phase="started", step=0, status="running")
 
@@ -1157,6 +1166,7 @@ class WorkerLoop:
             if refreshed is not None:
                 task = refreshed
             history = self._drain_pending_appends(task_id, task, history)
+            self._live_history = list(history)
 
             plan: Plan | None = None
             results: list[ExecResult] = []
@@ -3975,6 +3985,9 @@ class WorkerLoop:
             bg = getattr(self.controller, "_background", None)
             if bg is not None:
                 bg.task_id = task_id
+                live = getattr(self, "_live_history", None)
+                if isinstance(live, list):
+                    bg.history_override = list(live)
             try:
                 result = self.controller.execute(act, task_id=task_id)
             except Exception as exc:  # noqa: BLE001
@@ -4072,6 +4085,10 @@ class WorkerLoop:
         bg = getattr(self.controller, "_background", None)
         if bg is not None:
             bg.task_id = task_id
+            # 注入本任务 live history，供 task_context_* 优先于检查点
+            live = getattr(self, "_live_history", None)
+            if isinstance(live, list):
+                bg.history_override = list(live)
         result = self.controller.execute(action, task_id=task_id)
         result = apply_expect_to_result(action, result)
         return action, result

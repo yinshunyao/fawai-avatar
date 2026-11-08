@@ -9,6 +9,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
+from typing import Any
 
 from fawai_avatar.brain.planner import Brain
 from fawai_avatar.channel.hub import SessionHub
@@ -19,6 +20,7 @@ from fawai_avatar.runtime.loop import WorkerLoop
 from fawai_avatar.skills.review import (
     analyze_review_tasks,
     apply_review_plan,
+    build_materials_text,
     is_review_awaiting_apply,
     is_review_awaiting_approval,
     parse_review_approval,
@@ -26,6 +28,7 @@ from fawai_avatar.skills.review import (
     propose_review_session,
     review_task,
     review_tasks,
+    _normalize_items,
 )
 from fawai_avatar.skills.store import SkillStore
 from fawai_avatar.task.supervisor import Supervisor
@@ -87,14 +90,26 @@ def main() -> None:
         )
         assert loop2.run(tid2).get("ok")
 
+        progress_phases: list[str] = []
+
+        def _on_progress(text: str, *, phase: str = "", step: int = 0, **extra: Any) -> None:
+            del text, step, extra
+            if phase:
+                progress_phases.append(str(phase))
+
         analyzed = analyze_review_tasks(
-            supervisor, [tid2], distill=True, use_llm=False
+            supervisor,
+            [tid2],
+            distill=True,
+            use_llm=False,
+            on_progress=_on_progress,
         )
         assert analyzed.get("ok"), analyzed
         assert "【分析】" in (analyzed.get("message") or "")
         assert "【优化清单】" in (analyzed.get("message") or "")
         assert analyzed.get("skill") is None
         assert analyzed.get("items"), analyzed
+        assert "analyzing" in progress_phases, progress_phases
         dims = analyzed.get("dimensions") or {}
         for key in (
             "planning",
@@ -111,6 +126,7 @@ def main() -> None:
                     "items": [it.get("id") for it in analyzed.get("items") or []],
                     "outcome": analyzed.get("outcome"),
                     "detail_fetched": analyzed.get("detail_fetched"),
+                    "progress_phases": progress_phases,
                 },
                 ensure_ascii=False,
             ),
@@ -258,6 +274,77 @@ def main() -> None:
         assert cancel_apply.get("ok")
         assert not (cancel_apply.get("backup") or {}).get("release_id")
         assert cancel_apply.get("skill") is None
+
+        # 多轮材料：源任务 followups + 改写 prior + 工具项软置顶
+        tid_fu = supervisor.create_task("查训练进度")
+        supervisor.merge_task_meta(
+            tid_fu,
+            {
+                "final_thought": "已汇总日志并结束",
+                "ok": True,
+                "followups": [
+                    {"text": "预估什么时候结束", "mode": "continue", "ts": "1"},
+                    {"text": "只要 ETA", "mode": "append", "ts": "2"},
+                ],
+                "clarification": {
+                    "question": "要精确到分钟还是小时？",
+                    "options": [{"id": "h", "label": "小时"}],
+                },
+            },
+        )
+        t_fu = supervisor.get_task(tid_fu)
+        assert t_fu is not None
+        mat = build_materials_text(
+            [t_fu],
+            include_steps=False,
+            user_guidance="先修工具报错",
+            prior_analysis="上一轮：工具本身未见缺口",
+            prior_items=[
+                {
+                    "id": "1",
+                    "kind": "lesson",
+                    "title": "旧课",
+                    "selected_default": True,
+                }
+            ],
+            review_followups=[
+                {"text": "放行", "mode": "review"},
+                {"text": "不要第 2 条，改工具层", "mode": "review"},
+            ],
+        )
+        assert "【追问】预估什么时候结束" in mat, mat
+        assert "【用户追加】只要 ETA" in mat, mat
+        assert "澄清题面" in mat and "精确到分钟" in mat, mat
+        assert "上一轮复盘结论" in mat and "prior_items:" in mat, mat
+        assert "复盘会话用户多轮" in mat and "不要第 2 条" in mat, mat
+        assert "焦点/偏好" in mat and "工具优先" in mat, mat
+        assert "查训练进度" in mat
+        ordered = _normalize_items(
+            [
+                {
+                    "id": "a",
+                    "kind": "lesson",
+                    "title": "调用侧换道",
+                    "rationale": "同族空转",
+                    "impact": "改规划提示",
+                    "selected_default": False,
+                    "payload": {"id": "l1", "title": "x", "when_to_use": "y", "steps": ["z"]},
+                },
+                {
+                    "id": "b",
+                    "kind": "code_patch",
+                    "title": "细化拒因",
+                    "rationale": "报错误导",
+                    "impact": "改工具本身契约文案",
+                    "selected_default": False,
+                    "payload": {"path": "x.py", "old": "a", "new": "b"},
+                },
+            ]
+        )
+        assert ordered[0]["title"] == "细化拒因", ordered
+        assert ordered[0]["selected_default"] is True
+        assert ordered[0]["id"] == "1" and ordered[1]["id"] == "2"
+        print("multi-turn-materials-ok")
 
         # 提议会话：先指令、waiting
         prop = propose_review_session(supervisor, [tid2, tid3])

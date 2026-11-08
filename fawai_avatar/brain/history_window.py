@@ -14,7 +14,8 @@ Summarize = Callable[[str], str | None]
 
 _COMPACT_NOTE = (
     "（这是更早步骤的摘要，只保留做过什么和得到的结论。"
-    "摘要里没有的事实不在当前上下文中，须按 path 定向再读；"
+    "摘要里没有的本任务事实：先 task_context_search / task_context_get；"
+    "文件事实再按 path 定向 fs_read。"
     "不要把「曾经读过」当成不能再取证。）"
 )
 

@@ -514,16 +514,24 @@ class Controller:
         else:
             message = err or out or f"exit {proc.returncode}"
             if "command not found" in message.lower() or proc.returncode == 127:
-                from fawai_avatar.platform_info import runtime_platform
+                # 仅当命令属于磁盘/块设备类（跨平台易混）时才给平台特定提示；
+                # 其它通用 CLI（如 gh/docker/npm）给通用"未安装/不在 PATH"提示，避免误导。
+                _DISK_cmds = {"diskutil", "lsblk", "blkid", "fdisk", "parted", "mount", "umount", "df", "fsck"}
+                _first_token = (cmd_text.strip().split() or [""])[0]
+                _base_cmd = _first_token.rsplit("/", 1)[-1]
+                if _base_cmd in _DISK_cmds:
+                    from fawai_avatar.platform_info import runtime_platform
 
-                p = runtime_platform()
-                if p.system == "Darwin":
-                    tip = "macOS 请用 diskutil 等，不要用 lsblk"
-                elif p.system == "Linux":
-                    tip = "Linux 请用 lsblk/df 等，不要用 diskutil"
+                    p = runtime_platform()
+                    if p.system == "Darwin":
+                        tip = "macOS 请用 diskutil 等，不要用 lsblk"
+                    elif p.system == "Linux":
+                        tip = "Linux 请用 lsblk/df 等，不要用 diskutil"
+                    else:
+                        tip = f"请按当前操作系统（{p.system}）选用命令"
+                    message = f"{message}（{tip}）"
                 else:
-                    tip = f"请按当前操作系统（{p.system}）选用命令"
-                message = f"{message}（{tip}）"
+                    message = f"{message}（提示：命令未找到，请确认已安装且位于 PATH 中；可用 `command -v {_base_cmd}` 探测）"
             elif _looks_like_which_probe(cmd_text) and out:
                 message = (
                     f"{out}\n（提示：which/command -v 任一参数不存在即非零退出；"

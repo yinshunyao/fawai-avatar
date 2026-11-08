@@ -4,7 +4,8 @@
 # term:编码闭环  tool:fs_patch/code_check/git_*/explore_*  doc:doc/功能/编码闭环/说明.md
 # term:Python 扩展  tool:py_write/py_pip/py_run  doc:doc/功能/Python扩展/说明.md
 # term:脚本铲子生命周期  tool:shovel_search  doc:doc/功能/脚本铲子生命周期/说明.md
-"""后台动作：文件、代码索引、版本、Skill、编码闭环、Python 扩展、铲检索（不经 GUI / 不受 FAWAI_DRY_RUN 影响）。"""
+# term:任务内上下文查询  tool:task_context_search/task_context_get  doc:doc/功能/任务内上下文查询/说明.md
+"""后台动作：文件、代码索引、版本、Skill、编码闭环、Python 扩展、铲检索、任务内上下文（不经 GUI / 不受 FAWAI_DRY_RUN 影响）。"""
 
 from __future__ import annotations
 
@@ -63,12 +64,17 @@ _LORE_KINDS = frozenset(
         "lore_note_upsert",
         "lore_buffer_list",
         "lore_vector_reindex",
+        "lore_fts_reindex",
+        "name_index_search",
+        "fts_search",
+        "memory_index_reindex",
     }
 )
 _DIFF_KINDS = frozenset({"diff_confirm", "diff_reject", "diff_list"})
 _VERIFY_KINDS = frozenset({"shell_verify"})
 _PY_KINDS = frozenset({"py_write", "py_pip", "py_run"})
 _SHOVEL_KINDS = frozenset({"shovel_search"})
+_TASK_CONTEXT_KINDS = frozenset({"task_context_search", "task_context_get"})
 BACKGROUND_KINDS = (
     _FS_KINDS
     | _CODE_KINDS
@@ -80,6 +86,7 @@ BACKGROUND_KINDS = (
     | _VERIFY_KINDS
     | _PY_KINDS
     | _SHOVEL_KINDS
+    | _TASK_CONTEXT_KINDS
 )
 
 _WRITE_KINDS = frozenset({"fs_write", "fs_replace", "fs_patch", "version_rollback", "git_commit"})
@@ -102,6 +109,8 @@ class BackgroundTools:
         self.diff_mode = (diff_mode or cfg.diff_mode or "auto").strip().lower()
         self.task_id = task_id
         self.data_dir = data
+        # 闭环注入的本任务完整 history（优先于检查点）；None=从任务库加载
+        self.history_override: list[dict[str, Any]] | None = None
         self.full_write_line_limit = cfg.full_write_line_limit
         self.fs = WorkspaceFs(root, read_roots=list(cfg.read_roots))
         self.code = CodeIndex(root, data_dir=data)
@@ -170,6 +179,14 @@ class BackgroundTools:
                 return self._lore_buffer_list(action.args)
             if kind == "lore_vector_reindex":
                 return self._lore_vector_reindex(action.args)
+            if kind == "lore_fts_reindex":
+                return self._lore_fts_reindex(action.args)
+            if kind == "name_index_search":
+                return self._name_index_search(action.args)
+            if kind == "fts_search":
+                return self._fts_search(action.args)
+            if kind == "memory_index_reindex":
+                return self._memory_index_reindex(action.args)
             if kind == "diff_confirm":
                 return self._diff_confirm(action.args)
             if kind == "diff_reject":
@@ -186,6 +203,10 @@ class BackgroundTools:
                 return self._py_run(action.args)
             if kind == "shovel_search":
                 return self._shovel_search(action.args)
+            if kind == "task_context_search":
+                return self._task_context_search(action.args)
+            if kind == "task_context_get":
+                return self._task_context_get(action.args)
             return ExecResult(ok=False, message=f"unknown background kind: {kind!r}")
         except ShovelOpsError as exc:
             return ExecResult(ok=False, message=str(exc))
@@ -221,6 +242,39 @@ class BackgroundTools:
         search_path = str(
             args.get("path") or args.get("root") or args.get("dir") or "."
         ).strip() or "."
+        # 无通配时优先走文件名索引（若已建）
+        use_index = bool(args.get("use_index", True))
+        if use_index and not any(ch in pattern for ch in "*?[{"):
+            try:
+                from fawai_avatar.config import name_index_enabled
+                from fawai_avatar.memory_index import search_names
+
+                if name_index_enabled(default=True):
+                    indexed = search_names(pattern, limit=limit)
+                    if indexed.get("ok") and indexed.get("hits"):
+                        paths = [h["path"] for h in indexed["hits"] if h.get("path")]
+                        if search_path not in {".", ""}:
+                            base = str(
+                                Path(search_path).expanduser().resolve()
+                            )
+                            paths = [
+                                p
+                                for p in paths
+                                if p == base or p.startswith(base.rstrip("/") + "/")
+                            ]
+                        if paths:
+                            return ExecResult(
+                                ok=True,
+                                message=f"glob {len(paths)} (name_index)",
+                                data={
+                                    "paths": paths[:limit],
+                                    "path": search_path,
+                                    "pattern": pattern,
+                                    "via": "name_index",
+                                },
+                            )
+            except Exception:
+                pass
         paths = self.fs.glob(pattern, path=search_path, head_limit=limit)
         return ExecResult(
             ok=True,
@@ -250,6 +304,35 @@ class BackgroundTools:
             context_after = 0
         context_before = max(0, min(context_before, 5))
         context_after = max(0, min(context_after, 5))
+        use_index = bool(args.get("use_index", True))
+        prefer_fts = bool(args.get("prefer_fts", False)) or str(
+            args.get("engine") or ""
+        ).lower() in {"fts", "fts5"}
+        if use_index and prefer_fts:
+            try:
+                from fawai_avatar.config import workspace_content_fts_enabled
+                from fawai_avatar.memory_index import search_content
+
+                if workspace_content_fts_enabled(default=True):
+                    indexed = search_content(pattern, limit=head_limit)
+                    if indexed.get("ok") and indexed.get("hits"):
+                        hits = [
+                            {
+                                "path": h.get("path"),
+                                "line": 0,
+                                "text": h.get("snippet") or "",
+                                "source": "content_fts",
+                            }
+                            for h in indexed["hits"]
+                            if h.get("path")
+                        ]
+                        return ExecResult(
+                            ok=True,
+                            message=f"grep {len(hits)} (fts5)",
+                            data={"hits": hits, "count": len(hits), "via": "content_fts"},
+                        )
+            except Exception:
+                pass
         hits = self.fs.grep(
             pattern,
             path=str(args.get("path") or "."),
@@ -785,6 +868,82 @@ class BackgroundTools:
             data=data,
         )
 
+    def _task_context_resolve_tid(self, args: dict[str, Any]) -> tuple[str | None, str | None]:
+        """返回 (task_id, error)。跨任务默认拒绝。"""
+        from fawai_avatar.brain.task_context import assert_same_task
+
+        asked = str(args.get("task_id") or "").strip() or None
+        runtime = str(self.task_id or "").strip() or None
+        err = assert_same_task(runtime_task_id=runtime, args_task_id=asked)
+        if err:
+            return None, err
+        tid = asked or runtime
+        if not tid:
+            return None, "task_context_* requires task_id (runtime or args)"
+        return tid, None
+
+    def _task_context_search(self, args: dict[str, Any]) -> ExecResult:
+        from fawai_avatar.brain.task_context import task_context_search
+
+        tid, err = self._task_context_resolve_tid(args)
+        if err or not tid:
+            return ExecResult(ok=False, message=err or "task_id required")
+        query = str(args.get("query") or args.get("q") or args.get("pattern") or "")
+        limit = args.get("limit")
+        kind = args.get("kind")
+        data = task_context_search(
+            query=query,
+            task_id=tid,
+            data_dir=self.data_dir,
+            history_override=self.history_override,
+            limit=int(limit) if limit is not None else None,
+            kind=str(kind) if kind else None,
+        )
+        if not data.get("ok"):
+            return ExecResult(
+                ok=False,
+                message=str(data.get("error") or "task_context_search failed"),
+                data=data,
+            )
+        n = int(data.get("count") or 0)
+        return ExecResult(
+            ok=True,
+            message=f"task_context_search {n} hits source={data.get('source')}",
+            data=data,
+        )
+
+    def _task_context_get(self, args: dict[str, Any]) -> ExecResult:
+        from fawai_avatar.brain.task_context import task_context_get
+
+        tid, err = self._task_context_resolve_tid(args)
+        if err or not tid:
+            return ExecResult(ok=False, message=err or "task_id required")
+        idx = args.get("index")
+        data = task_context_get(
+            task_id=tid,
+            data_dir=self.data_dir,
+            history_override=self.history_override,
+            msg_id=str(args.get("msg_id") or args.get("id") or "") or None,
+            index=int(idx) if idx is not None and str(idx).strip() != "" else None,
+            observe_path=str(args.get("observe_path") or args.get("dump_path") or "")
+            or None,
+            max_chars=int(args["max_chars"]) if args.get("max_chars") is not None else None,
+        )
+        if not data.get("ok"):
+            return ExecResult(
+                ok=False,
+                message=str(data.get("error") or "task_context_get failed"),
+                data=data,
+            )
+        return ExecResult(
+            ok=True,
+            message=(
+                f"task_context_get {data.get('kind')} "
+                f"msg_id={data.get('msg_id') or data.get('observe_path') or ''}"
+            ),
+            data=data,
+        )
+
     def _version_snapshot(self, args: dict[str, Any]) -> ExecResult:
         paths = args.get("paths")
         if not isinstance(paths, list) or not paths:
@@ -864,54 +1023,42 @@ class BackgroundTools:
         return open_lore_store()
 
     def _lore_search(self, args: dict[str, Any]) -> ExecResult:
-        from fawai_avatar.config import lore_vector_enabled
-        from fawai_lore import retrieve
+        from fawai_avatar.knowledge_search import knowledge_search
 
         query = str(args.get("query") or args.get("q") or "")
         limit = int(args.get("limit") or 10)
-        use_vector = lore_vector_enabled()
-        embed_fn = None
-        if use_vector:
-            try:
-                from fawai_avatar.lore_embed import make_embed_fn
-
-                embed_fn = make_embed_fn()
-            except Exception:
-                use_vector = False
-        hits = [
-            h.to_dict()
-            for h in retrieve(
-                self._lore_store(),
-                query,
-                limit=limit,
-                embed_fn=embed_fn,
-                use_vector=use_vector,
-            )
-        ]
+        scopes = args.get("scopes")
+        if scopes is None:
+            scopes = args.get("scope")
+        data = knowledge_search(query=query, limit=limit, scopes=scopes)
+        hits = data.get("hits") or []
+        used = data.get("scopes")
+        scope_note = f" scopes={used}" if used is not None else ""
+        hint = str(data.get("hint") or "").strip()
+        msg = f"lore_search {len(hits)}{scope_note}"
+        if hint and not hits:
+            msg = f"{msg}；{hint}"
         return ExecResult(
             ok=True,
-            message=f"lore_search {len(hits)}",
-            data={"hits": hits, "query": query, "vector": use_vector},
+            message=msg,
+            data=data,
         )
 
     def _lore_get(self, args: dict[str, Any]) -> ExecResult:
-        from fawai_lore import KvValidationError
+        from fawai_avatar.knowledge_search import knowledge_get
 
-        key = str(args.get("key") or args.get("id") or "").strip()
+        key = str(args.get("key") or args.get("id") or args.get("path") or "").strip()
         if not key:
-            return ExecResult(ok=False, message="lore_get requires key or id")
-        lore = self._lore_store()
-        entry = None
-        try:
-            entry = lore.kv.get(key)
-        except KvValidationError:
-            entry = None
-        if entry is not None:
-            return ExecResult(ok=True, message=f"lore_get kv {key}", data={"kv": entry.to_dict()})
-        note = lore.notes.get(key)
-        if note is None:
-            return ExecResult(ok=False, message=f"lore not found: {key}")
-        return ExecResult(ok=True, message=f"lore_get note {key}", data={"note": note.to_dict()})
+            return ExecResult(ok=False, message="lore_get requires key, id, or path")
+        result = knowledge_get(key=key)
+        if not result.get("ok"):
+            return ExecResult(ok=False, message=str(result.get("error") or "not found"), data=result)
+        kind = result.get("kind") or "item"
+        return ExecResult(
+            ok=True,
+            message=f"lore_get {kind}",
+            data=result,
+        )
 
     def _lore_set(self, args: dict[str, Any]) -> ExecResult:
         key = str(args.get("key") or "").strip()
@@ -928,6 +1075,18 @@ class BackgroundTools:
             source=str(args.get("source") or "lore_set")[:200],
             aliases=[str(a) for a in aliases],
         )
+        try:
+            from fawai_avatar.lore_api import sync_lore_fts_entry
+
+            sync_lore_fts_entry(
+                kind="kv",
+                id=entry.key,
+                value=entry.value,
+                aliases=entry.aliases,
+                enabled=entry.enabled,
+            )
+        except Exception:
+            pass
         return ExecResult(ok=True, message=f"lore_set {entry.key}", data={"kv": entry.to_dict()})
 
     def _lore_note_upsert(self, args: dict[str, Any]) -> ExecResult:
@@ -939,6 +1098,21 @@ class BackgroundTools:
             index_note_text(note.id, f"{note.title}\n{note.body}")
         except Exception:
             pass
+        try:
+            from fawai_avatar.lore_api import sync_lore_fts_entry
+
+            sync_lore_fts_entry(
+                kind="note",
+                id=note.id,
+                title=note.title,
+                body=note.body,
+                tags=note.tags,
+                related_keys=note.related_keys,
+                source=note.source,
+                enabled=note.enabled,
+            )
+        except Exception:
+            pass
         return ExecResult(
             ok=True,
             message=f"lore_note_upsert {note.id}",
@@ -946,9 +1120,10 @@ class BackgroundTools:
         )
 
     def _lore_vector_reindex(self, args: dict[str, Any]) -> ExecResult:
-        from fawai_avatar.lore_embed import reindex_all_notes
+        from fawai_avatar.lore_api import lore_vector_reindex_api
+        from fawai_avatar.memory_index.progress import run_job
 
-        result = reindex_all_notes()
+        result = run_job("vector", lore_vector_reindex_api)
         ok = bool(result.get("ok"))
         return ExecResult(
             ok=ok,
@@ -956,6 +1131,68 @@ class BackgroundTools:
             + (f" {result.get('indexed')}" if ok else f" {result.get('error')}"),
             data=result,
         )
+
+    def _lore_fts_reindex(self, args: dict[str, Any]) -> ExecResult:
+        from fawai_avatar.lore_api import lore_fts_reindex_api
+        from fawai_avatar.memory_index.progress import run_job
+
+        result = run_job("lore_fts", lore_fts_reindex_api)
+        ok = bool(result.get("ok"))
+        return ExecResult(
+            ok=ok,
+            message="lore_fts_reindex"
+            + (
+                f" {result.get('indexed') or result.get('total')}"
+                if ok
+                else f" {result.get('error')}"
+            ),
+            data=result,
+        )
+
+    def _name_index_search(self, args: dict[str, Any]) -> ExecResult:
+        from fawai_avatar.memory_index import search_names
+
+        query = str(args.get("query") or args.get("q") or args.get("pattern") or "")
+        if not query:
+            return ExecResult(ok=False, message="name_index_search requires query")
+        limit = int(args.get("limit") or args.get("head_limit") or 50)
+        result = search_names(query, limit=limit)
+        ok = bool(result.get("ok"))
+        return ExecResult(
+            ok=ok,
+            message="name_index_search "
+            + (str(result.get("count", 0)) if ok else str(result.get("error"))),
+            data=result,
+        )
+
+    def _fts_search(self, args: dict[str, Any]) -> ExecResult:
+        from fawai_avatar.memory_index import search_content
+
+        query = str(args.get("query") or args.get("q") or args.get("pattern") or "")
+        if not query:
+            return ExecResult(ok=False, message="fts_search requires query")
+        limit = int(args.get("limit") or args.get("head_limit") or 40)
+        result = search_content(query, limit=limit)
+        ok = bool(result.get("ok"))
+        return ExecResult(
+            ok=ok,
+            message="fts_search "
+            + (str(result.get("count", 0)) if ok else str(result.get("error"))),
+            data=result,
+        )
+
+    def _memory_index_reindex(self, args: dict[str, Any]) -> ExecResult:
+        from fawai_avatar.lore_api import memory_index_reindex_api
+        from fawai_avatar.memory_index.progress import run_job
+
+        which = str(args.get("which") or args.get("target") or "all")
+        result = run_job(which, lambda: memory_index_reindex_api(which=which))
+        ok = bool(result.get("ok", True))
+        if which in {"all"} and isinstance(result.get("name_index"), dict):
+            ok = bool(result["name_index"].get("ok")) or bool(
+                result.get("content_fts", {}).get("ok")
+            )
+        return ExecResult(ok=ok, message=f"memory_index_reindex {which}", data=result)
 
     def _lore_buffer_list(self, args: dict[str, Any]) -> ExecResult:
         from fawai_lore import list_buffer

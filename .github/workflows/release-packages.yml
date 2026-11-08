@@ -1,0 +1,106 @@
+name: release-packages
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      target_filter:
+        description: "Optional single target (darwin-arm64|darwin-x64|linux-x64|windows-x64); empty = all"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: darwin-arm64
+          - os: macos-13
+            target: darwin-x64
+          - os: ubuntu-22.04
+            target: linux-x64
+          - os: windows-2022
+            target: windows-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Skip filtered target
+        id: gate
+        shell: bash
+        run: |
+          FILTER="${{ github.event.inputs.target_filter }}"
+          if [[ -n "$FILTER" && "$FILTER" != "${{ matrix.target }}" ]]; then
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup host Python (bootstrap only)
+        if: steps.gate.outputs.skip != '1'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build release prefix
+        if: steps.gate.outputs.skip != '1'
+        shell: bash
+        run: |
+          python packaging/build_release.py --target "${{ matrix.target }}"
+
+      - name: Upload artifact
+        if: steps.gate.outputs.skip != '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pkg-${{ matrix.target }}
+          path: |
+            dist/release/fawai-avatar-*.tar.gz
+            dist/release/fawai-avatar-*.zip
+            dist/release/fawai-avatar-*.sha256
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-22.04
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all packages
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten assets
+        shell: bash
+        run: |
+          mkdir -p dist/release
+          find artifacts -type f \( -name 'fawai-avatar-*.tar.gz' -o -name 'fawai-avatar-*.zip' -o -name 'fawai-avatar-*.sha256' \) \
+            -exec cp -v {} dist/release/ \;
+          ls -la dist/release
+
+      - name: Create / update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          mapfile -t FILES < <(ls dist/release/fawai-avatar-*.tar.gz dist/release/fawai-avatar-*.zip dist/release/fawai-avatar-*.sha256 2>/dev/null || true)
+          if [[ ${#FILES[@]} -eq 0 ]]; then
+            echo "no assets" >&2
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${FILES[@]}" --clobber
+          else
+            gh release create "$TAG" "${FILES[@]}" --title "$TAG" --generate-notes
+          fi

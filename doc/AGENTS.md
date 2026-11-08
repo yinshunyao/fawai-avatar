@@ -74,5 +74,6 @@ doc/
 | `.cursor/rules/rules-doc-code.mdc` | Cursor 强制规则真源 |
 | `.cursor/rules/rules-platform.mdc` | 跨平台：设计与代码须考虑 OS/headless；无法本机调试也要完成支持 |
 | `.cursor/rules/rules-分析.mdc` | 机制/优化/改进讨论归档到 `分析/` |
+| `.cursor/rules/rules-web-client-redact.mdc` | 发给 Web/中继须脱敏；后端规划不抠口令 |
 
 编辑 `doc/` 前先读本文件与 `术语与称呼索引.md`。

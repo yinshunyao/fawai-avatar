@@ -22,27 +22,10 @@ def lore_dir_from_config(cfg: RuntimeConfig | None = None) -> Path:
 
 
 def lore_prompt_block(goal: str = "", *, limit: int = 8, max_chars: int = 1800) -> str:
-    """Short lore snippet for planner system prompt (zh/en query = goal)."""
+    """规划注入：工作区索引 ∪ 笔记；不再灌旁路 KV 搜。"""
     try:
-        from fawai_lore import retrieve_prompt_block
+        from fawai_avatar.knowledge_search import knowledge_prompt_block
 
-        cfg = RuntimeConfig.from_env()
-        use_vector = bool(cfg.lore_vector) and lore_vector_enabled()
-        embed_fn = None
-        if use_vector:
-            try:
-                from fawai_avatar.lore_embed import make_embed_fn
-
-                embed_fn = make_embed_fn()
-            except Exception:
-                use_vector = False
-        return retrieve_prompt_block(
-            cfg.lore_dir,
-            goal or "",
-            limit=limit,
-            max_chars=max_chars,
-            embed_fn=embed_fn,
-            use_vector=use_vector,
-        )
+        return knowledge_prompt_block(goal or "", limit=limit, max_chars=max_chars)
     except Exception:
         return ""

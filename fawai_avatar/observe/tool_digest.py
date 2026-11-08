@@ -202,8 +202,24 @@ def digest_text(
     return body, meta
 
 
+def _hit_body_text(hit: dict[str, Any]) -> str:
+    """grep 用 text；lore / task_context 用 summary 或 snippet。"""
+    for key in ("text", "summary", "snippet"):
+        val = hit.get(key)
+        if val is None:
+            continue
+        body = str(val).strip()
+        if body:
+            return body
+    return ""
+
+
 def _render_hits(hits: list[Any], *, max_hits: int | None = None) -> str:
-    """把 grep/explore hits 渲成 path:line 正文，供规划直接读。
+    """把检索 hits 渲成可读正文，供规划直接读。
+
+    兼容：
+    - fs_grep：`path` + `line` + `text`（可含 before/after）
+    - lore / task_context：`summary` / `snippet`，可选 `path` / `msg_id` / `id`
 
     默认展开工具返回的全部命中（体量由工具 head_limit 控制）；
     仅当显式传入 max_hits>0 时才截断展开条数。
@@ -214,21 +230,32 @@ def _render_hits(hits: list[Any], *, max_hits: int | None = None) -> str:
         if not isinstance(hit, dict):
             rendered.append(str(hit))
             continue
-        path = str(hit.get("path") or "?")
-        line_no = hit.get("line", "?")
-        text = str(hit.get("text") or "")
+        body = _hit_body_text(hit)
+        path = str(hit.get("path") or "").strip()
+        msg_id = str(hit.get("msg_id") or hit.get("id") or "").strip()
+        line_no = hit.get("line")
         before = hit.get("before") if isinstance(hit.get("before"), list) else []
         after = hit.get("after") if isinstance(hit.get("after"), list) else []
+        # lore / task_context：无 path:line:text 时用摘要行，禁止渲染成 ?:?:
+        if not path and line_no is None and not before and not after:
+            label = msg_id or "?"
+            kind = str(hit.get("kind") or "").strip()
+            if kind:
+                label = f"{label}[{kind}]"
+            rendered.append(f"{label}: {body}" if body else label)
+            continue
+        loc = path or msg_id or "?"
+        line_s = "?" if line_no is None else line_no
         for row in before:
             if isinstance(row, dict):
                 rendered.append(
-                    f"{path}:{row.get('line', '?')}- {row.get('text', '')}"
+                    f"{loc}:{row.get('line', '?')}- {row.get('text', '')}"
                 )
-        rendered.append(f"{path}:{line_no}: {text}")
+        rendered.append(f"{loc}:{line_s}: {body}")
         for row in after:
             if isinstance(row, dict):
                 rendered.append(
-                    f"{path}:{row.get('line', '?')}+ {row.get('text', '')}"
+                    f"{loc}:{row.get('line', '?')}+ {row.get('text', '')}"
                 )
     if max_hits is not None and max_hits > 0 and len(hits) > max_hits:
         rendered.append(f"…另有 {len(hits) - max_hits} 条命中未展开")

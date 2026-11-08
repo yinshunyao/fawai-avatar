@@ -2662,10 +2662,184 @@
     }
     #lorePage .lore-head-main {
       display: flex;
-      align-items: baseline;
+      align-items: center;
       gap: 10px;
       min-width: 0;
       flex: 1;
+      flex-wrap: wrap;
+    }
+    /* 旁路短 KV / 待确认工单：Web 暂时不展示（勿用 display:flex 盖掉 [hidden]） */
+    #lorePage .lore-ticket,
+    #lorePage .lore-ticket-banner {
+      display: none !important;
+    }
+    #lorePage #lorePanelEntries {
+      overflow: hidden;
+    }
+    #lorePage .lore-entries-chrome {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      padding: 10px 14px 8px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface);
+    }
+    #lorePage .lore-entries-sort {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    #lorePage .lore-entries-sort button {
+      min-height: 36px;
+      min-width: 64px;
+      padding: 4px 10px;
+      font-size: 0.78rem;
+    }
+    #lorePage .lore-entries-sort button.on {
+      background: var(--accent);
+      color: #fff;
+      border-color: transparent;
+    }
+    #lorePage .lore-entries-scroll {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    @media (max-width: 859px) {
+      #lorePage .lore-entries-chrome {
+        padding: 10px 10px 8px;
+      }
+      #lorePage .lore-entries-sort button {
+        min-height: 40px;
+      }
+    }
+    #lorePage .lore-tools-grid {
+      display: grid;
+      gap: 12px;
+      padding: 12px 14px 16px;
+    }
+    #lorePage .lore-tool-card {
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--fill);
+    }
+    #lorePage .lore-tool-card h3 {
+      margin: 0 0 4px;
+      font-size: 0.88rem;
+      font-weight: 600;
+    }
+    #lorePage .lore-tool-card .hint {
+      margin: 0 0 10px;
+    }
+    #lorePage .lore-tool-row {
+      display: flex;
+      gap: 8px;
+      align-items: stretch;
+      flex-wrap: wrap;
+    }
+    #lorePage .lore-tool-row input {
+      flex: 1;
+      min-width: 160px;
+      min-height: 36px;
+      padding: 6px 10px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-btn);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 0.84rem;
+    }
+    #lorePage .lore-tool-row button,
+    #lorePage .lore-tool-actions button {
+      min-height: 36px;
+      padding: 6px 12px;
+      font-size: 0.78rem;
+    }
+    #lorePage .lore-tool-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    #lorePage .lore-tool-group-label {
+      margin: 14px 0 4px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+    #lorePage .lore-tool-group-label + .hint {
+      margin-top: 0;
+      margin-bottom: 8px;
+    }
+    #lorePage .lore-reindex-progress {
+      margin-top: 12px;
+      padding: 12px 14px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: var(--fill);
+    }
+    #lorePage .lore-reindex-progress[hidden] { display: none !important; }
+    #lorePage .lore-reindex-progress.is-error {
+      border-color: color-mix(in srgb, var(--danger, #c44) 45%, var(--line));
+    }
+    #lorePage .lore-reindex-progress.is-done {
+      border-color: color-mix(in srgb, var(--phase-act-ink, #2a7) 40%, var(--line));
+    }
+    #lorePage .lore-reindex-progress-title {
+      margin: 0 0 6px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+    #lorePage .lore-reindex-progress-text {
+      margin: 0 0 8px;
+      font-size: 0.78rem;
+      line-height: 1.45;
+      color: var(--muted);
+      word-break: break-word;
+    }
+    #lorePage .lore-reindex-bar {
+      height: 8px;
+      border-radius: 999px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      overflow: hidden;
+    }
+    #lorePage .lore-reindex-bar-fill {
+      height: 100%;
+      width: 8%;
+      border-radius: 999px;
+      background: var(--phase-act-ink, #3a8);
+      transition: width 0.25s ease;
+    }
+    #lorePage .lore-reindex-progress.is-running .lore-reindex-bar-fill {
+      animation: lore-reindex-pulse 1.2s ease-in-out infinite;
+    }
+    @keyframes lore-reindex-pulse {
+      0%, 100% { opacity: 0.75; }
+      50% { opacity: 1; }
+    }
+    #lorePage .lore-reindex-progress-meta {
+      margin: 8px 0 0;
+      font-size: 0.72rem;
+      color: var(--muted);
+    }
+    #lorePage .lore-tool-out {
+      margin: 10px 0 0;
+      padding: 10px 12px;
+      max-height: 280px;
+      overflow: auto;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 0.72rem;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
     }
     #lorePage .lore-head-actions {
       display: flex;
@@ -2685,10 +2859,25 @@
       border: 1px solid var(--line);
       box-shadow: none;
     }
+    #lorePage .lore-head-actions button.primary {
+      min-height: 36px;
+      min-width: 88px;
+      padding: 0 14px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #fff;
+      background: var(--accent);
+      border-color: var(--accent);
+    }
     #lorePage .lore-head-actions button:hover {
       background: var(--fill-hover);
       color: var(--text);
       border-color: var(--line);
+    }
+    #lorePage .lore-head-actions button.primary:hover {
+      color: #fff;
+      background: var(--accent-deep, var(--accent));
+      border-color: var(--accent-deep, var(--accent));
     }
     #lorePage .lore-shell {
       flex: 1;
@@ -2773,6 +2962,13 @@
       border-radius: 0;
       overflow: auto;
       -webkit-overflow-scrolling: touch;
+    }
+    /* 配置 Tab：保存栏固定，仅表单滚动（同模型/系统配置） */
+    #lorePage #lorePanelConfig {
+      overflow: hidden;
+    }
+    #lorePage #lorePanelConfig .lore-config-chrome {
+      flex-shrink: 0;
     }
     #lorePage .lore-panel[hidden] {
       display: none !important;
@@ -2931,6 +3127,16 @@
         height: 36px;
         padding: 0 12px;
         font-size: 0.78rem;
+      }
+      #lorePage .lore-config-chrome:has(.settings-status:not(:empty)) {
+        padding: 8px 10px;
+      }
+      #lorePage .lore-config-scroll {
+        padding: 10px 10px calc(20px + var(--safe-b));
+      }
+      #lorePage .lore-head-actions button.primary {
+        min-height: 40px;
+        min-width: 96px;
       }
       .lore-row,
       .lore-entry {
@@ -3748,7 +3954,8 @@
     }
     #opsPage .settings-status,
     #settingsPage .settings-status,
-    #modelPage .settings-status {
+    #modelPage .settings-status,
+    #lorePage .settings-status {
       font-size: 0.78rem;
       color: var(--muted);
       margin: 4px 0 0;
@@ -3756,29 +3963,35 @@
     }
     #opsPage .settings-status.warn,
     #settingsPage .settings-status.warn,
-    #modelPage .settings-status.warn { color: var(--warn-ink); }
+    #modelPage .settings-status.warn,
+    #lorePage .settings-status.warn { color: var(--warn-ink); }
     #opsPage .settings-status.ok,
     #settingsPage .settings-status.ok,
-    #modelPage .settings-status.ok { color: var(--accent-deep); }
+    #modelPage .settings-status.ok,
+    #lorePage .settings-status.ok { color: var(--accent-deep); }
     #opsPage .settings-status.err,
     #settingsPage .settings-status.err,
-    #modelPage .settings-status.err { color: var(--err); }
+    #modelPage .settings-status.err,
+    #lorePage .settings-status.err { color: var(--err); }
     #settingsPage .settings-scroll > .settings-group { margin-bottom: 10px; }
     #settingsPage .settings-groups,
-    #modelPage .settings-groups {
+    #modelPage .settings-groups,
+    #lorePage .settings-groups {
       display: flex;
       flex-direction: column;
       gap: 10px;
       padding-bottom: 8px;
     }
     #settingsPage details.settings-group,
-    #modelPage details.settings-group {
+    #modelPage details.settings-group,
+    #lorePage details.settings-group {
       background: var(--surface);
       border: 1px solid var(--line);
       border-radius: 12px;
     }
     #settingsPage details.settings-group > summary,
-    #modelPage details.settings-group > summary {
+    #modelPage details.settings-group > summary,
+    #lorePage details.settings-group > summary {
       list-style: none;
       cursor: pointer;
       padding: 12px 14px;
@@ -3790,9 +4003,11 @@
       user-select: none;
     }
     #settingsPage details.settings-group > summary::-webkit-details-marker,
-    #modelPage details.settings-group > summary::-webkit-details-marker { display: none; }
+    #modelPage details.settings-group > summary::-webkit-details-marker,
+    #lorePage details.settings-group > summary::-webkit-details-marker { display: none; }
     #settingsPage details.settings-group > summary::before,
-    #modelPage details.settings-group > summary::before {
+    #modelPage details.settings-group > summary::before,
+    #lorePage details.settings-group > summary::before {
       content: "";
       width: 0;
       height: 0;
@@ -3802,17 +4017,70 @@
       transition: transform 0.15s;
     }
     #settingsPage details.settings-group[open] > summary::before,
-    #modelPage details.settings-group[open] > summary::before { transform: rotate(90deg); }
+    #modelPage details.settings-group[open] > summary::before,
+    #lorePage details.settings-group[open] > summary::before { transform: rotate(90deg); }
     #settingsPage .settings-body,
-    #modelPage .settings-body {
+    #modelPage .settings-body,
+    #lorePage .settings-body {
       padding: 4px 14px 14px;
       border-top: 1px solid var(--line);
       display: flex;
       flex-direction: column;
       gap: 12px;
     }
+    #lorePage .lore-config-chrome {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin: 0;
+      padding: 0 14px;
+      border-bottom: none;
+      background: transparent;
+    }
+    #lorePage .lore-config-chrome:has(.settings-status:not(:empty)) {
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface);
+    }
+    #lorePage .lore-config-scroll {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      padding: 10px 14px calc(20px + var(--safe-b));
+    }
+    #lorePage .settings-path {
+      display: block;
+      font-size: 0.68rem;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+    }
+    #lorePage .settings-status:empty {
+      display: none;
+    }
+    #lorePage .settings-dir-row {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    #lorePage .settings-dir-row input {
+      flex: 1;
+      min-width: 0;
+    }
+    #lorePage .settings-dir-row button {
+      flex: 0 0 auto;
+      min-height: 36px;
+      white-space: nowrap;
+      font-size: 0.78rem;
+      padding: 0 10px;
+    }
     #settingsPage .settings-field label.field-label,
     #modelPage .settings-field label.field-label,
+    #lorePage .settings-field label.field-label,
     #modelParamModal .settings-field label.field-label {
       display: flex;
       align-items: baseline;
@@ -3824,6 +4092,7 @@
     }
     #settingsPage .settings-field .badge,
     #modelPage .settings-field .badge,
+    #lorePage .settings-field .badge,
     #modelParamModal .settings-field .badge {
       font-size: 0.68rem;
       font-weight: 500;
@@ -3834,6 +4103,7 @@
     }
     #settingsPage .settings-field .hint,
     #modelPage .settings-field .hint,
+    #lorePage .settings-field .hint,
     #modelParamModal .settings-field .hint {
       margin: 4px 0 0;
       font-size: 0.72rem;
@@ -3848,6 +4118,10 @@
     #modelPage .settings-field input[type="password"],
     #modelPage .settings-field input[type="number"],
     #modelPage .settings-field select,
+    #lorePage .settings-field input[type="text"],
+    #lorePage .settings-field input[type="password"],
+    #lorePage .settings-field input[type="number"],
+    #lorePage .settings-field select,
     #modelParamModal .settings-field input[type="text"],
     #modelParamModal .settings-field input[type="password"],
     #modelParamModal .settings-field input[type="number"],
@@ -3880,6 +4154,8 @@
     #settingsPage .settings-field select:focus,
     #modelPage .settings-field input:focus,
     #modelPage .settings-field select:focus,
+    #lorePage .settings-field input:focus,
+    #lorePage .settings-field select:focus,
     #modelParamModal .settings-field input:focus,
     #modelParamModal .settings-field select:focus {
       outline: none;
@@ -3897,11 +4173,64 @@
     }
     #settingsPage .bool-row,
     #modelPage .bool-row,
+    #lorePage .bool-row,
     #opsPage .bool-row {
       display: flex;
       align-items: center;
       gap: 8px;
       font-size: 0.88rem;
+    }
+    #lorePage .index-methods {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 14px;
+      margin: 6px 0 2px;
+    }
+    #lorePage .index-methods label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.86rem;
+      color: var(--ink);
+      cursor: pointer;
+      user-select: none;
+    }
+    #lorePage .index-methods input {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--accent);
+    }
+    #lorePage .index-methods input:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+    }
+    #lorePage .index-biz-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 8px;
+    }
+    #lorePage .index-biz-row {
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--fill);
+    }
+    #lorePage .index-biz-title {
+      font-size: 0.9rem;
+      font-weight: 600;
+      margin: 0 0 2px;
+    }
+    #lorePage .index-biz-paths {
+      font-size: 0.76rem;
+      color: var(--muted);
+      margin: 0 0 6px;
+      word-break: break-all;
+    }
+    #lorePage .index-biz-locked {
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin: 0;
     }
     #opsPage .ops-toggle-row {
       margin: 0 0 10px;
@@ -4731,7 +5060,7 @@
           <path d="M5 7.5h14v11H5z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
           <path d="M8 5.5h8M9 11h6M9 14.5h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
         </svg>
-        <span data-i18n="nav.lore">记忆缓冲</span>
+        <span data-i18n="nav.lore">记忆配置</span>
       </button>
       <button type="button" class="nav-menu-item" role="menuitem" data-nav-menu="ops">
         <svg class="nav-ico" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -4800,7 +5129,7 @@
           <path d="M5 7.5h14v11H5z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
           <path d="M8 5.5h8M9 11h6M9 14.5h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
         </svg>
-        <span data-i18n="nav.lore">记忆缓冲</span>
+        <span data-i18n="nav.lore">记忆配置</span>
       </button>
       <button type="button" class="side-nav-item" id="navOps" data-nav="ops">
         <svg class="nav-ico" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -4926,35 +5255,122 @@
     </div>
   </section>
 
-  <section id="lorePage" data-i18n-aria="title.lore" aria-label="记忆缓冲">
+  <section id="lorePage" data-i18n-aria="title.lore" aria-label="记忆配置">
     <div class="admin-page">
       <div class="admin-head">
         <div class="lore-head-main">
-          <h2 data-i18n="title.lore">记忆缓冲</h2>
+          <h2 data-i18n="title.lore">记忆配置</h2>
           <span class="admin-meta" id="loreCountMeta"></span>
         </div>
         <div class="lore-head-actions" role="group">
           <button type="button" id="btnLoreRefresh" data-i18n="lore.refresh">刷新</button>
-          <button type="button" id="btnLoreReindex" data-i18n="lore.reindex">重建向量</button>
+          <button type="button" id="btnLoreReindex" data-i18n="lore.reindex" hidden>重建向量</button>
           <button type="button" id="btnLoreClear" data-i18n="lore.clear" hidden>清空缓冲</button>
+          <button type="button" id="btnLoreBackConfig" data-i18n="lore.backConfig" hidden>返回配置</button>
+          <button type="button" class="primary" id="btnLoreSettingsSave" data-i18n="settings.save">保存配置</button>
         </div>
       </div>
       <p class="lore-status" id="loreStatusLine" aria-live="polite"></p>
       <div class="lore-shell">
         <div class="lore-tabs" role="tablist" data-i18n-aria="lore.tabs" aria-label="记忆分区">
-          <button type="button" class="lore-tab" id="tabLorePending" role="tab" aria-selected="false" aria-controls="lorePanelPending" data-lore-tab="pending" data-i18n="lore.tab.pending">待确认</button>
-          <button type="button" class="lore-tab on" id="tabLoreEntries" role="tab" aria-selected="true" aria-controls="lorePanelEntries" data-lore-tab="entries" data-i18n="lore.tab.entries">已入库</button>
-          <button type="button" class="lore-tab" id="tabLoreRecent" role="tab" aria-selected="false" aria-controls="lorePanelRecent" data-lore-tab="recent" data-i18n="lore.tab.recent">最近</button>
+          <button type="button" class="lore-tab on" id="tabLoreConfig" role="tab" aria-selected="true" aria-controls="lorePanelConfig" data-lore-tab="config" data-i18n="lore.tab.config">配置</button>
+          <button type="button" class="lore-tab" id="tabLoreTools" role="tab" aria-selected="false" aria-controls="lorePanelTools" data-lore-tab="tools" data-i18n="lore.tab.tools">工具测试</button>
+          <button type="button" class="lore-tab" id="tabLoreEntries" role="tab" aria-selected="false" aria-controls="lorePanelEntries" data-lore-tab="entries" data-i18n="lore.tab.entries" hidden>已入库</button>
+          <button type="button" class="lore-tab" id="tabLorePending" role="tab" aria-selected="false" aria-controls="lorePanelPending" data-lore-tab="pending" data-i18n="lore.tab.pending" hidden>待确认</button>
         </div>
         <div class="lore-panels">
+          <div class="lore-panel" id="lorePanelConfig" role="tabpanel" aria-labelledby="tabLoreConfig" data-lore-panel="config">
+            <div class="lore-config-chrome">
+              <span class="admin-meta" id="loreSettingsMeta" hidden></span>
+              <span class="settings-path" id="loreSettingsPath" title="" hidden></span>
+              <p class="settings-status" id="loreSettingsStatus"></p>
+            </div>
+            <div class="lore-config-scroll">
+              <div class="settings-groups" id="loreSettingsGroups"></div>
+            </div>
+          </div>
+          <div class="lore-panel" id="lorePanelEntries" role="tabpanel" aria-labelledby="tabLoreEntries" data-lore-panel="entries" hidden>
+            <div class="lore-entries-chrome">
+              <span class="admin-meta" data-i18n="lore.entriesSortHint">按更新时间</span>
+              <div class="lore-entries-sort" role="group" data-i18n-aria="lore.entriesSortHint" aria-label="按更新时间">
+                <button type="button" id="btnLoreEntriesSortNewest" class="on" data-lore-entries-sort="newest" data-i18n="lore.entriesSortNewest" aria-pressed="true">新→旧</button>
+                <button type="button" id="btnLoreEntriesSortOldest" data-lore-entries-sort="oldest" data-i18n="lore.entriesSortOldest" aria-pressed="false">旧→新</button>
+              </div>
+            </div>
+            <div class="lore-entries-scroll">
+              <div id="loreEntriesList"></div>
+            </div>
+          </div>
+          <div class="lore-panel" id="lorePanelTools" role="tabpanel" aria-labelledby="tabLoreTools" data-lore-panel="tools" hidden>
+            <div class="lore-tools-grid" id="loreToolsGrid">
+              <article class="lore-tool-card">
+                <h3 data-i18n="lore.tools.searchTitle">lore_search · 检索</h3>
+                <p class="hint" data-i18n="lore.tools.searchHint">混合检索：工作区正文 / 文件名 ∪ 笔记（不含旁路短 KV）。</p>
+                <div class="lore-tool-row">
+                  <input type="text" id="loreToolSearchQ" data-i18n-placeholder="lore.tools.searchPlaceholder" placeholder="输入关键词…" />
+                  <button type="button" class="primary" id="btnLoreToolSearch" data-i18n="lore.tools.run">查询</button>
+                </div>
+                <pre class="lore-tool-out" id="loreToolSearchOut" hidden></pre>
+              </article>
+              <article class="lore-tool-card">
+                <h3 data-i18n="lore.tools.getTitle">lore_get · 读取</h3>
+                <p class="hint" data-i18n="lore.tools.getHint">按笔记 id、文件路径或索引命中读取。</p>
+                <div class="lore-tool-row">
+                  <input type="text" id="loreToolGetKey" data-i18n-placeholder="lore.tools.getPlaceholder" placeholder="note id 或文件路径…" />
+                  <button type="button" class="primary" id="btnLoreToolGet" data-i18n="lore.tools.run">查询</button>
+                </div>
+                <pre class="lore-tool-out" id="loreToolGetOut" hidden></pre>
+              </article>
+              <article class="lore-tool-card">
+                <h3 data-i18n="lore.tools.nameTitle">name_index_search · 文件名</h3>
+                <p class="hint" data-i18n="lore.tools.nameHint">查预建文件名/路径索引（需先重建）。</p>
+                <div class="lore-tool-row">
+                  <input type="text" id="loreToolNameQ" data-i18n-placeholder="lore.tools.namePlaceholder" placeholder="文件名或路径片段…" />
+                  <button type="button" class="primary" id="btnLoreToolName" data-i18n="lore.tools.run">查询</button>
+                </div>
+                <pre class="lore-tool-out" id="loreToolNameOut" hidden></pre>
+              </article>
+              <article class="lore-tool-card">
+                <h3 data-i18n="lore.tools.ftsTitle">fts_search · 正文 FTS</h3>
+                <p class="hint" data-i18n="lore.tools.ftsHint">查可读区正文 FTS5（需配置目录并重建）。</p>
+                <div class="lore-tool-row">
+                  <input type="text" id="loreToolFtsQ" data-i18n-placeholder="lore.tools.ftsPlaceholder" placeholder="正文关键词…" />
+                  <button type="button" class="primary" id="btnLoreToolFts" data-i18n="lore.tools.run">查询</button>
+                </div>
+                <pre class="lore-tool-out" id="loreToolFtsOut" hidden></pre>
+              </article>
+              <article class="lore-tool-card">
+                <h3 data-i18n="lore.tools.jumpTitle">跳转与重建</h3>
+                <p class="hint" data-i18n="lore.tools.jumpHint">工作区索引扫 work_root；数据目录索引扫 data/lore。库文件都落在 data 下。</p>
+                <div class="lore-tool-actions">
+                  <button type="button" data-lore-jump="entries" data-i18n="lore.tools.jumpEntries">已入库列表</button>
+                </div>
+                <p class="lore-tool-group-label" data-i18n="lore.tools.groupWorkspace">工作区索引（扫工作区目录）</p>
+                <p class="hint" data-i18n="lore.tools.groupWorkspaceHint">源：配置里的工作区根；缓存库：data/memory_index/</p>
+                <div class="lore-tool-actions">
+                  <button type="button" id="btnLoreToolReindexNames" data-i18n="lore.tools.reindexNames">重建文件名索引</button>
+                  <button type="button" id="btnLoreToolReindexContent" data-i18n="lore.tools.reindexContent">重建正文 FTS</button>
+                </div>
+                <p class="lore-tool-group-label" data-i18n="lore.tools.groupData">知识库存盘索引（data/lore 笔记）</p>
+                <p class="hint" data-i18n="lore.tools.groupDataHint">只重建笔记 FTS/向量；不扫 memory_index / 任务会话 / 观察落盘（那些不是二次文件缓存源）。</p>
+                <div class="lore-tool-actions">
+                  <button type="button" id="btnLoreToolReindexFts" data-i18n="lore.tools.reindexLoreFts">重建知识库 FTS</button>
+                  <button type="button" id="btnLoreToolReindex" data-i18n="lore.reindex">重建向量</button>
+                </div>
+                <p class="hint" data-i18n="lore.tools.dataBizHint">任务会话 → /api/tasks?q=；系统日志 → 日志页；观察落盘暂无全文工具。详情见分析文档「数据盘索引按业务划分」。</p>
+                <div class="lore-reindex-progress" id="loreReindexProgress" hidden aria-live="polite">
+                  <p class="lore-reindex-progress-title" id="loreReindexProgressTitle" data-i18n="lore.tools.reindexProgressTitle">重建进度</p>
+                  <p class="lore-reindex-progress-text" id="loreReindexProgressText"></p>
+                  <div class="lore-reindex-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="loreReindexBar">
+                    <div class="lore-reindex-bar-fill" id="loreReindexBarFill"></div>
+                  </div>
+                  <p class="lore-reindex-progress-meta" id="loreReindexProgressMeta"></p>
+                </div>
+              </article>
+            </div>
+          </div>
           <div class="lore-panel" id="lorePanelPending" role="tabpanel" aria-labelledby="tabLorePending" data-lore-panel="pending" hidden>
             <div id="loreList"></div>
-          </div>
-          <div class="lore-panel" id="lorePanelEntries" role="tabpanel" aria-labelledby="tabLoreEntries" data-lore-panel="entries">
-            <div id="loreEntriesList"></div>
-          </div>
-          <div class="lore-panel" id="lorePanelRecent" role="tabpanel" aria-labelledby="tabLoreRecent" data-lore-panel="recent" hidden>
-            <div id="loreRecentList"></div>
           </div>
         </div>
       </div>
@@ -5291,18 +5707,43 @@
     const modelPage = document.getElementById("modelPage");
     const loreList = document.getElementById("loreList");
     const loreEntriesList = document.getElementById("loreEntriesList");
-    const loreRecentList = document.getElementById("loreRecentList");
+    const btnLoreEntriesSortNewest = document.getElementById("btnLoreEntriesSortNewest");
+    const btnLoreEntriesSortOldest = document.getElementById("btnLoreEntriesSortOldest");
     const loreCountMeta = document.getElementById("loreCountMeta");
     const loreStatusLine = document.getElementById("loreStatusLine");
     const btnLoreRefresh = document.getElementById("btnLoreRefresh");
     const btnLoreClear = document.getElementById("btnLoreClear");
     const btnLoreReindex = document.getElementById("btnLoreReindex");
+    const btnLoreBackConfig = document.getElementById("btnLoreBackConfig");
+    const btnLorePendingTicket = null;
+    const loreTicketCount = null;
+    const loreTicketBanner = null;
+    const loreTicketBannerText = null;
+    const btnLoreTicketGo = null;
+    const btnLoreToolSearch = document.getElementById("btnLoreToolSearch");
+    const btnLoreToolGet = document.getElementById("btnLoreToolGet");
+    const btnLoreToolName = document.getElementById("btnLoreToolName");
+    const btnLoreToolFts = document.getElementById("btnLoreToolFts");
+    const btnLoreToolReindex = document.getElementById("btnLoreToolReindex");
+    const btnLoreToolReindexFts = document.getElementById("btnLoreToolReindexFts");
+    const btnLoreToolReindexNames = document.getElementById("btnLoreToolReindexNames");
+    const btnLoreToolReindexContent = document.getElementById("btnLoreToolReindexContent");
+    const loreToolSearchQ = document.getElementById("loreToolSearchQ");
+    const loreToolGetKey = document.getElementById("loreToolGetKey");
+    const loreToolNameQ = document.getElementById("loreToolNameQ");
+    const loreToolFtsQ = document.getElementById("loreToolFtsQ");
+    const loreToolSearchOut = document.getElementById("loreToolSearchOut");
+    const loreToolGetOut = document.getElementById("loreToolGetOut");
+    const loreToolNameOut = document.getElementById("loreToolNameOut");
+    const loreToolFtsOut = document.getElementById("loreToolFtsOut");
     const loreTabButtons = Array.from(document.querySelectorAll("#lorePage [data-lore-tab]"));
     const lorePanels = Array.from(document.querySelectorAll("#lorePage [data-lore-panel]"));
     let loreRowsCache = [];
     let loreEntriesCache = [];
-    let loreActiveTab = "entries";
+    let loreEntriesSort = "newest"; // newest | oldest · 按 updated_at
+    let loreActiveTab = "config";
     let loreTabUserPicked = false;
+    let lorePendingCount = 0;
     const opsMeta = document.getElementById("opsMeta");
     const opsCountMeta = document.getElementById("opsCountMeta");
     const releaseList = document.getElementById("releaseList");
@@ -5341,6 +5782,15 @@
         path: document.getElementById("settingsPath"),
         status: document.getElementById("settingsStatus"),
         meta: document.getElementById("settingsMeta"),
+        clear: new Set(),
+        snapshot: null,
+      },
+      memory: {
+        scope: "memory",
+        groups: document.getElementById("loreSettingsGroups"),
+        path: document.getElementById("loreSettingsPath"),
+        status: document.getElementById("loreSettingsStatus"),
+        meta: document.getElementById("loreSettingsMeta"),
         clear: new Set(),
         snapshot: null,
       },
@@ -9691,6 +10141,9 @@
       if (phase === "accepted") return "other:accepted:_";
       if (phase === "orchestrate") return "other:orchestrate:_";
       if (phase === "plan_build") return "other:plan_build:_";
+      // 复盘分析/执行：同相合并，便于心跳与 LLM 直播就地刷新（勿按 message_id 拆卡）
+      if (phase === "analyzing") return "other:analyzing:_";
+      if (phase === "applying") return "other:applying:_";
       // 终态收尾（完成/失败/归档）并入步骤流，同态合并避免双条
       if (phase === "completed" || phase === "failed" || phase === "archived") {
         return `other:status:${phase}`;
@@ -10726,12 +11179,20 @@
             card.uiTitleKey = "step.cancelledDone";
           }
         }
-        if (phase === "orchestrate" || phase === "plan_build") {
+        if (
+          phase === "orchestrate" ||
+          phase === "plan_build" ||
+          phase === "analyzing" ||
+          phase === "applying"
+        ) {
           const hasThinking = !!String(meta.thinking_text || "").trim();
           const hasContent = !!String(meta.content_text || "").trim();
-          const pending = /…\s*$/.test(String(text || "").trim());
-          running = !!(liveFlag || pending);
-          card.settled = !liveFlag && !pending;
+          const apiWait = meta.api_wait === true || meta.api_wait === "true";
+          const pending =
+            /…\s*$/.test(String(text || "").trim()) ||
+            /等待|分析中|整理复盘|备份并执行/.test(String(text || ""));
+          running = !!(liveFlag || apiWait || pending);
+          card.settled = !liveFlag && !apiWait && !pending;
           if (running) {
             conclusionText = "";
             if (card.conclusion) {
@@ -10745,6 +11206,9 @@
           } else if (running && hasContent) {
             badgeText = phaseLabel(phase) || badgeText;
             titleText = tr("think.stream.output");
+          } else if (running && (apiWait || pending)) {
+            badgeText = phaseLabel(phase) || badgeText;
+            titleText = firstLine(text) || tr("step.waitingModel");
           } else if (!running && hasThinking) {
             badgeText = tr("step.thinkingDone");
             titleText = firstLine(text) || tr("step.thinkingDone");
@@ -12569,8 +13033,27 @@
       });
     }
 
+    function updateLoreTicketUi(pendingN) {
+      lorePendingCount = Math.max(0, Number(pendingN) || 0);
+      // 旁路短 KV / 待确认工单：Web 暂时不展示（后端能力仍保留、默认关）
+      if (loreTicketCount) loreTicketCount.textContent = "0";
+      if (btnLorePendingTicket) btnLorePendingTicket.hidden = true;
+      if (loreTicketBanner) loreTicketBanner.hidden = true;
+      const entriesTab = document.getElementById("tabLoreEntries");
+      const pendingTab = document.getElementById("tabLorePending");
+      if (entriesTab) entriesTab.hidden = loreActiveTab !== "entries";
+      if (pendingTab) pendingTab.hidden = true;
+    }
+
+    function openLorePendingTickets({ user = true } = {}) {
+      setLoreTab("pending", { user });
+    }
+
     function setLoreTab(which, { user = false } = {}) {
-      const tab = ["pending", "entries", "recent"].includes(which) ? which : "entries";
+      const raw = which === "recent" ? "entries" : which;
+      const tab = ["config", "entries", "tools", "pending"].includes(raw)
+        ? raw
+        : "config";
       loreActiveTab = tab;
       if (user) loreTabUserPicked = true;
       loreTabButtons.forEach((btn) => {
@@ -12583,6 +13066,15 @@
         panel.hidden = !on;
       });
       if (btnLoreClear) btnLoreClear.hidden = tab !== "pending";
+      if (btnLoreReindex) btnLoreReindex.hidden = true;
+      if (btnLoreRefresh) btnLoreRefresh.hidden = tab === "config" || tab === "tools";
+      if (btnLoreBackConfig) btnLoreBackConfig.hidden = tab === "config";
+      updateLoreTicketUi(lorePendingCount);
+      if (tab === "config") {
+        loadSettings("memory").catch((e) => {
+          setSettingsStatus("memory", String(e.message || e), "err");
+        });
+      }
     }
 
     function showLorePage() {
@@ -12594,10 +13086,69 @@
       loreTabUserPicked = false;
       showAdminMain("lore");
       titleText.textContent = tr("title.lore");
+      setLoreTab("config");
       refreshLore().catch((e) => {
         if (loreList) loreList.innerHTML = `<div class="task-empty">${String(e.message || e)}</div>`;
         if (loreCountMeta) loreCountMeta.textContent = "";
       });
+    }
+
+    async function runLoreToolSearch() {
+      if (!loreToolSearchOut) return;
+      const q = (loreToolSearchQ && loreToolSearchQ.value) || "";
+      loreToolSearchOut.hidden = false;
+      loreToolSearchOut.textContent = tr("lore.tools.running");
+      try {
+        const data = await taskApi(
+          "/api/lore/search?q=" + encodeURIComponent(q) + "&limit=20"
+        );
+        loreToolSearchOut.textContent = JSON.stringify(data, null, 2);
+      } catch (e) {
+        loreToolSearchOut.textContent = String(e.message || e);
+      }
+    }
+
+    async function runLoreToolGet() {
+      if (!loreToolGetOut) return;
+      const key = (loreToolGetKey && loreToolGetKey.value) || "";
+      loreToolGetOut.hidden = false;
+      loreToolGetOut.textContent = tr("lore.tools.running");
+      try {
+        const data = await taskApi("/api/lore/get?key=" + encodeURIComponent(key));
+        loreToolGetOut.textContent = JSON.stringify(data, null, 2);
+      } catch (e) {
+        loreToolGetOut.textContent = String(e.message || e);
+      }
+    }
+
+    async function runLoreToolName() {
+      if (!loreToolNameOut) return;
+      const q = (loreToolNameQ && loreToolNameQ.value) || "";
+      loreToolNameOut.hidden = false;
+      loreToolNameOut.textContent = tr("lore.tools.running");
+      try {
+        const data = await taskApi(
+          "/api/memory/index/names?q=" + encodeURIComponent(q) + "&limit=50"
+        );
+        loreToolNameOut.textContent = JSON.stringify(data, null, 2);
+      } catch (e) {
+        loreToolNameOut.textContent = String(e.message || e);
+      }
+    }
+
+    async function runLoreToolFts() {
+      if (!loreToolFtsOut) return;
+      const q = (loreToolFtsQ && loreToolFtsQ.value) || "";
+      loreToolFtsOut.hidden = false;
+      loreToolFtsOut.textContent = tr("lore.tools.running");
+      try {
+        const data = await taskApi(
+          "/api/memory/index/fts?q=" + encodeURIComponent(q) + "&limit=40"
+        );
+        loreToolFtsOut.textContent = JSON.stringify(data, null, 2);
+      } catch (e) {
+        loreToolFtsOut.textContent = String(e.message || e);
+      }
     }
 
     function loreRowLabel(row) {
@@ -12630,15 +13181,47 @@
       return s.replace("T", " ").replace(/Z$/, "").slice(0, 16);
     }
 
+    function syncLoreEntriesSortUi() {
+      const newest = loreEntriesSort !== "oldest";
+      if (btnLoreEntriesSortNewest) {
+        btnLoreEntriesSortNewest.classList.toggle("on", newest);
+        btnLoreEntriesSortNewest.setAttribute("aria-pressed", newest ? "true" : "false");
+      }
+      if (btnLoreEntriesSortOldest) {
+        btnLoreEntriesSortOldest.classList.toggle("on", !newest);
+        btnLoreEntriesSortOldest.setAttribute("aria-pressed", newest ? "false" : "true");
+      }
+    }
+
+    function setLoreEntriesSort(which) {
+      loreEntriesSort = which === "oldest" ? "oldest" : "newest";
+      syncLoreEntriesSortUi();
+      renderLoreEntries(loreEntriesCache);
+    }
+
+    function sortedLoreEntries(rows) {
+      const list = (rows || []).slice();
+      list.sort((a, b) => {
+        const ta = String((a && a.updated_at) || "");
+        const tb = String((b && b.updated_at) || "");
+        if (ta === tb) return 0;
+        if (loreEntriesSort === "oldest") return ta < tb ? -1 : 1;
+        return ta > tb ? -1 : 1;
+      });
+      return list;
+    }
+
     function renderLoreEntries(rows) {
       if (!loreEntriesList) return;
       loreEntriesCache = rows || [];
-      if (!loreEntriesCache.length) {
+      syncLoreEntriesSortUi();
+      const viewRows = sortedLoreEntries(loreEntriesCache);
+      if (!viewRows.length) {
         loreEntriesList.innerHTML = `<div class="task-empty">${escapeHtml(tr("lore.entriesEmpty"))}</div>`;
         return;
       }
       loreEntriesList.innerHTML = "";
-      loreEntriesCache.forEach((row, idx) => {
+      viewRows.forEach((row) => {
         const el = document.createElement("div");
         const on = row.enabled !== false;
         el.className = "lore-entry" + (on ? "" : " disabled-entry");
@@ -12679,8 +13262,8 @@
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                kind: loreEntriesCache[idx].kind,
-                id: loreEntriesCache[idx].id,
+                kind: row.kind,
+                id: row.id,
                 enabled: !on,
               }),
             });
@@ -12702,8 +13285,8 @@
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                kind: loreEntriesCache[idx].kind,
-                id: loreEntriesCache[idx].id,
+                kind: row.kind,
+                id: row.id,
               }),
             });
             await refreshLore();
@@ -12720,32 +13303,42 @@
     }
 
     async function refreshLore() {
-      const [st, buf, entries, recent] = await Promise.all([
+      const [st, buf, entries] = await Promise.all([
         taskApi("/api/lore/status"),
         taskApi("/api/lore/buffer?limit=120"),
         taskApi("/api/lore/entries?limit=200"),
-        taskApi("/api/lore/recent?limit=40"),
       ]);
       loreRowsCache = buf.rows || [];
       const n = loreRowsCache.length;
       const entryN = (entries.rows || []).length;
+      // 主页固定为配置；待确认走工单入口，不自动抢 Tab
       if (!loreTabUserPicked) {
-        setLoreTab(n > 0 ? "pending" : "entries");
+        setLoreTab("config");
       } else {
         setLoreTab(loreActiveTab);
       }
+      updateLoreTicketUi(n);
       if (loreCountMeta) {
-        loreCountMeta.textContent = tr("lore.meta.summary")
-          .replace("{pending}", String(n))
-          .replace("{entries}", String(entryN));
+        loreCountMeta.textContent = tr("lore.meta.entriesOnly").replace(
+          "{entries}",
+          String(entryN)
+        );
       }
       if (loreStatusLine) {
         const vecOn = !!st.vector_enabled;
         const pkg = !!st.sqlite_vec_available;
-        const autoP1 = !!st.auto_p1_kv;
+        const workFts = st.workspace_fts_enabled !== false && st.workspace_fts_enabled !== undefined
+          ? !!st.workspace_fts_enabled
+          : st.fts5_enabled !== false;
+        const loreFts = st.lore_note_fts_enabled !== false && st.lore_note_fts_enabled !== undefined
+          ? !!st.lore_note_fts_enabled
+          : st.fts5_enabled !== false;
+        const nameOn = st.name_index_enabled !== false;
         loreStatusLine.innerHTML =
+          `<span class="${workFts ? "on" : "off"}">${escapeHtml(workFts ? tr("lore.status.workFtsOn") : tr("lore.status.workFtsOff"))}</span>` +
+          `<span class="${nameOn ? "on" : "off"}">${escapeHtml(nameOn ? tr("lore.status.nameOn") : tr("lore.status.nameOff"))}</span>` +
+          `<span class="${loreFts ? "on" : "off"}">${escapeHtml(loreFts ? tr("lore.status.loreFtsOn") : tr("lore.status.loreFtsOff"))}</span>` +
           `<span class="${vecOn ? "on" : "off"}">${escapeHtml(vecOn ? tr("lore.status.vectorOn") : tr("lore.status.vectorOff"))}</span>` +
-          `<span class="${autoP1 ? "off" : "on"}">${escapeHtml(autoP1 ? tr("lore.status.autoP1") : tr("lore.status.bufferP1"))}</span>` +
           `<span>${escapeHtml(pkg ? tr("lore.status.vecPkg") : tr("lore.status.vecMissing"))}</span>` +
           (st.embed_model ? `<span>${escapeHtml(String(st.embed_model))}</span>` : "");
       }
@@ -12817,46 +13410,6 @@
         }
       }
       renderLoreEntries(entries.rows || []);
-      if (loreRecentList) {
-        const commits = recent.rows || [];
-        if (!commits.length) {
-          loreRecentList.innerHTML = `<div class="task-empty">${escapeHtml(tr("lore.recentEmpty"))}</div>`;
-        } else {
-          loreRecentList.innerHTML = "";
-          commits.forEach((row) => {
-            const el = document.createElement("div");
-            el.className = "lore-row committed";
-            const kindLabel = row.note || row.kind === "note" ? tr("lore.kind.note") : tr("lore.kind.kv");
-            const label = row.key || (row.note && (row.note.title || row.note.id)) || loreRowLabel(row);
-            const main = document.createElement("div");
-            main.className = "lore-main";
-            const top = document.createElement("div");
-            top.className = "lore-top";
-            top.innerHTML =
-              `<span class="lore-pill kind">${escapeHtml(kindLabel)}</span>` +
-              `<span class="lore-key">${escapeHtml(String(label || "—"))}</span>` +
-              (row.importance ? `<span class="lore-pill">${escapeHtml(String(row.importance))}</span>` : "") +
-              (row.ts ? `<span class="lore-time">${escapeHtml(loreFmtTime(row.ts))}</span>` : "");
-            const body = document.createElement("div");
-            body.className = "lore-body";
-            let bodyText = "";
-            if (row.value != null) {
-              bodyText = typeof row.value === "string" ? row.value : JSON.stringify(row.value);
-            } else if (row.note) {
-              bodyText = String(row.note.body || row.note.title || "");
-            } else {
-              bodyText = loreRowBody(row) || "";
-            }
-            if (row.evidence) bodyText = (bodyText ? bodyText + "\n" : "") + String(row.evidence);
-            body.textContent = bodyText;
-            if (bodyText) body.title = bodyText;
-            main.appendChild(top);
-            main.appendChild(body);
-            el.appendChild(main);
-            loreRecentList.appendChild(el);
-          });
-        }
-      }
     }
 
     function showOpsPage() {
@@ -13769,7 +14322,12 @@
         }
       }
       if (form.path) {
-        if (formKey === "model" && data.model_profiles && data.model_profiles.dir) {
+        if (formKey === "memory") {
+          // 记忆页不展示 sqlite/字段计数等内部路径元信息
+          form.path.textContent = "";
+          form.path.title = "";
+          form.path.hidden = true;
+        } else if (formKey === "model" && data.model_profiles && data.model_profiles.dir) {
           const envPath = data.env_path || "";
           const dir = data.model_profiles.dir;
           form.path.textContent = tr("model.pathSummary", { env: envPath, dir });
@@ -13782,7 +14340,15 @@
           form.path.hidden = !envPath;
         }
       }
-      if (form.meta) form.meta.textContent = tr("settings.fieldsCount", { n: (data.fields || []).length });
+      if (form.meta) {
+        if (formKey === "memory") {
+          form.meta.textContent = "";
+          form.meta.hidden = true;
+        } else {
+          form.meta.hidden = false;
+          form.meta.textContent = tr("settings.fieldsCount", { n: (data.fields || []).length });
+        }
+      }
       const settingsGroups = form.groups;
       if (!settingsGroups) return;
       const openIds = new Set(
@@ -13796,7 +14362,12 @@
         const details = document.createElement("details");
         details.className = "settings-group";
         details.dataset.group = g.id;
-        details.open = firstRender ? idx === 0 : openIds.has(g.id);
+        // 记忆配置页两组（路径 / 索引）默认全展开，避免文件名索引被收在折叠里看不见
+        if (formKey === "memory") {
+          details.open = firstRender ? true : (openIds.size ? openIds.has(g.id) : true);
+        } else {
+          details.open = firstRender ? idx === 0 : openIds.has(g.id);
+        }
         const summary = document.createElement("summary");
         summary.textContent = localizeSettingsLabel("group", g.id, g.label || g.id);
         details.appendChild(summary);
@@ -13904,7 +14475,38 @@
             if (f.kind === "float") {
               inp.placeholder = tr("settings.floatEmpty");
             }
-            wrap.appendChild(inp);
+            const followKeys = new Set([
+              "FAWAI_LORE_FTS_DIR",
+              "FAWAI_NAME_INDEX_DIR",
+              "FAWAI_LORE_VECTOR_DIR",
+            ]);
+            if (formKey === "memory" && followKeys.has(f.key)) {
+              const row = document.createElement("div");
+              row.className = "settings-dir-row";
+              if (inp.value === "read_roots") {
+                inp.placeholder = tr("settings.followReadRootsValue");
+              } else if (inp.value === "work_root" || !inp.value) {
+                inp.placeholder = tr("settings.followWorkRootValue");
+              }
+              const workBtn = document.createElement("button");
+              workBtn.type = "button";
+              workBtn.textContent = tr("settings.followWorkRoot");
+              workBtn.title = tr("settings.followWorkRootTitle");
+              workBtn.setAttribute("aria-label", tr("settings.followWorkRoot"));
+              workBtn.dataset.followWorkRootFor = f.key;
+              const followBtn = document.createElement("button");
+              followBtn.type = "button";
+              followBtn.textContent = tr("settings.followReadRoots");
+              followBtn.title = tr("settings.followReadRootsTitle");
+              followBtn.setAttribute("aria-label", tr("settings.followReadRoots"));
+              followBtn.dataset.followReadRootsFor = f.key;
+              row.appendChild(inp);
+              row.appendChild(workBtn);
+              row.appendChild(followBtn);
+              wrap.appendChild(row);
+            } else {
+              wrap.appendChild(inp);
+            }
           }
           if (f.hint) {
             const hint = document.createElement("p");
@@ -13918,6 +14520,199 @@
         settingsGroups.appendChild(details);
       });
       wireModelProviderControls(formKey);
+      if (formKey === "memory") {
+        wireMemoryDirShortcuts(formKey);
+        renderIndexPolicyBlocks(formKey, data.index_policy || null);
+      }
+    }
+
+    function indexMethodLabel(id, fallback) {
+      return tOr("settings.index.method." + id, fallback || id);
+    }
+
+    function renderMethodChecks(container, methods, selected, opts) {
+      const options = opts || {};
+      const allowed = options.allowed || methods || [];
+      const locked = !!options.locked;
+      const namePrefix = options.namePrefix || "idx";
+      container.className = "index-methods";
+      container.innerHTML = "";
+      if (locked || !allowed.length) {
+        const p = document.createElement("p");
+        p.className = "index-biz-locked";
+        p.textContent = options.lockedHint || tr("settings.index.lockedNoIndex");
+        container.appendChild(p);
+        return;
+      }
+      allowed.forEach((m) => {
+        const mid = typeof m === "string" ? m : m.id;
+        const labText = typeof m === "string"
+          ? indexMethodLabel(mid, mid)
+          : indexMethodLabel(mid, m.label || mid);
+        const lab = document.createElement("label");
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.dataset.indexMethod = mid;
+        if (options.zone) cb.dataset.indexZone = options.zone;
+        if (options.biz) cb.dataset.indexBiz = options.biz;
+        cb.name = namePrefix + "-" + mid;
+        cb.checked = Array.isArray(selected) && selected.indexOf(mid) >= 0;
+        lab.appendChild(cb);
+        lab.appendChild(document.createTextNode(labText));
+        container.appendChild(lab);
+      });
+    }
+
+    function renderIndexPolicyBlocks(formKey, indexPayload) {
+      const form = settingsForms[formKey];
+      if (!form || !form.groups || !indexPayload) return;
+      const policy = indexPayload.policy || {};
+      const ui = indexPayload.ui || {};
+      const zoneMethods = ui.zone_methods || [
+        { id: "fts", label: "FTS5 全文" },
+        { id: "name", label: "文件名索引" },
+      ];
+      const businesses = ui.businesses || [];
+
+      const workField = form.groups.querySelector('.settings-field[data-key="FAWAI_WORK_ROOT"]');
+      if (workField) {
+        let wrap = workField.querySelector("[data-index-zone-methods=work]");
+        if (!wrap) {
+          wrap = document.createElement("div");
+          wrap.dataset.indexZoneMethods = "work";
+          workField.appendChild(wrap);
+        }
+        wrap.innerHTML = "";
+        const row = document.createElement("div");
+        renderMethodChecks(row, zoneMethods, (policy.work && policy.work.methods) || [], {
+          zone: "work",
+          allowed: zoneMethods,
+          namePrefix: "idx-work",
+        });
+        wrap.appendChild(row);
+      }
+
+      const readField = form.groups.querySelector('.settings-field[data-key="FAWAI_READ_ROOTS"]');
+      if (readField) {
+        let wrap = readField.querySelector("[data-index-zone-methods=read]");
+        if (!wrap) {
+          wrap = document.createElement("div");
+          wrap.dataset.indexZoneMethods = "read";
+          readField.appendChild(wrap);
+        }
+        wrap.innerHTML = "";
+        const row = document.createElement("div");
+        renderMethodChecks(row, zoneMethods, (policy.read && policy.read.methods) || [], {
+          zone: "read",
+          allowed: zoneMethods,
+          namePrefix: "idx-read",
+        });
+        wrap.appendChild(row);
+      }
+
+      const dataField = form.groups.querySelector('.settings-field[data-key="FAWAI_DATA_DIR"]');
+      if (dataField) {
+        let wrap = dataField.querySelector("[data-index-data-biz]");
+        if (!wrap) {
+          wrap = document.createElement("div");
+          wrap.dataset.indexDataBiz = "1";
+          dataField.appendChild(wrap);
+        }
+        wrap.innerHTML = "";
+        const list = document.createElement("div");
+        list.className = "index-biz-list";
+        const bizMap = ((policy.data || {}).businesses) || {};
+        businesses.forEach((b) => {
+          // 锁定业务（索引缓存/配置库）不展示：无法配置索引
+          if (b.locked) return;
+          const allowed = (b.method_options && b.method_options.length)
+            ? b.method_options
+            : (b.allowed || []).map((id) => ({ id, label: id }));
+          if (!allowed.length) return;
+          const row = document.createElement("div");
+          row.className = "index-biz-row";
+          const h = document.createElement("p");
+          h.className = "index-biz-title";
+          h.textContent = tOr("settings.index.biz." + b.id, b.label || b.id);
+          row.appendChild(h);
+          if (b.paths) {
+            const paths = document.createElement("p");
+            paths.className = "index-biz-paths";
+            paths.textContent = b.paths;
+            row.appendChild(paths);
+          }
+          const selected = (bizMap[b.id] && bizMap[b.id].methods) || [];
+          const methods = document.createElement("div");
+          renderMethodChecks(methods, allowed, selected, {
+            biz: b.id,
+            allowed: allowed,
+            locked: false,
+            namePrefix: "idx-biz-" + b.id,
+          });
+          row.appendChild(methods);
+          list.appendChild(row);
+        });
+        wrap.appendChild(list);
+      }
+    }
+
+    function collectIndexPolicyFromForm(formKey) {
+      const form = settingsForms[formKey];
+      if (!form || !form.groups) return null;
+      const work = [];
+      const read = [];
+      form.groups.querySelectorAll("[data-index-zone][data-index-method]").forEach((el) => {
+        if (!el.checked) return;
+        const z = el.dataset.indexZone;
+        const m = el.dataset.indexMethod;
+        if (z === "work") work.push(m);
+        if (z === "read") read.push(m);
+      });
+      const businesses = {};
+      form.groups.querySelectorAll("[data-index-biz][data-index-method]").forEach((el) => {
+        const bid = el.dataset.indexBiz;
+        if (!bid) return;
+        if (!businesses[bid]) businesses[bid] = { methods: [] };
+        if (el.checked) businesses[bid].methods.push(el.dataset.indexMethod);
+      });
+      // 锁定业务也写入空 methods，便于后端规范化
+      form.groups.querySelectorAll("[data-index-data-biz] .index-biz-row").forEach(() => {});
+      const snap = (form.snapshot && form.snapshot.index_policy) || {};
+      const uiBiz = ((snap.ui || {}).businesses) || [];
+      uiBiz.forEach((b) => {
+        if (!businesses[b.id]) businesses[b.id] = { methods: [] };
+      });
+      return {
+        version: 1,
+        work: { methods: work },
+        read: { methods: read },
+        data: { businesses },
+      };
+    }
+
+    function wireMemoryDirShortcuts(formKey) {
+      const form = settingsForms[formKey];
+      if (!form || !form.groups) return;
+      form.groups.querySelectorAll("[data-follow-work-root-for]").forEach((btn) => {
+        btn.onclick = () => {
+          const targetKey = btn.getAttribute("data-follow-work-root-for");
+          const target = settingsControlEl(form.groups, targetKey);
+          if (!target) return;
+          target.value = "work_root";
+          target.placeholder = tr("settings.followWorkRootValue");
+          setSettingsStatus(formKey, tr("settings.followWorkRootSet", { key: localizeSettingsLabel("field", targetKey, targetKey) }), "ok");
+        };
+      });
+      form.groups.querySelectorAll("[data-follow-read-roots-for]").forEach((btn) => {
+        btn.onclick = () => {
+          const targetKey = btn.getAttribute("data-follow-read-roots-for");
+          const target = settingsControlEl(form.groups, targetKey);
+          if (!target) return;
+          target.value = "read_roots";
+          target.placeholder = tr("settings.followReadRootsValue");
+          setSettingsStatus(formKey, tr("settings.followReadRootsSet", { key: localizeSettingsLabel("field", targetKey, targetKey) }), "ok");
+        };
+      });
     }
 
     function llmProvidersCatalog(formKey) {
@@ -14064,6 +14859,7 @@
         if (!el.dataset || !el.dataset.key) return;
         if (el.tagName !== "INPUT" && el.tagName !== "SELECT") return;
         if (el.dataset.paramKey) return;
+        if (el.dataset.indexMethod) return;
         const key = el.dataset.key;
         const kind = el.dataset.kind;
         if (kind === "bool") {
@@ -14091,6 +14887,10 @@
           profiles[mid] = { params: (draft && draft.params) || {} };
         });
         payload.model_profiles = profiles;
+      }
+      if (formKey === "memory") {
+        const pol = collectIndexPolicyFromForm(formKey);
+        if (pol) payload.index_policy = pol;
       }
       return payload;
     }
@@ -15097,11 +15897,233 @@
     if (navOps) navOps.onclick = () => showOpsPage();
     if (navModel) navModel.onclick = () => showModelPage();
     if (navSettings) navSettings.onclick = () => showSettingsPage();
+    const btnLoreSettingsSave = document.getElementById("btnLoreSettingsSave");
+    if (btnLoreSettingsSave) {
+      btnLoreSettingsSave.onclick = () => saveSettings("memory");
+    }
     loreTabButtons.forEach((btn) => {
-      btn.onclick = () => setLoreTab(btn.getAttribute("data-lore-tab") || "entries", { user: true });
+      btn.onclick = () => setLoreTab(btn.getAttribute("data-lore-tab") || "config", { user: true });
     });
     setLoreTab(loreActiveTab);
     if (btnLoreRefresh) btnLoreRefresh.onclick = () => refreshLore().catch((e) => alert(String(e.message || e)));
+    if (btnLoreBackConfig) {
+      btnLoreBackConfig.onclick = () => setLoreTab("config", { user: true });
+    }
+    const goPendingTickets = () => openLorePendingTickets({ user: true });
+    if (btnLorePendingTicket) btnLorePendingTicket.onclick = goPendingTickets;
+    if (btnLoreTicketGo) btnLoreTicketGo.onclick = goPendingTickets;
+    if (btnLoreToolSearch) btnLoreToolSearch.onclick = () => runLoreToolSearch();
+    if (btnLoreToolGet) btnLoreToolGet.onclick = () => runLoreToolGet();
+    if (btnLoreToolName) btnLoreToolName.onclick = () => runLoreToolName();
+    if (btnLoreToolFts) btnLoreToolFts.onclick = () => runLoreToolFts();
+    if (loreToolSearchQ) {
+      loreToolSearchQ.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          runLoreToolSearch();
+        }
+      });
+    }
+    if (loreToolGetKey) {
+      loreToolGetKey.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          runLoreToolGet();
+        }
+      });
+    }
+    if (loreToolNameQ) {
+      loreToolNameQ.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          runLoreToolName();
+        }
+      });
+    }
+    if (loreToolFtsQ) {
+      loreToolFtsQ.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          runLoreToolFts();
+        }
+      });
+    }
+    const loreReindexProgress = document.getElementById("loreReindexProgress");
+    const loreReindexProgressText = document.getElementById("loreReindexProgressText");
+    const loreReindexProgressMeta = document.getElementById("loreReindexProgressMeta");
+    const loreReindexBar = document.getElementById("loreReindexBar");
+    const loreReindexBarFill = document.getElementById("loreReindexBarFill");
+    const loreReindexButtons = [
+      btnLoreToolReindexFts,
+      btnLoreToolReindexNames,
+      btnLoreToolReindexContent,
+      btnLoreToolReindex,
+      btnLoreReindex,
+    ].filter(Boolean);
+    let loreReindexPollTimer = null;
+
+    function loreReindexWhichLabel(which) {
+      const key = `lore.tools.reindexWhich.${which || ""}`;
+      const label = tr(key);
+      return label === key ? (which || "—") : label;
+    }
+
+    function setLoreReindexButtonsDisabled(disabled) {
+      loreReindexButtons.forEach((btn) => {
+        btn.disabled = !!disabled;
+      });
+    }
+
+    function renderLoreReindexProgress(p) {
+      if (!loreReindexProgress) return;
+      const running = !!p.running;
+      const phase = String(p.phase || "");
+      const err = p.error || (phase === "error" ? p.message : "");
+      const done = !running && (phase === "done" || phase === "error");
+      loreReindexProgress.hidden = false;
+      loreReindexProgress.classList.toggle("is-running", running);
+      loreReindexProgress.classList.toggle("is-done", done && !err);
+      loreReindexProgress.classList.toggle("is-error", !!err && !running);
+      const msg = String(p.message || (running ? tr("lore.tools.reindexStarting").replace("{which}", loreReindexWhichLabel(p.which)) : ""));
+      if (loreReindexProgressText) loreReindexProgressText.textContent = msg;
+      const indexed = p.indexed != null ? Number(p.indexed) : 0;
+      const total = p.total != null ? Number(p.total) : null;
+      const elapsed = p.elapsed_s != null ? Number(p.elapsed_s) : 0;
+      let pct = 8;
+      if (total && total > 0) pct = Math.max(5, Math.min(100, Math.round((indexed / total) * 100)));
+      else if (running) pct = Math.min(92, 12 + Math.floor(indexed / 50));
+      else if (done && !err) pct = 100;
+      if (loreReindexBarFill) loreReindexBarFill.style.width = `${pct}%`;
+      if (loreReindexBar) loreReindexBar.setAttribute("aria-valuenow", String(pct));
+      if (loreReindexProgressMeta) {
+        loreReindexProgressMeta.textContent = tr("lore.tools.reindexMeta")
+          .replace("{n}", String(indexed))
+          .replace("{s}", String(elapsed));
+      }
+    }
+
+    function stopLoreReindexPoll() {
+      if (loreReindexPollTimer) {
+        clearInterval(loreReindexPollTimer);
+        loreReindexPollTimer = null;
+      }
+    }
+
+    async function pollLoreReindexProgressOnce() {
+      const p = await taskApi("/api/memory/index/progress");
+      renderLoreReindexProgress(p);
+      return p;
+    }
+
+    async function runLoreReindexJob(which, startUrl) {
+      stopLoreReindexPoll();
+      setLoreReindexButtonsDisabled(true);
+      renderLoreReindexProgress({
+        running: true,
+        which,
+        phase: "starting",
+        message: tr("lore.tools.reindexStarting").replace("{which}", loreReindexWhichLabel(which)),
+        indexed: 0,
+        elapsed_s: 0,
+      });
+      try {
+        const started = await taskApi(startUrl, { method: "POST" });
+        if (started && started.busy) {
+          throw new Error(tr("lore.tools.reindexBusy"));
+        }
+        // 兼容旧同步响应（直接带 indexed/total）
+        if (started && started.ok && !started.started && (started.indexed != null || started.total != null)) {
+          const n = started.indexed != null ? started.indexed : started.total;
+          renderLoreReindexProgress({
+            running: false,
+            which,
+            phase: "done",
+            message: tr("lore.tools.reindexDone").replace("{n}", String(n)).replace("{s}", String(started.seconds || "—")),
+            indexed: n,
+            elapsed_s: started.seconds || 0,
+          });
+          await refreshLore();
+          return;
+        }
+        const deadline = Date.now() + 30 * 60 * 1000;
+        const tick = async () => {
+          const p = await pollLoreReindexProgressOnce();
+          if (!p.running && (p.phase === "done" || p.phase === "error" || p.error)) {
+            stopLoreReindexPoll();
+            setLoreReindexButtonsDisabled(false);
+            if (p.error || p.phase === "error") {
+              const err = p.error || p.message || "error";
+              renderLoreReindexProgress({ ...p, running: false, phase: "error", error: err });
+              alert(tr("lore.tools.reindexFail").replace("{err}", String(err)));
+            } else {
+              const n = p.indexed != null ? p.indexed : ((p.result && p.result.indexed) != null ? p.result.indexed : "—");
+              renderLoreReindexProgress({
+                ...p,
+                running: false,
+                phase: "done",
+                message: tr("lore.tools.reindexDone")
+                  .replace("{n}", String(n))
+                  .replace("{s}", String(p.elapsed_s != null ? p.elapsed_s : "—")),
+              });
+              await refreshLore();
+            }
+            return true;
+          }
+          if (Date.now() > deadline) {
+            stopLoreReindexPoll();
+            setLoreReindexButtonsDisabled(false);
+            throw new Error("reindex timeout");
+          }
+          return false;
+        };
+        if (await tick()) return;
+        loreReindexPollTimer = setInterval(() => {
+          tick().catch((e) => {
+            stopLoreReindexPoll();
+            setLoreReindexButtonsDisabled(false);
+            alert(String(e.message || e));
+          });
+        }, 450);
+      } catch (e) {
+        stopLoreReindexPoll();
+        setLoreReindexButtonsDisabled(false);
+        const err = String(e.message || e);
+        renderLoreReindexProgress({
+          running: false,
+          which,
+          phase: "error",
+          message: tr("lore.tools.reindexFail").replace("{err}", err),
+          error: err,
+          indexed: 0,
+        });
+        alert(err);
+      }
+    }
+
+    if (btnLoreToolReindexFts) {
+      btnLoreToolReindexFts.onclick = () => runLoreReindexJob("lore_fts", "/api/lore/fts/reindex");
+    }
+    if (btnLoreToolReindexNames) {
+      btnLoreToolReindexNames.onclick = () =>
+        runLoreReindexJob("name", "/api/memory/index/reindex?which=name");
+    }
+    if (btnLoreToolReindexContent) {
+      btnLoreToolReindexContent.onclick = () =>
+        runLoreReindexJob("fts", "/api/memory/index/reindex?which=fts");
+    }
+    document.querySelectorAll("#lorePage [data-lore-jump]").forEach((btn) => {
+      btn.onclick = () => {
+        const jump = btn.getAttribute("data-lore-jump") || "config";
+        setLoreTab(jump, { user: true });
+      };
+    });
+    if (btnLoreEntriesSortNewest) {
+      btnLoreEntriesSortNewest.onclick = () => setLoreEntriesSort("newest");
+    }
+    if (btnLoreEntriesSortOldest) {
+      btnLoreEntriesSortOldest.onclick = () => setLoreEntriesSort("oldest");
+    }
+    syncLoreEntriesSortUi();
     if (btnLoreClear) {
       btnLoreClear.onclick = async () => {
         if (!confirm(tr("lore.clearConfirm"))) return;
@@ -15113,17 +16135,11 @@
         }
       };
     }
-    if (btnLoreReindex) {
-      btnLoreReindex.onclick = async () => {
-        try {
-          const data = await taskApi("/api/lore/vector/reindex", { method: "POST" });
-          alert(tr("lore.reindexOk").replace("{n}", String(data.indexed != null ? data.indexed : "—")));
-          await refreshLore();
-        } catch (e) {
-          alert(String(e.message || e));
-        }
-      };
+    async function runLoreReindex() {
+      await runLoreReindexJob("vector", "/api/lore/vector/reindex");
     }
+    if (btnLoreReindex) btnLoreReindex.onclick = () => runLoreReindex();
+    if (btnLoreToolReindex) btnLoreToolReindex.onclick = () => runLoreReindex();
     if (btnSettingsSave) btnSettingsSave.onclick = () => saveSettings("system");
     if (btnModelSave) btnModelSave.onclick = () => saveLlmSettings();
     if (modelParamClose) modelParamClose.onclick = () => closeModelParamModal();

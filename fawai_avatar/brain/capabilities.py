@@ -414,14 +414,19 @@ CAPABILITIES: tuple[Capability, ...] = (
         id="lore_search",
         name="个人知识库·检索",
         modality="background",
-        when_to_use="按中英关键词检索 KV/笔记（路径落点、偏好、别名）",
+        when_to_use=(
+            "按 scopes 检索（必读 search_menu：efficiency 5最快→1最慢）；"
+            "例 scopes=[tasks]|[work_name]|[lore]|[work_content]|[logs]；"
+            "先窄高效率，空再扩或并行多个 lore_search；缺省=已开混合（勿当首选）；"
+            "回含 index_catalog/search_menu；不搜旁路短 KV"
+        ),
         action_kind="lore_search",
     ),
     Capability(
         id="lore_get",
         name="个人知识库·读取",
         modality="background",
-        when_to_use="按 KV key 或笔记 id 读取一条",
+        when_to_use="按笔记 id、文件路径或索引命中读取一条（非 KV key 主路径）",
         action_kind="lore_get",
     ),
     Capability(
@@ -449,8 +454,57 @@ CAPABILITIES: tuple[Capability, ...] = (
         id="lore_vector_reindex",
         name="个人知识库·向量重建",
         modality="background",
-        when_to_use="重建笔记 sqlite-vec 索引（FAWAI_LORE_VECTOR=auto/1 且已装 sqlite-vec）",
+        when_to_use="重建笔记 sqlite-vec 索引（向量开关开且已装 sqlite-vec）",
         action_kind="lore_vector_reindex",
+    ),
+    Capability(
+        id="lore_fts_reindex",
+        name="个人知识库·FTS重建",
+        modality="background",
+        when_to_use="重建 KV/笔记 FTS5 倒排（记忆配置 FTS5 开）",
+        action_kind="lore_fts_reindex",
+    ),
+    Capability(
+        id="name_index_search",
+        name="文件名索引·检索",
+        modality="background",
+        when_to_use="按文件名/路径片段查预建文件名索引（Everything 式；需先 memory_index_reindex）",
+        action_kind="name_index_search",
+    ),
+    Capability(
+        id="fts_search",
+        name="正文FTS·检索",
+        modality="background",
+        when_to_use="按词法查可读区正文 FTS5（需配置 FTS 目录并重建；非正则 rg）",
+        action_kind="fts_search",
+    ),
+    Capability(
+        id="memory_index_reindex",
+        name="记忆索引·重建",
+        modality="background",
+        when_to_use="重建文件名索引与/或正文 FTS（args.which=all|name|fts）",
+        action_kind="memory_index_reindex",
+    ),
+    Capability(
+        id="task_context_search",
+        name="任务内上下文·检索",
+        modality="background",
+        when_to_use=(
+            "搜**本任务**历史（用户追问/工具结果/compact 外的细节）；"
+            "规划近窗没有的本任务事实先用本工具；勿用 lore_search/fts 冒充；"
+            "默认仅当前 task_id"
+        ),
+        action_kind="task_context_search",
+    ),
+    Capability(
+        id="task_context_get",
+        name="任务内上下文·回灌",
+        modality="background",
+        when_to_use=(
+            "按 search 命中的 msg_id/index 或 observe_path 回灌本任务原文片段；"
+            "文件源码仍用 fs_read"
+        ),
+        action_kind="task_context_get",
     ),
     Capability(
         id="shell",
@@ -774,7 +828,14 @@ def capabilities_prompt_block(
         "Skill/教训 → skill_write / skill_search / skill_get；"
         "造临时脚本前 → shovel_search（先查 fawai_shovels）；能调已有铲则 shell 调；"
         "临时算数 → py_write→py_run；需求参数化/env；通用性≥3 再升铲或 skill_write；"
-        "个人知识库 → lore_search / lore_get / lore_set / lore_note_upsert / lore_buffer_list / lore_vector_reindex；"
+        "检索先读提示里的【索引配置】：按区/业务已开 methods 自行选工具；"
+        "本任务历史细节（近窗/摘要没有的追问或工具结果）→ task_context_search → task_context_get；"
+        "勿用 lore_search/fts_search 冒充任务上下文；"
+        "个人知识库 → lore_search（**传 scopes**，读 search_menu 效率档）/ lore_get；"
+        "lore_set / lore_note_upsert / lore_buffer_list / lore_vector_reindex / lore_fts_reindex；"
+        "专用 name_index_search / fts_search；现扫 fs_grep（效率1）；重建 → memory_index_reindex；"
+        "勿把 data/memory_index 当文件再搜；"
+        "fs_glob 无通配时可走文件名索引；fs_grep 可 prefer_fts=true 走正文 FTS；"
         "禁止用 click/type/hotkey 代替写文件或写 Skill；"
         "禁止改进化最少核（versioning/、runtime/releases|keeper|code_watch|reload_gate|port_guard.py、"
         "workspace/paths.py）与已存在的 doc/版本/v*/ 归档（仅本智能体写路径；人工/Cursor 不限）；"

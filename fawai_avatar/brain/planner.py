@@ -111,6 +111,15 @@ def _system_prompt(
     skills_block = f"{skills}\n" if skills else ""
     lore = "" if prof.short_rules else lore_prompt_block(goal)
     lore_block = f"{lore}\n" if lore else ""
+    index_cfg = ""
+    try:
+        from fawai_avatar.config import index_policy_prompt_block
+
+        # 检索 LLM 必须感知索引配置；短规则档用压缩版
+        index_cfg = index_policy_prompt_block(compact=bool(prof.short_rules))
+    except Exception:
+        index_cfg = ""
+    index_cfg_block = f"{index_cfg}\n" if index_cfg else ""
     coding_extra = ""
     if coding and not prof.short_rules:
         coding_extra = (
@@ -212,9 +221,10 @@ def _system_prompt(
 {profile_line}平台：
 {platform_prompt_block()}
 {caps_block}
-{rules_inject}{ctx_block}{thought_rule}{doc_screen_rule}规则：
+{index_cfg_block}{rules_inject}{ctx_block}{thought_rule}{doc_screen_rule}规则：
 - 只输出一个 JSON 对象，无 markdown 其它前后缀；禁止声称已执行物理操作。
 - shell 用 args.cmd；fs_read 用 path + offset/limit；故意同窗再读加 allow_repeat=true；fs_grep 用 pattern；fs_patch/replace 的 old 须与原文一致。
+- 近窗/【已完成步骤摘要】里没有的**本任务**事实（追问、工具命中细节）→ `task_context_search` 再 `task_context_get`；文件再 `fs_read`。禁止因「曾经读过」且正文已不在上下文就 failed。勿用 lore_search 冒充任务上下文。
 - 缺 path 时定位：优先 fs_grep/fs_glob（收窄 path/glob，支持 `**` 与 `{{html,js}}`）；多词才 explore_search（默认只 grep）；结构用 code_symbols；已有 path 定向读改；禁止整文件盲读。
 - **动作段**：不冲突的读和写可一次排 4～8 个 actions（减少反复进模），`step_kind` 用 `act_parallel`。同一路径的读与写、同一路径的多写不要同批。前台、`shell` 不要与其它动作同批。多步执行流倾向带 `"expect"`（精确 `contains`，模糊 `contains_any` / `not_contains`）；纯探路与 **fs_patch/replace 默认可不带**；勿断言不存在的 `patch applied`（成功回执是 `· applied`）。非硬闸。带 expect 的动作单独成串行段。新建脚本 stdout 打 `OK` 或 `FAIL:原因`，失败非零退出。
 - **step_kind**（本步类型）：`sense` 取证；`act_serial` 串行执行段；`act_parallel` 不冲突的读和写并发；`analyze` 分析；`finalize` 收尾。纯执行/分析/收尾时 observe_kinds 优先 `none`（勿空刷工作区顶层列表）；需画面/AX 再点选。
@@ -238,13 +248,14 @@ def _system_prompt(
 {profile_line}须根据下列运行平台事实选型（自动探测，勿臆造另一套 OS）：
 {platform_prompt_block()}
 {caps_block}
-{skills_block}{lore_block}{rules_inject}{ctx_block}
+{skills_block}{index_cfg_block}{lore_block}{rules_inject}{ctx_block}
 规则：
 - 你只输出计划，不执行操作；禁止声称已点击、已输入或已完成任何物理操作。
 - 未走原生 tool_calls 时：仅输出一个 JSON 对象，不要 markdown 代码块或其它前后缀文字。
 {thought_rule}- shell 动作的命令字段必须是 args.cmd（字符串）。也兼容 args.command，但请优先写 cmd。探测多 CLI：`command -v a b c || true`（which 缺一个即非零）。
 - hotkey：args.keys 为字符串列表，如 ["cmd","tab"]；禁止只写 {{"key":"cmd+tab"}}（虽兼容，但请用 keys 列表）。
 - fs_write/fs_replace/fs_patch：args.path + 相应字段；write_resources 必须列路径；replace/patch 的 old 必须与文件原文完全一致——只能从最近 fs_read/grep 命中行或失败回执「原文小窗」逐字复制，禁止按 goal 意图脑补闸门/文案（【补丁锚点未接地】）。
+- **本任务上下文**：远窗/compact 摘要没有的本任务事实 → `task_context_search` → `task_context_get`（msg_id/index 或 observe_path）；禁止把「曾经读过」当成不能再取证后 failed。工作区/笔记检索仍走 lore_search / fts / fs_*，不要混用。
 - **定位文件（条件）**：目标/历史已给明确 path → 定向 `fs_read`/`fs_patch`，**不必**先探仓。仅不知文件时：**优先** `fs_grep`（**pattern**）与 `fs_glob`（须收窄 `path`/`glob`）；`explore_search` 暂时降权，仅多关键词并行时用（默认只 grep，要符号加 `include_symbols=true`）。再 `code_symbols`。`fs_glob` 支持 `**` 与 `{{html,js}}`；仓外目录须传 `path=`。禁止整文件盲 `fs_read`。连续空结果再用 shell `ls`/`find`（macOS 勿用 `find -printf`）。
 - code_symbols / code_map：改代码前看结构。explore_search：默认只并行 grep；`include_symbols`/`symbols_query` 才走索引。fs_grep 参数名是 **pattern**。索引可疑时用 code_index_refresh。
 - **脚本铲子生命周期**：造临时脚本/临时代码前先 `shovel_search`（可兼 `skill_search`）；命中则 `shell` 调已有铲 `invoke`；无命中再临时脚本。临时脚本须参数/env，禁止明文口令与未公开绝对路径；成功后自评三维分，通用性≥3 升 `fawai_shovels`（文首 meta+台账）或 `skill_write`，≤2 仅本案。
@@ -257,7 +268,7 @@ def _system_prompt(
 - **新建脚本的结果行**：`py_write` / 临时 shell / 新铲子尽最大努力在 stdout 打一行稳定标记（`OK` 或 `FAIL:原因`），业务失败用非零退出；随后 `py_run`/`shell` 用 expect 对齐该行。不要在脚本里再调模型。已有只读工具只靠 `ok` 即可，不必强行补 expect。
 - **step_kind（步骤分类）**：本段类型必填语义——`sense`（环境取证）/ `act_serial`（有序执行，expect 自衔接）/ `act_parallel`（不冲突的读和写并发，段末统一观察）/ `analyze`（小结/反省向）/ `finalize`（面向用户交稿）。缺省可由系统回填。`act_*`/`analyze`/`finalize` 时 **observe_kinds 优先 `["none"]`**，禁止无必要再刷工作区顶层浅列表；需要画面/控件树再点 `obs_screen`/`obs_ax`。路径不冲突的多个读或写用 `act_parallel`。
 - skill_write：args 含 id/title/when_to_use/steps（及可选 tags/source）；skill_search 用 args.query。
-- 个人知识库：可先看上方【个人知识库】摘要；不足再用 lore_search / lore_get；显式写入用 lore_set / lore_note_upsert（旁路也会自动记 P0 路径）。
+- 个人知识库：先读【索引配置】search_menu（efficiency 5→1）；`lore_search` **应传 scopes**（如 tasks / work_name / lore）；先高效窄范围，空再扩；可一段并行多个不同 scopes；缺省全开混合勿当首选；回含 index_catalog；写入 lore_set / lore_note_upsert。
 {delegate_rule}{coding_extra}{image_extra}{gui_rule}{doc_screen_rule}- **观察选取**：本步 actions 只能依据「当前观察」与历史里的「执行结果（工具结果观察）」；不要假装看到未观察的 GUI。
 - 步首可能**无截屏图**，但观察摘要通常含「前台窗摘要」与「显示器清单」。目标依赖某 App 可见 UI 时，须先对照此前台态；需要画面证据再在 observe_kinds 点选 obs_screen，禁止无画面却断言屏幕上的具体内容。
 - observe_kinds：为**下一步**环境观察点选方式，必须从当前观察 meta.observe_candidates（或提示中的候选）里选；可选 obs_fs / obs_ax / obs_screen / none（以候选为准）。**纯执行段之后优先 none**；首轮 sense / 缺工作区轮廓才 obs_fs；GUI 优先 obs_ax，需要画面再 obs_screen；禁止无必要默选截屏——先看前台摘要。
@@ -269,7 +280,7 @@ def _system_prompt(
 - 收到【执行反省】/【步骤重复】时必须遵守其 constraints；【观察反省】hints 仅供参考，与硬约束冲突时以执行反省/步骤重复为准。禁止无视裁决原样重试同一指纹动作；alternate 须换工具或换命令结构；无法换道则 status=failed。不得把「按 grep 行号附近定向 fs_read」当成盲目无效。
 - **面向用户的最终回答写在 success/failed 那一轮的 thought 里**（会话层会把该 thought 发给用户）；禁止把原始 stdout/top 全文当作结论；禁止在 thought 里写明文口令。
 - **问询/状态/查找/配置盘点收尾**：thought 须直接写出可验收事实（状态、数字、是否完成、边界、来源路径）；禁止只写「已获取/已汇总/已找到并结束」等过程元叙述。查硬件/配置时先一句结论，再用分项或表覆盖证据里已有的 GPU/CPU/内存/磁盘/系统/路径等维度，禁止只报一两项交差。材料不足则 failed 或 need_input，说明缺什么。
-- **查找账号/地址/配置落点**：优先 lore_search / 规则已点名文档，再用 fs_read 绝对路径（须在上方只读根或工作区根内）；禁止开场对整个家目录 `grep -r ~`。禁止 shell cat/cp 绕过 fs。远端可用 shell ssh / rsync 部署 shovel（凭据从已授权可读文件取进 env，勿把明文口令写进 thought）。
+- **查找账号/地址/配置落点**：先 `lore_search` scopes=`[lore]` 或 `[tasks]`（高效率）；不够再 `work_name`/`work_content`；仓内现扫才 `fs_grep`（效率1、收窄 path）；禁止指望旁路短 KV；禁止开场 `grep -r ~`；禁止 shell cat/cp 绕过 fs。远端可用 shell ssh / rsync 部署 shovel（凭据从已授权可读文件取进 env，勿把明文口令写进 thought）。
 - **升级/部署到远端**：优先在 work_root 调用已有 `rsync-ssh-deploy.sh` / `ssh-run-with-pass.sh`，或临时 `fs_write` 脚本再 shell 执行；禁止只做 BatchMode 公钥探针就 abort。
 - **执行中澄清**：默认尽最大努力完成；可查可推断的不要问。用户表示远程/不在电脑边时，禁止 options 要求「粘贴配置/拷进工作区」。仅当继续猜会有明显坏结果（不可逆写/删、提交、外发、花钱、互斥执行路线必选一）时用 status=need_input；thought 为给用户的问句；done=false；actions 必须为空数组。若已有明确互斥选项，必须填 options（≥2 的 id+label），引导用户选一项，禁止改成开放式「请描述」。低风险缺省可合理假设并继续。
 {path_ledger}格式：

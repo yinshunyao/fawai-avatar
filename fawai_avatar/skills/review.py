@@ -7,7 +7,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from fawai_avatar.channel.message import strip_image_marks
 from fawai_avatar.skills.store import SkillStore, SkillValidationError, validate_skill_payload
@@ -189,7 +189,16 @@ def parse_review_apply_reply(
     catalog = _normalize_items(items)
     all_ids = [str(it["id"]) for it in catalog]
 
-    # 取消指令不再拦截，统一作为修改意见处理（支持取消后追加复盘并按指令执行）
+    # 裸「取消」结束复盘第二道闸（不备份不改）；带说明的长句走改写
+    if _CANCEL_RE.fullmatch(raw) or raw in {"取消", "abort", "cancel"}:
+        return {
+            "ok": True,
+            "mode": "cancel",
+            "selected_ids": [],
+            "revise_guidance": "",
+            "cancel": True,
+        }
+
     if _ALL_APPLY_RE.match(raw):
         return {
             "ok": True,
@@ -361,6 +370,9 @@ def review_tasks(
     return merged
 
 
+ProgressEmit = Callable[..., None]
+
+
 def analyze_review_tasks(
     supervisor: Supervisor,
     task_ids: list[str],
@@ -369,11 +381,17 @@ def analyze_review_tasks(
     ratchet: bool = False,
     use_llm: bool | None = None,
     user_guidance: str | None = None,
+    prior_analysis: str | None = None,
+    prior_items: list[dict[str, Any]] | None = None,
+    review_followups: list[Any] | None = None,
     stats: dict[str, Any] | None = None,
+    on_progress: ProgressEmit | None = None,
 ) -> dict[str, Any]:
     """只分析：全维结论 + 优化清单；不写库、不改文件。
 
     stats：可选任务级用量累加器（meta.stats）；有 LLM 时写入 token / llm_calls。
+    on_progress：与普通任务同口径的阶段进度（phase=analyzing + 可选直播/心跳）。
+    prior_* / review_followups：改写轮回灌上一轮分析与复盘会话多轮建议。
     """
     ids = _normalize_task_ids(task_ids)
     if not ids:
@@ -403,6 +421,9 @@ def analyze_review_tasks(
     joint = len(tasks) > 1
     primary = tasks[0]
     guidance = (user_guidance or "").strip()
+    prior_a = (prior_analysis or "").strip()
+    prior_its = list(prior_items or [])
+    rev_fus = list(review_followups or [])
 
     if ratchet:
         return {
@@ -417,7 +438,14 @@ def analyze_review_tasks(
         }
 
     if not distill:
-        summary = build_materials_text(tasks, include_steps=False, user_guidance=guidance)
+        summary = build_materials_text(
+            tasks,
+            include_steps=False,
+            user_guidance=guidance,
+            prior_analysis=prior_a,
+            prior_items=prior_its,
+            review_followups=rev_fus,
+        )
         return {
             "ok": True,
             "message": "已生成复盘简要素材（未分析、未落盘）",
@@ -439,7 +467,11 @@ def analyze_review_tasks(
             include_steps=include_steps,
             use_llm=live,
             user_guidance=guidance,
+            prior_analysis=prior_a,
+            prior_items=prior_its,
+            review_followups=rev_fus,
             stats=stats,
+            on_progress=on_progress,
         )
     except Exception as exc:  # noqa: BLE001
         return {
@@ -663,23 +695,44 @@ def build_materials_text(
     include_steps: bool,
     detail_only: set[str] | None = None,
     user_guidance: str = "",
+    prior_analysis: str = "",
+    prior_items: list[dict[str, Any]] | None = None,
+    review_followups: list[Any] | None = None,
 ) -> str:
+    """拼复盘分析材料。源任务 followups/澄清为一等材料（goal 仅首条）。"""
     parts: list[str] = [
         f"任务数: {len(tasks)}",
         "模式: " + ("联合复盘" if len(tasks) > 1 else "单任务复盘"),
         "说明：须覆盖任务规划/执行/调度/工具本身与调用/结果判断五维；"
-        "成功与失败都有复盘价值；联合时综合承接链。",
+        "成功与失败都有复盘价值；联合时综合承接链。"
+        "分析顺序强制：工具本身 → 调用 → 必要路径 → 策略/规则；"
+        "附加建议只收窄焦点，不得废除工具优先。",
         f"has_any_step_trace: {any(_has_step_trace(t) for t in tasks)}",
     ]
-    if (user_guidance or "").strip():
-        parts.append("用户附加建议（须优先尊重）：\n" + user_guidance.strip()[:2000])
+    rev_block = _format_review_session_turns(
+        review_followups=review_followups,
+        user_guidance=user_guidance,
+    )
+    if rev_block:
+        parts.append(rev_block)
+    elif (user_guidance or "").strip():
+        parts.append(
+            "复盘附加建议（焦点/偏好；分析顺序仍工具优先）：\n"
+            + user_guidance.strip()[:2000]
+        )
+    prior_block = _format_prior_review_context(
+        prior_analysis=prior_analysis,
+        prior_items=prior_items,
+    )
+    if prior_block:
+        parts.append(prior_block)
     any_trace = any(_has_step_trace(t) for t in tasks)
     if include_steps:
         parts.append("已附逐步轨迹（头尾采样+步骤索引；若有）。请据此做全维分析并给出可勾选优化清单。")
     elif any_trace:
         parts.append(
             "本段为指令/简要预览，未附 steps；放行分析时将喂头尾采样轨迹。"
-            "请仍可先看 final_thought 与调度计数。"
+            "请仍可先看 final_thought、用户多轮与调度计数。"
         )
     else:
         parts.append(
@@ -700,6 +753,11 @@ def build_materials_text(
             f"stagnation_count: {meta.get('stagnation_count', 0)}",
             f"has_step_trace: {_has_step_trace(task)}",
         ]
+        user_turns = _format_source_user_turns(meta)
+        if user_turns:
+            block.append(user_turns)
+        else:
+            block.append("user_turns: （无 followups/澄清材料）")
         reflection = meta.get("reflection")
         if reflection:
             block.append(
@@ -719,6 +777,116 @@ def build_materials_text(
             block.append("steps: （无轨迹或未请求该任务详情）")
         parts.append("\n".join(block))
     return "\n\n".join(parts)
+
+
+_FOLLOWUP_MODE_LABEL = {
+    "append": "【用户追加】",
+    "clarification": "【澄清答复】",
+    "continue": "【追问】",
+    "review": "【复盘建议】",
+}
+
+
+def _format_source_user_turns(meta: dict[str, Any] | None, *, max_items: int = 12) -> str:
+    """源任务用户多轮：followups + 澄清题面（goal 不含追问正文）。"""
+    if not isinstance(meta, dict):
+        return ""
+    lines: list[str] = []
+    clar = meta.get("clarification")
+    if isinstance(clar, dict):
+        q = str(clar.get("question") or clar.get("prompt") or "").strip()
+        if q:
+            lines.append(f"澄清题面: {q[:300]}")
+        opts = clar.get("options")
+        if isinstance(opts, list) and opts:
+            opt_bits: list[str] = []
+            for o in opts[:8]:
+                if isinstance(o, dict):
+                    opt_bits.append(str(o.get("label") or o.get("id") or o)[:80])
+                else:
+                    opt_bits.append(str(o)[:80])
+            if opt_bits:
+                lines.append("澄清选项: " + " / ".join(opt_bits))
+    followups = meta.get("followups")
+    if isinstance(followups, list) and followups:
+        lines.append("user_turns:")
+        shown = followups[-max_items:]
+        if len(followups) > max_items:
+            lines.append(f"  …更早省略 {len(followups) - max_items} 条")
+        for i, item in enumerate(shown, start=1):
+            if not isinstance(item, dict):
+                text = str(item or "").strip()
+                if text:
+                    lines.append(f"  {i}. 【追问】{text[:400]}")
+                continue
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            mode = str(item.get("mode") or "").strip().lower()
+            prefix = _FOLLOWUP_MODE_LABEL.get(mode, "【追问】")
+            ts = str(item.get("ts") or "").strip()
+            ts_bit = f" ts={ts}" if ts else ""
+            lines.append(f"  {i}. {prefix}{text[:400]}{ts_bit}")
+    return "\n".join(lines)
+
+
+def _format_review_session_turns(
+    *,
+    review_followups: list[Any] | None,
+    user_guidance: str = "",
+    max_items: int = 12,
+) -> str:
+    """复盘会话多轮建议（累积）；当前焦点单独标出。"""
+    lines: list[str] = []
+    fus = review_followups if isinstance(review_followups, list) else []
+    if fus:
+        lines.append("复盘会话用户多轮（累积；改写须对照）：")
+        shown = fus[-max_items:]
+        if len(fus) > max_items:
+            lines.append(f"  …更早省略 {len(fus) - max_items} 条")
+        for i, item in enumerate(shown, start=1):
+            if isinstance(item, dict):
+                text = str(item.get("text") or "").strip()
+            else:
+                text = str(item or "").strip()
+            if not text:
+                continue
+            lines.append(f"  {i}. {text[:400]}")
+    guidance = (user_guidance or "").strip()
+    if guidance:
+        lines.append(
+            "当前附加建议（焦点/偏好；分析顺序仍工具优先，不得因此跳过工具双栏）：\n"
+            + guidance[:2000]
+        )
+    return "\n".join(lines)
+
+
+def _format_prior_review_context(
+    *,
+    prior_analysis: str = "",
+    prior_items: list[dict[str, Any]] | None = None,
+) -> str:
+    """改写轮回灌上一轮分析与清单标题，避免从零重写。"""
+    analysis = (prior_analysis or "").strip()
+    items = prior_items if isinstance(prior_items, list) else []
+    if not analysis and not items:
+        return ""
+    lines = [
+        "上一轮复盘结论（改写时须对照编号回应；可增删改项，禁止假装未见过清单）："
+    ]
+    if analysis:
+        lines.append("prior_analysis:\n" + analysis[:3500])
+    if items:
+        lines.append("prior_items:")
+        for it in items[:20]:
+            if not isinstance(it, dict):
+                continue
+            iid = str(it.get("id") or "").strip() or "?"
+            kind = str(it.get("kind") or "").strip()
+            title = str(it.get("title") or "").strip()[:160]
+            sel = "建议勾选" if it.get("selected_default", True) else "可选"
+            lines.append(f"  #{iid} [{kind}] ({sel}) {title}")
+    return "\n".join(lines)
 
 
 def format_steps_for_review(
@@ -943,17 +1111,35 @@ def _analyze(
     include_steps: bool,
     use_llm: bool,
     user_guidance: str = "",
+    prior_analysis: str = "",
+    prior_items: list[dict[str, Any]] | None = None,
+    review_followups: list[Any] | None = None,
     stats: dict[str, Any] | None = None,
+    on_progress: ProgressEmit | None = None,
 ) -> dict[str, Any]:
     if use_llm:
         return _analyze_with_llm(
             tasks,
             include_steps=include_steps,
             user_guidance=user_guidance,
+            prior_analysis=prior_analysis,
+            prior_items=prior_items,
+            review_followups=review_followups,
             stats=stats,
+            on_progress=on_progress,
         )
+    if on_progress is not None:
+        try:
+            on_progress("规则复盘分析中…", phase="analyzing", step=0)
+        except Exception:  # noqa: BLE001
+            pass
     return _analyze_rule_based(
-        tasks, include_steps=include_steps, user_guidance=user_guidance
+        tasks,
+        include_steps=include_steps,
+        user_guidance=user_guidance,
+        prior_analysis=prior_analysis,
+        prior_items=prior_items,
+        review_followups=review_followups,
     )
 
 
@@ -962,9 +1148,13 @@ def _analyze_rule_based(
     *,
     include_steps: bool,
     user_guidance: str = "",
+    prior_analysis: str = "",
+    prior_items: list[dict[str, Any]] | None = None,
+    review_followups: list[Any] | None = None,
 ) -> dict[str, Any]:
     """mock：产出五维分析 + 可勾选 items。"""
-    del user_guidance
+    # mock 不跑 LLM；参数仍接收以免调用方误以为未接线
+    del user_guidance, prior_analysis, prior_items, review_followups
     outcome = _guess_outcome_multi(tasks)
     joint = len(tasks) > 1
     goals = " → ".join((t.goal or "").strip()[:60] for t in tasks)
@@ -1245,26 +1435,53 @@ def _analyze_rule_based(
     }
 
 
+def _emit_review_progress(
+    on_progress: ProgressEmit | None,
+    text: str,
+    *,
+    phase: str = "analyzing",
+    step: int = 0,
+    **extra: Any,
+) -> None:
+    if on_progress is None:
+        return
+    try:
+        on_progress(text, phase=phase, step=step, **extra)
+    except Exception:  # noqa: BLE001 — 进度不得打断分析
+        return
+
+
 def _analyze_with_llm(
     tasks: list[TaskRecord],
     *,
     include_steps: bool,
     user_guidance: str = "",
+    prior_analysis: str = "",
+    prior_items: list[dict[str, Any]] | None = None,
+    review_followups: list[Any] | None = None,
     stats: dict[str, Any] | None = None,
+    on_progress: ProgressEmit | None = None,
 ) -> dict[str, Any]:
     from fawai_avatar.llm.client import LlmClient
+    from fawai_avatar.runtime.api_wait import ApiWaitProgress
+    from fawai_avatar.runtime.llm_live import LlmLiveProgress
     from fawai_avatar.task import stats as task_stats
 
+    _emit_review_progress(on_progress, "整理复盘材料…", phase="analyzing", step=0)
     context = build_materials_text(
         tasks,
         include_steps=include_steps,
         user_guidance=user_guidance,
+        prior_analysis=prior_analysis,
+        prior_items=prior_items,
+        review_followups=review_followups,
     )
     mode = "联合复盘" if len(tasks) > 1 else "单任务复盘"
     prompt = f"""你是操作分身的复盘分析官。模式：{mode}。
 材料阶段：{"含逐步详情" if include_steps else "无逐步轨迹（仍须尽量分维）"}。
 成功与失败都有价值。禁止一律写成成功 Skill。禁止在本阶段声称已改代码或已写库。
-若材料含「用户附加建议」，决策须优先尊重。
+附加建议 / 复盘会话多轮 = 焦点与验收偏好，须回应；但**不得**因此跳过工具双栏或把明确工具 bug 降为 lesson「下次换用法」。
+若材料含「上一轮复盘结论」，须对照 prior_items 编号增删改，禁止假装未见过清单、整盘另起炉灶却不说明差异。
 联合复盘时：把多任务当作同一条承接/重试链综合分析，优先沉淀一条可复用经验或教训；各维须落到任务短码。
 
 【任务分析强制口径】（与 doc/功能/任务复盘/分析规则.md 一致）
@@ -1273,12 +1490,13 @@ def _analyze_with_llm(
   · 工具本身（P0）：schema/能力槽是否缺；描述与真实行为是否一致；成功/失败返回与报错是否误导（易假归因）；压缩/截断是否使观察不可用；能力清单是否漏本 goal 所需族。优化可落工具实现/错误文案/schema/清单/压缩策略。
   · 调用：选型是否对族；参数是否足以推进必要路径；时机/相位是否错（该 mutate 仍只读）；同族微调未换道；成功只读是否当进展；已齐材料是否未用于副作用。优化可落规划/进度换道闸/反省/结果判定；工具面未见明确缺口后再排优先级。
   · 两栏都可写「未见缺口/未见明显失误」，但不得只评一栏；材料不足须点明。禁止把工具产品缺陷一律写成「模型不会用」，也禁止把调用失误一律改成重写工具。
+- 用户多轮通道（强制）：材料含各源任务 user_turns（追问/追加/澄清）与复盘会话多轮。analysis 须先一句：用户增量是否被执行兑现（已尝试/忽略/材料无 followups）。禁止在未见 user_turns 时断「用户没纠正过」；禁止把「用户追问后仍失败」一律写成规则不够而跳过工具面（如 task_context 过薄、报错误导、答复覆盖）。澄清答复后仍按旧假设推进 → 升机制根因。禁止为多轮追问新开专名专用闸。
 - 智能体机制优先：须指出规划/观察/动作/反省/步骤重复/结果判定哪环失效；禁止只复述终态错误句；机制叙述须能回指工具双栏。
 - 再评必要路径与调用细节：列出必要/可选路径（抽象槽位，如鉴权材料、作用对象/脚本、副作用动作）；查是否偏科只攻一条而遗忘另一条已就绪路径、是否把可选探索当必要；远端与其它任务同一尺子。analysis 须含路径表结论。
 - 优化须针对通用任务（可迁移到同类目标）；单任务细节只作证据，不得当唯一优化标题。
 - 禁止本案故事线升闸：换掉专有名词后 title/验收须仍成立；已有必要路径台账/进度闸/方法族/abort 交付/工具契约能覆盖时只写「补强既有层」，禁止平行新开专名专用门。
 - 区分表面失败与机制失败（例：fingerprint abort 可能只是止损，根因常是工具报错误导、必要路径偏科、从未 mutate、或 alternate 误伤）。
-- analysis 总述建议含：工具双栏（本身优先）→ 必要/可选路径 → 机制根因（可复用模式名）→ 证据要点 → 通用优化方向（明确工具项置顶 P0；标明改工具层还是调用/闭环层）。
+- analysis 总述建议含：用户多轮结论 → 工具双栏（本身优先）→ 必要/可选路径 → 机制根因（可复用模式名）→ 证据要点 → 通用优化方向（明确工具项置顶 P0；标明改工具层还是调用/闭环层）。
 - 最终答复用户（analysis / dimensions / items 的 title 与 rationale）：须同时保证全面性、准确性、专业性、易读性——覆盖命中机制、工具双栏与有材料的五维；断言可落到证据，不确定则写材料不足；用机制术语写清改哪一层；短段先结论后证据，禁止堆内部字段名当主文。
 - 问询/状态类假成功（强制）：若 goal 在问状态/进度/是否/多少/配置落点/硬件配置，而 final_thought 或末步 thought 只写「已获取/已汇总/已找到并结束」等过程元叙述、或硬件盘点只报一两项缺来源路径 → 须把「假成功 / 答复未覆盖目标」或「配置盘点过薄」升为机制根因之一，并至少给一条默认勾选优化（lesson 或 prompt_patch/code_patch：答复覆盖闸门）；禁止只写在 outcome_judgment 末句却清单不跟进。轨迹材料含 steps_index 与头尾采样时，必须核对末步，禁止只根据前缀探索噪声定主因。
 - 假归因/交付：工具为 not found/shell 闸而终稿写「沙箱禁读」且未交已齐路径上的可执行交付 → 升假归因 + 交付兑现；并在工具双栏区分「报错是否误导」vs「调用是否未换道」；勿写专名菜谱。
@@ -1318,12 +1536,46 @@ def _analyze_with_llm(
 
 {context}
 """
-    # 任务复盘需要质量，按主脑角色开思考（可预算）
-    result = LlmClient().chat(
-        [{"role": "user", "content": prompt}],
-        tools=None,
-        thinking_role="main",
+    # 与普通规划同口径：起步卡 + API 等待心跳 + 流式思考/输出直播
+    _emit_review_progress(
+        on_progress, "复盘分析中（等待模型）…", phase="analyzing", step=0
     )
+
+    def _emit_live(text: str, *, phase: str, step: int = 0, **extra: Any) -> None:
+        _emit_review_progress(on_progress, text, phase=phase, step=step, **extra)
+
+    live = LlmLiveProgress(_emit_live, phase="analyzing", step=0)
+    waiter: ApiWaitProgress | None = None
+    wait_stopped = False
+    if on_progress is not None:
+        waiter = ApiWaitProgress(
+            _emit_live,
+            phase="analyzing",
+            step=0,
+            waiting_text="复盘分析中（等待模型）…",
+        )
+        waiter.start()
+
+    def _on_delta(delta: dict[str, Any]) -> None:
+        nonlocal wait_stopped
+        # 首包到达后停心跳，避免与思考/输出直播互相覆盖
+        if waiter is not None and not wait_stopped:
+            wait_stopped = True
+            waiter.stop()
+        live.on_delta(delta)
+
+    try:
+        # 任务复盘需要质量，按主脑角色开思考（可预算）；有进度回调才走流式
+        result = LlmClient().chat(
+            [{"role": "user", "content": prompt}],
+            tools=None,
+            thinking_role="main",
+            on_delta=_on_delta if on_progress is not None else None,
+        )
+        live.flush()
+    finally:
+        if waiter is not None:
+            waiter.stop()
     if not result.get("ok"):
         raise RuntimeError(str(result.get("error") or "LLM 调用失败"))
     usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
@@ -1331,6 +1583,24 @@ def _analyze_with_llm(
         # API 已成功返回即累计；后续 JSON 解析失败仍计 token
         task_stats.apply_llm_call(stats, usage=usage)
     content = str(result.get("content") or "").strip()
+    # 收口：把直播预览钉进完成态卡（非 live），便于刷新后仍能回看
+    preview = live.preview()
+    done_extra: dict[str, Any] = {"live": False, "stream": False}
+    if preview.get("thinking_text"):
+        done_extra["thinking_text"] = preview["thinking_text"]
+    if preview.get("content_text"):
+        done_extra["content_text"] = preview["content_text"]
+    if preview.get("model"):
+        done_extra["model"] = preview["model"]
+    if isinstance(result.get("thinking"), dict) and result.get("thinking"):
+        done_extra["thinking"] = result["thinking"]
+    _emit_review_progress(
+        on_progress,
+        "复盘分析完成（模型）",
+        phase="analyzing",
+        step=0,
+        **done_extra,
+    )
     payload = _parse_json_object(content)
     if payload is None:
         raise RuntimeError("无法解析 LLM JSON")
@@ -1571,6 +1841,28 @@ def _normalize_dimensions(
     return out
 
 
+_TOOL_LAYER_MARKERS = (
+    "工具本身",
+    "工具层",
+    "工具实现",
+    "工具契约",
+    "schema",
+    "报错误导",
+    "压缩不可回读",
+    "清单漏",
+    "能力清单漏",
+    "描述与真实行为",
+)
+
+
+def _looks_like_tool_layer_item(item: dict[str, Any]) -> bool:
+    """启发式：impact/rationale/title 标明工具层则软置顶。"""
+    blob = " ".join(
+        str(item.get(k) or "") for k in ("title", "rationale", "impact")
+    )
+    return any(m in blob for m in _TOOL_LAYER_MARKERS)
+
+
 def _normalize_items(raw: Any) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         return []
@@ -1591,23 +1883,27 @@ def _normalize_items(raw: Any) -> list[dict[str, Any]]:
             for pk in ("path", "content", "old", "new", "patches", "code_patches"):
                 if pk in item and pk not in payload:
                     payload[pk] = item[pk]
-        out.append(
-            {
-                "id": iid,
-                "kind": kind,
-                "title": str(item.get("title") or kind)[:200],
-                "rationale": str(item.get("rationale") or "")[:500],
-                "impact": str(item.get("impact") or "")[:400],
-                "selected_default": bool(item.get("selected_default", True)),
-                "payload": payload,
-            }
-        )
-    # 规范编号为 1..n 字符串，保留原 id 若已是数字序列
+        row = {
+            "id": iid,
+            "kind": kind,
+            "title": str(item.get("title") or kind)[:200],
+            "rationale": str(item.get("rationale") or "")[:500],
+            "impact": str(item.get("impact") or "")[:400],
+            "selected_default": bool(item.get("selected_default", True)),
+            "payload": payload,
+        }
+        if _looks_like_tool_layer_item(row):
+            row["selected_default"] = True
+        out.append(row)
+    # 工具层项软置顶（稳定排序：工具面在前，组内保相对序）
+    tool_first = [it for it in out if _looks_like_tool_layer_item(it)]
+    rest = [it for it in out if not _looks_like_tool_layer_item(it)]
+    ordered = tool_first + rest
+    # 规范编号为 1..n 字符串
     renumbered: list[dict[str, Any]] = []
-    for i, it in enumerate(out, start=1):
-        nid = str(i)
+    for i, it in enumerate(ordered, start=1):
         row = dict(it)
-        row["id"] = nid
+        row["id"] = str(i)
         renumbered.append(row)
     return renumbered
 

@@ -30,11 +30,15 @@ class SettingField:
     supports_params: bool = False  # chat 类可挂生成参数
 
 
-# 模型配置已迁 llm_settings.sqlite（见 /api/llm/settings）；本文件只管系统 .env
+# 模型 → llm_settings.sqlite；记忆 → memory_settings.sqlite；其余系统项仍写 .env
 MODEL_GROUP_IDS: frozenset[str] = frozenset()
 MODEL_ROUTE_KEYS: frozenset[str] = frozenset()
+# Web「记忆配置」页专用；不进系统配置页；路径类 sqlite，数据目录仍写 .env
+MEMORY_GROUP_IDS: frozenset[str] = frozenset({"memory", "memory_data"})
 
 GROUPS: tuple[tuple[str, str], ...] = (
+    ("memory", "工作区与可读区"),
+    ("memory_data", "数据区"),
     ("runtime", "运行与大脑"),
     ("gateway", "网关与保活"),
     ("frp", "frp 穿透"),
@@ -44,18 +48,26 @@ GROUPS: tuple[tuple[str, str], ...] = (
 )
 
 FIELDS: tuple[SettingField, ...] = (
-    SettingField("FAWAI_DRY_RUN", "runtime", "干跑", "bool", default="0", hint="1=不真点键鼠/shell"),
-    SettingField("FAWAI_DATA_DIR", "runtime", "数据目录", "str", default="data"),
-    SettingField("FAWAI_WORK_ROOT", "runtime", "工作区根", "str", default="."),
+    SettingField("FAWAI_WORK_ROOT", "memory", "工作区根", "str", default="."),
     SettingField(
         "FAWAI_READ_ROOTS",
-        "runtime",
-        "只读根",
+        "memory",
+        "可读区目录",
         "str",
         default="/",
-        hint="冒号分隔；默认 / 可读整盘；写仍限工作区；work=仅工作区",
-        needs_restart=True,
+        hint="冒号分隔；写仍限工作区；work=仅工作区",
     ),
+    # 旁路短 KV（FAWAI_LORE_SIDECAR）暂时不在 Web 记忆配置页展示；后端默认仍关
+    SettingField(
+        "FAWAI_DATA_DIR",
+        "memory_data",
+        "数据目录",
+        "str",
+        default="data",
+        needs_restart=True,
+        hint="改后需重启",
+    ),
+    SettingField("FAWAI_DRY_RUN", "runtime", "干跑", "bool", default="0", hint="1=不真点键鼠/shell"),
     SettingField("FAWAI_AUTO_VERSION", "runtime", "写入前自动快照", "bool", default="1"),
     SettingField(
         "FAWAI_HEADLESS",
@@ -354,9 +366,9 @@ def _normalize_value(field: SettingField, raw: str) -> str:
 
 
 def normalize_scope(scope: str | None) -> str:
-    """``system`` | ``model`` | ``all``。"""
+    """``system`` | ``model`` | ``memory`` | ``all``。"""
     s = (scope or "all").strip().lower()
-    if s in {"system", "model", "all"}:
+    if s in {"system", "model", "memory", "all"}:
         return s
     raise ValueError(f"invalid scope: {scope!r}")
 
@@ -365,7 +377,13 @@ def _group_in_scope(group_id: str, scope: str) -> bool:
     if scope == "all":
         return True
     is_model = group_id in MODEL_GROUP_IDS
-    return is_model if scope == "model" else not is_model
+    is_memory = group_id in MEMORY_GROUP_IDS
+    if scope == "model":
+        return is_model
+    if scope == "memory":
+        return is_memory
+    # system：排除模型组与记忆配置组（后者只在记忆配置页）
+    return not is_model and not is_memory
 
 
 def _selected_route_models(disk: dict[str, str] | None = None) -> list[str]:
@@ -388,6 +406,13 @@ def _selected_route_models(disk: dict[str, str] | None = None) -> list[str]:
 def get_settings_payload(*, scope: str = "all") -> dict[str, Any]:
     scope_n = normalize_scope(scope)
     disk = read_dotenv_map()
+    mem_store = None
+    mem_values: dict[str, Any] = {}
+    if scope_n in {"memory", "all"}:
+        from fawai_avatar.memory_settings import get_memory_store
+
+        mem_store = get_memory_store()
+        mem_values = mem_store.settings_payload_values()
     groups = [
         {"id": gid, "label": label}
         for gid, label in GROUPS
@@ -395,11 +420,11 @@ def get_settings_payload(*, scope: str = "all") -> dict[str, Any]:
     ]
     values: dict[str, Any] = {}
     fields_out: list[dict[str, Any]] = []
+    from fawai_avatar.memory_settings import MEMORY_KEYS as _MEM_KEYS
+
     for field in FIELDS:
         if not _group_in_scope(field.group, scope_n):
             continue
-        eff = effective_value(field.key, disk=disk)
-        set_flag = bool(str(eff).strip()) if field.secret else True
         item: dict[str, Any] = {
             "key": field.key,
             "group": field.group,
@@ -415,7 +440,19 @@ def get_settings_payload(*, scope: str = "all") -> dict[str, Any]:
             "model_kind": field.model_kind,
             "supports_params": bool(field.supports_params),
         }
+        if field.key in _MEM_KEYS:
+            item["storage"] = "sqlite"
+        elif field.group in MEMORY_GROUP_IDS:
+            item["storage"] = "env"
         fields_out.append(item)
+        if field.key in _MEM_KEYS:
+            values[field.key] = mem_values.get(
+                field.key,
+                {"set": True, "value": field.default, "display": field.default},
+            )
+            continue
+        eff = effective_value(field.key, disk=disk)
+        set_flag = bool(str(eff).strip()) if field.secret else True
         if field.secret:
             values[field.key] = {
                 "set": bool(str(eff).strip()),
@@ -436,6 +473,12 @@ def get_settings_payload(*, scope: str = "all") -> dict[str, Any]:
         "fields": fields_out,
         "values": values,
     }
+    if mem_store is not None and scope_n in {"memory", "all"}:
+        payload["memory_db_path"] = mem_store.db_path
+        payload["index_policy"] = mem_store.index_policy_payload()
+        if scope_n == "memory":
+            payload["env_path"] = mem_store.db_path
+            payload["storage"] = "sqlite+env(data_dir)"
     if scope_n == "model":
         # 模型配置已迁 /api/llm/settings；此处仅占位避免旧前端报错
         from fawai_avatar.llm.settings_store import get_store
@@ -451,14 +494,16 @@ def update_settings(
     *,
     scope: str = "all",
     model_profiles: dict[str, Any] | None = None,
+    index_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
-    写入 .env 并热更进程环境；模型页还可写入按模型档案。
+    系统字段写入 .env；记忆字段写入 ``memory_settings.sqlite``；模型页还可写档案。
 
     - ``values``：键 → 字符串；secret 键仅在提供非空串时更新
-    - ``clear``：显式清空的键（从 .env 删除并 pop 进程环境）
-    - ``scope``：只允许改对应页的字段（``system`` / ``model`` / ``all``）
+    - ``clear``：显式清空的键
+    - ``scope``：只允许改对应页的字段（``system`` / ``model`` / ``memory`` / ``all``）
     - ``model_profiles``：``{ model_id: { params: {...} } }``，落盘到 ``data/llm_models/``
+    - ``index_policy``：按区/业务多选索引方式（写入 memory_settings）
     """
     try:
         scope_n = normalize_scope(scope)
@@ -468,13 +513,21 @@ def update_settings(
     values = values or {}
     clear_set = {str(k).strip() for k in (clear or []) if str(k).strip()}
     updates: dict[str, str | None] = {}
+    memory_updates: dict[str, str | None] = {}
     changed_restart = False
     errors: list[str] = []
     profile_saved: list[str] = []
+    policy_changed: list[str] = []
 
     disk = read_dotenv_map()
+    from fawai_avatar.memory_settings import MEMORY_KEYS, get_memory_store
+
+    mem_store = get_memory_store()
+    mem_map = mem_store.as_map()
 
     def _current(key: str) -> str:
+        if key in MEMORY_KEYS:
+            return mem_map.get(key, "")
         return effective_value(key, disk=disk)
 
     def _allow(field: SettingField) -> bool:
@@ -487,6 +540,9 @@ def update_settings(
             continue
         if not _allow(field):
             errors.append(f"key not in scope {scope_n}: {key}")
+            continue
+        if key in MEMORY_KEYS:
+            memory_updates[key] = None
             continue
         if _current(key) == "" and key not in os.environ and key not in disk:
             continue
@@ -509,6 +565,9 @@ def update_settings(
             errors.append(f"invalid key: {key}")
             continue
         if raw is None:
+            if key in MEMORY_KEYS:
+                memory_updates[key] = None
+                continue
             if _current(key) == "" and key not in os.environ and key not in disk:
                 continue
             updates[key] = None
@@ -534,14 +593,17 @@ def update_settings(
             new_val = norm
         cur = _current(key)
         if new_val is None:
-            if cur == "" and key not in os.environ and key not in disk:
+            if key not in MEMORY_KEYS and cur == "" and key not in os.environ and key not in disk:
                 continue
         elif new_val == cur:
             # 与生效值相同：不必写盘（避免无改仍 needs_restart）
             continue
-        updates[key] = new_val
-        if field.needs_restart:
-            changed_restart = True
+        if key in MEMORY_KEYS:
+            memory_updates[key] = new_val
+        else:
+            updates[key] = new_val
+            if field.needs_restart:
+                changed_restart = True
 
     if model_profiles is not None:
         if scope_n not in {"model", "all"}:
@@ -568,10 +630,29 @@ def update_settings(
                 except ValueError as exc:
                     errors.append(str(exc))
 
+    if index_policy is not None:
+        if scope_n not in {"memory", "all"}:
+            errors.append(f"index_policy not allowed in scope {scope_n}")
+        elif not isinstance(index_policy, dict):
+            errors.append("index_policy must be an object")
+        else:
+            try:
+                from fawai_avatar.index_policy import parse_policy, policy_to_json
+                from fawai_avatar.memory_settings import KEY_INDEX_POLICY
+
+                text = policy_to_json(parse_policy(index_policy))
+                memory_updates[KEY_INDEX_POLICY] = text
+            except Exception as exc:
+                errors.append(f"index_policy: {exc}")
+
     if errors:
         return {"ok": False, "errors": errors, "needs_restart": False}
 
-    if not updates and not profile_saved:
+    mem_changed = mem_store.set_many(memory_updates) if memory_updates else []
+    if any(k == "FAWAI_INDEX_POLICY" for k in mem_changed):
+        policy_changed = ["FAWAI_INDEX_POLICY"]
+
+    if not updates and not profile_saved and not mem_changed:
         payload = get_settings_payload(scope=scope_n)
         payload["needs_restart"] = False
         payload["updated"] = []
@@ -599,6 +680,6 @@ def update_settings(
 
     payload = get_settings_payload(scope=scope_n)
     payload["needs_restart"] = changed_restart
-    payload["updated"] = sorted(updates.keys())
+    payload["updated"] = sorted(set(list(updates.keys()) + mem_changed))
     payload["profiles_saved"] = sorted(set(profile_saved))
     return payload

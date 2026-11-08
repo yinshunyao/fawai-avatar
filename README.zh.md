@@ -26,7 +26,7 @@ English: [README.md](README.md).
 
 - **会话网关 + PWA**：本机 HTTP/WS；手机同 Wi‑Fi 打开口令页即可聊；可选 frpc 公网穿透、云端中继骨架
 - **任务线程**：一任务一条对话；新任务 / 追问 / 执行中软追加（pending 注入；追问不拼进 goal / 同泡）；粘贴图片挂附件再发；归档 API 仍可用（PWA 入口暂隐）
-- **对话内步骤流**：progress 直接插进线程（无独立时间线菜单）；同步簇合并折叠；簇头粘住本步业务意图 `step_label`；facts 展示模型 · 思考开/关 · token · 耗时；等待模型时深度思考与普通输出直播进步骤卡（`meta.live`，不落历史）；口令脱敏暂关闭（规划可读凭据，安全后续再做）
+- **对话内步骤流**：progress 直接插进线程（无独立时间线菜单）；同步簇合并折叠；簇头粘住本步业务意图 `step_label`；facts 展示模型 · 思考开/关 · token · 耗时；等待模型时深度思考与普通输出直播进步骤卡（`meta.live`，不落历史）；规划/落盘可读凭据，**Web 出站脱敏**（`channel/redact.message_dict_for_client`）
 - **从步骤恢复**：步骤卡悬停（桌面）或常显（窄屏）「从此恢复」；重启后孤儿任务按检查点续跑
 - **语音输入**：麦克风 → ASR 填入输入框
 - **界面中/英**：随时切换（宽屏顶栏 + 系统配置；窄屏仅系统配置）；模型配置、系统配置、服务运维分栏
@@ -226,6 +226,18 @@ export FAWAI_DRY_RUN=0          # 真改文件 / 跑 shell
 .venv/bin/python -m fawai_avatar.demo_platform
 .venv/bin/python -m fawai_avatar.channel.lan_gateway
 ```
+
+## 消费安装包（GitHub Release）
+
+给普通用户的前缀安装包（自带私有 Python，无需本机先装 Python / venv）：
+
+```bash
+python3 packaging/build_release.py --target auto   # 本机构建当前平台
+# 推送 v* 标签 → GitHub Actions 打三端包并上传 Release
+# 或：bash packaging/publish_github_release.sh
+```
+
+说明与中/英启动器文案见 [`packaging/README.md`](packaging/README.md)。用户解压后运行 Start；本机默认打开 `http://127.0.0.1:7980/`，手机自行打开局域网地址。
 
 ## 跨端会话（局域网 PWA）
 

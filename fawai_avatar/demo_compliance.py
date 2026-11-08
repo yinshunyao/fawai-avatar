@@ -910,7 +910,7 @@ def main() -> None:
     streak = update_remote_idle_streak(
         0,
         goal="升级到5080",
-        actions=[Action(kind="fs_read", args={"path": "5080_deploy.md"})],
+        actions=[Action(kind="fs_read", args={"path": "README.md"})],
         results=[ExecResult(ok=True, message="read ok")],
     )
     assert streak == 1
@@ -927,18 +927,33 @@ def main() -> None:
     )
     assert streak == 0
 
-    from fawai_avatar.channel.redact import redact_secrets, _redact_secrets_impl
+    from fawai_avatar.channel.redact import (
+        message_dict_for_client,
+        redact_for_client,
+        redact_secrets,
+        _redact_secrets_impl,
+    )
+    from fawai_avatar.channel.message import Message
 
-    # 入口暂透传（规划可读凭据）；历史实现仍可单测，便于日后恢复
+    # 规划侧透传；Web 出站强制脱敏
     leaked = 'expect -c \'send "QSfDa/ENNvvQ\\r"\''
     assert redact_secrets(leaked) == leaked
+    assert "***" in redact_for_client(leaked)
+    assert "QSfDa" not in redact_for_client(leaked)
     assert "***" in _redact_secrets_impl(leaked)
-    assert "QSfDa" not in _redact_secrets_impl(leaked)
     ssh_block = "ssh -p 31057 root@example.com\nQSfDa/ENNvvQ\n"
     assert redact_secrets(ssh_block) == ssh_block
-    redacted_ssh = _redact_secrets_impl(ssh_block)
+    redacted_ssh = redact_for_client(ssh_block)
     assert "***" in redacted_ssh
     assert "QSfDa" not in redacted_ssh
+    progress = Message.progress(
+        'shell: sshpass -p \'QSfDa/ENNvvQ\' ssh -p 22 root@h',
+        meta={"cmd": "sshpass -p 'QSfDa/ENNvvQ' ssh root@h", "phase": "act"},
+    )
+    client_payload = message_dict_for_client(progress)
+    assert "QSfDa" not in str(client_payload.get("text") or "")
+    assert "QSfDa" not in str((client_payload.get("meta") or {}).get("cmd") or "")
+    assert progress.text.startswith("shell: sshpass")  # 原信封未改
     long_steps = [
         {
             "plan": {

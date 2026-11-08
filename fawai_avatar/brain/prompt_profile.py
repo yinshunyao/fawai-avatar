@@ -87,6 +87,10 @@ _FS_EXTRA_KINDS = frozenset(
         "lore_note_upsert",
         "lore_buffer_list",
         "lore_vector_reindex",
+        "lore_fts_reindex",
+        "name_index_search",
+        "fts_search",
+        "memory_index_reindex",
     }
 )
 

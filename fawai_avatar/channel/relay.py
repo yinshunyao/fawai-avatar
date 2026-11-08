@@ -63,8 +63,16 @@ class CloudRelayClient:
     async def send(self, message: Message) -> None:
         if not self._connected:
             return
-        # 真实实现：经出站长连接把 message.to_dict() 发给中继
-        logger.debug("relay send stub kind=%s id=%s", message.kind, message.message_id)
+        from fawai_avatar.channel.redact import message_dict_for_client
+
+        # 真实实现：经出站长连接把脱敏后的载荷发给中继（与 Web 同口径）
+        payload = message_dict_for_client(message)
+        logger.debug(
+            "relay send stub kind=%s id=%s keys=%s",
+            message.kind,
+            message.message_id,
+            list(payload.keys()),
+        )
 
     async def inject_inbound_for_test(self, message: Message) -> None:
         """测试/本地联调用：模拟中继把手机帧转发给本机。"""

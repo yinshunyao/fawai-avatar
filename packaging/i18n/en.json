@@ -1,0 +1,18 @@
+{
+  "lang_name": "English",
+  "app_name": "Fawai Avatar",
+  "starting": "Starting local session gateway…",
+  "waiting_port": "Waiting for gateway at {url}…",
+  "ready_open": "Gateway is ready. Opening local browser: {url}",
+  "ready_no_browser": "Gateway is ready. Open locally: {url}",
+  "headless_skip_browser": "No display: skipped opening a browser. Open the URL on this machine or another device.",
+  "phone_hint": "On a phone or another PC, open the LAN / tunnel URL yourself (see below or the startup log). The installer does not open remote browsers.",
+  "lan_hint": "On the same network try: {lan_urls}",
+  "failed_start": "Start failed: could not reach {url} in time. Check data/runtime/console.log.",
+  "failed_python": "Bundled Python not found: {path}",
+  "lang_saved": "Installer language set to {lang} (saved in data/install_lang.txt)",
+  "usage_lang": "Language: --lang zh-CN|en or env FAWAI_LANG",
+  "install_title": "Fawai Avatar — Install notes",
+  "install_body": "1. Extract this folder anywhere writable (avoid read-only Program Files if you want self-evolution writes).\n2. Run Start (macOS: Start.command; Linux: Start.sh; Windows: Start.bat).\n3. Your local browser opens http://127.0.0.1:PORT/ ; set API keys under Model settings.\n4. On a phone, manually open the PC LAN IP:PORT (or tunnel URL) and enter the passcode from the startup log.\n5. Switch launcher language: FAWAI_LANG=zh-CN or Start --lang zh-CN.",
+  "stop_hint": "To stop: Ctrl+C in the Start terminal, or end the fawai-keeper process."
+}

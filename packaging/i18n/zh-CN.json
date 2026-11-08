@@ -1,0 +1,18 @@
+{
+  "lang_name": "中文",
+  "app_name": "Fawai Avatar",
+  "starting": "正在启动本机会话服务…",
+  "waiting_port": "等待网关就绪（{url}）…",
+  "ready_open": "服务已就绪，正在打开本机浏览器：{url}",
+  "ready_no_browser": "服务已就绪。本机请打开：{url}",
+  "headless_skip_browser": "无图形界面：已跳过自动打开浏览器。请在本机或其它设备手动打开地址。",
+  "phone_hint": "手机或其它电脑请自行在浏览器打开局域网 / 穿透地址（见下方或启动日志），安装器不会代为打开。",
+  "lan_hint": "同网设备可尝试：{lan_urls}",
+  "failed_start": "启动失败：未能在时限内连上 {url}。请查看 data/runtime/console.log。",
+  "failed_python": "未找到包内 Python：{path}",
+  "lang_saved": "界面语言已设为：{lang}（写入 data/install_lang.txt）",
+  "usage_lang": "语言：--lang zh-CN|en 或环境变量 FAWAI_LANG",
+  "install_title": "Fawai Avatar 安装说明",
+  "install_body": "1. 解压本目录到任意位置（路径勿含需管理员的只读盘，便于自我进化写盘）。\n2. 双击 Start（macOS: Start.command；Linux: Start.sh；Windows: Start.bat）。\n3. 本机浏览器会打开 http://127.0.0.1:端口/ ；在网页「模型配置」填写 API。\n4. 手机请手动打开电脑的局域网 IP:端口（或穿透地址），并输入启动日志中的口令。\n5. 切换启动器语言：FAWAI_LANG=en 或 Start --lang en。",
+  "stop_hint": "停止服务：在运行 Start 的终端按 Ctrl+C，或结束 fawai-keeper 进程。"
+}

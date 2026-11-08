@@ -190,13 +190,14 @@ def resolve_lore_dir(
     return str(Path(base).expanduser() / "lore")
 
 
-def lore_sidecar_enabled(*, default: bool = True) -> bool:
-    """全程旁路长记忆：`FAWAI_LORE_SIDECAR`；默认开。"""
-    load_dotenv()
-    raw = _env("FAWAI_LORE_SIDECAR")
-    if raw is None or raw == "":
-        return bool(default)
-    return raw.lower() in {"1", "true", "yes", "on"}
+def lore_sidecar_enabled(*, default: bool = False) -> bool:
+    """
+    全程旁路抽短 KV/偏好：真源 ``memory_settings.sqlite`` 的 ``FAWAI_LORE_SIDECAR``。
+    默认关（短 KV 入库意义不大；主检索走工作区索引∪笔记）。
+    """
+    from fawai_avatar.memory_settings import get_memory_store
+
+    return get_memory_store().sidecar_enabled(default=default)
 
 
 def lore_auto_p1_kv(*, default: bool = False) -> bool:
@@ -234,22 +235,116 @@ def lore_llm_extract_enabled() -> bool:
 
 def lore_vector_enabled(*, default: str = "auto") -> bool:
     """
-    笔记向量检索（sqlite-vec）：`FAWAI_LORE_VECTOR`。
-    默认 auto：已安装 sqlite-vec 则开；0/1 强制关/开。
+    笔记向量检索（sqlite-vec）：真源 ``memory_settings.sqlite`` 的 ``FAWAI_LORE_VECTOR``。
+    开且已装 sqlite-vec 才为 True；关则 False。``auto`` 遗留值仍按是否装包判定。
     """
-    load_dotenv()
-    raw = (_env("FAWAI_LORE_VECTOR") or str(default)).strip().lower()
+    from fawai_avatar.memory_settings import get_memory_store
+
+    store = get_memory_store()
+    raw = (store.get("FAWAI_LORE_VECTOR") or "").strip().lower()
     if raw in {"0", "false", "no", "off"}:
         return False
     if raw in {"1", "true", "yes", "on"}:
-        return True
-    # auto
-    try:
-        from fawai_lore.vector import sqlite_vec_available
+        try:
+            from fawai_lore.vector import sqlite_vec_available
 
-        return bool(sqlite_vec_available())
-    except Exception:
+            return bool(sqlite_vec_available())
+        except Exception:
+            return False
+    # auto / 空：跟 default
+    if (default or "auto").lower() in {"0", "false", "no", "off"}:
         return False
+    if (default or "auto").lower() in {"1", "true", "yes", "on"}:
+        try:
+            from fawai_lore.vector import sqlite_vec_available
+
+            return bool(sqlite_vec_available())
+        except Exception:
+            return False
+    return store.vector_enabled(default=True)
+
+
+def lore_fts5_enabled(*, default: bool = True) -> bool:
+    """FTS5：工作区正文或笔记任一开（兼容旧调用）。真源 index_policy。"""
+    from fawai_avatar.memory_settings import get_memory_store
+
+    return get_memory_store().fts5_enabled(default=default)
+
+
+def workspace_content_fts_enabled(*, default: bool = True) -> bool:
+    """工作区/可读区正文 FTS 是否开。"""
+    from fawai_avatar.memory_settings import get_memory_store
+
+    return get_memory_store().workspace_fts_enabled(default=default)
+
+
+def lore_note_fts_enabled(*, default: bool = True) -> bool:
+    """知识库笔记 FTS 是否开。"""
+    from fawai_avatar.memory_settings import get_memory_store
+
+    return get_memory_store().lore_note_fts_enabled(default=default)
+
+
+def lore_fts_dir() -> str:
+    """
+    FTS5 索引覆盖目录（原始配置，兼容旧字段）。
+    扫根真源见 ``resolved_fts_roots``（按区 methods 合并）。
+    """
+    from fawai_avatar.memory_settings import get_memory_store
+
+    return get_memory_store().fts_dir_raw()
+
+
+def resolved_fts_roots() -> str:
+    from fawai_avatar.memory_settings import get_memory_store
+
+    return get_memory_store().resolved_fts_roots()
+
+
+def name_index_enabled(*, default: bool = True) -> bool:
+    """文件名索引：工作区或可读区勾选 name。真源 index_policy。"""
+    from fawai_avatar.memory_settings import get_memory_store
+
+    return get_memory_store().name_index_enabled(default=default)
+
+
+def name_index_dir() -> str:
+    """文件名索引覆盖目录（原始配置，兼容）。"""
+    from fawai_avatar.memory_settings import get_memory_store
+
+    return get_memory_store().name_index_dir_raw()
+
+
+def resolved_name_index_roots() -> str:
+    from fawai_avatar.memory_settings import get_memory_store
+
+    return get_memory_store().resolved_name_index_roots()
+
+
+def index_policy_catalog() -> dict:
+    """智能体可见的索引配置目录。"""
+    from fawai_avatar.memory_settings import get_memory_store
+
+    return get_memory_store().index_policy_payload().get("catalog") or {}
+
+
+def index_policy_prompt_block(*, max_chars: int = 1600, compact: bool = False) -> str:
+    from fawai_avatar.index_policy import prompt_block
+    from fawai_avatar.memory_settings import get_memory_store, resolve_work_root_path
+
+    store = get_memory_store()
+    payload = store.index_policy_payload()
+    cat = payload.get("catalog") or {}
+    zones = {z.get("id"): z for z in (cat.get("zones") or []) if isinstance(z, dict)}
+    data_path = str((zones.get("data") or {}).get("path") or store.data_dir)
+    return prompt_block(
+        store.index_policy(),
+        work_root=resolve_work_root_path(store.work_root()),
+        read_roots=store.read_roots_raw(),
+        data_dir=data_path,
+        max_chars=600 if compact else max_chars,
+        compact=compact,
+    )
 
 
 def lore_embed_model() -> str:
@@ -285,9 +380,12 @@ class RuntimeConfig:
         dry = (_env("FAWAI_DRY_RUN") or "0").lower() in {"1", "true", "yes", "on"}
         data_dir = _env("FAWAI_DATA_DIR") or "data"
         lore_dir = resolve_lore_dir(data_dir=data_dir)
-        work_root = _env("FAWAI_WORK_ROOT") or "."
-        # 未设置时默认 `/`：启动即申请整盘只读；设 FAWAI_READ_ROOTS=work 可收回仅 work_root
-        read_root_paths = parse_read_roots(_env("FAWAI_READ_ROOTS"))
+        from fawai_avatar.memory_settings import get_memory_store
+
+        mem = get_memory_store(data_dir=str(Path(data_dir).expanduser().resolve()))
+        work_root = mem.work_root() or "."
+        # 未设置时默认 `/`：启动即申请整盘只读；设 read_roots=work 可收回仅 work_root
+        read_root_paths = parse_read_roots(mem.read_roots_raw())
         read_roots = tuple(str(p) for p in read_root_paths)
         auto_version = (_env("FAWAI_AUTO_VERSION") or "1").lower() in {"1", "true", "yes", "on"}
         diff_mode = (_env("FAWAI_DIFF_MODE") or "auto").strip().lower()
@@ -302,7 +400,7 @@ class RuntimeConfig:
             dry_run=dry,
             data_dir=data_dir,
             lore_dir=lore_dir,
-            lore_sidecar=lore_sidecar_enabled(default=True),
+            lore_sidecar=lore_sidecar_enabled(default=False),
             lore_llm_extract=lore_llm_extract_enabled(),
             lore_vector=lore_vector_enabled(default="auto"),
             work_root=work_root,
