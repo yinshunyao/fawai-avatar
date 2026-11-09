@@ -57,6 +57,30 @@ FIELDS: tuple[SettingField, ...] = (
         default="/",
         hint="冒号分隔；写仍限工作区；work=仅工作区",
     ),
+    SettingField(
+        "FAWAI_LEDGER_GATE_THRESHOLD",
+        "memory",
+        "价值台账晋升阈值（%）",
+        "int",
+        default="80",
+        hint="成功/失败台账：完备·通用·效率三维均须≥该百分比才写入 lore；默认 80（约 1～5 分制的 4 分）",
+    ),
+    SettingField(
+        "FAWAI_TASK_DISTILL",
+        "memory",
+        "终态条件短卡蒸馏",
+        "bool",
+        default="1",
+        hint="开=多法成功或已明确失败时自动蒸一张短卡进台账/lore；关=不自动蒸馏（仍可手写台账）",
+    ),
+    SettingField(
+        "FAWAI_CODE_INDEX",
+        "memory",
+        "代码符号索引",
+        "bool",
+        default="1",
+        hint="开=code_symbols/code_map/刷新可用（含 HTML/CSS）；关=拒建索，改用 fs_grep",
+    ),
     # 旁路短 KV（FAWAI_LORE_SIDECAR）暂时不在 Web 记忆配置页展示；后端默认仍关
     SettingField(
         "FAWAI_DATA_DIR",
@@ -222,18 +246,38 @@ FIELDS: tuple[SettingField, ...] = (
         "int",
         default="80",
     ),
-    SettingField("FAWAI_TOOL_OBS_SOFT_CHARS", "tool_obs", "软压缩字符", "int", default="4000"),
-    SettingField("FAWAI_TOOL_OBS_HARD_CHARS", "tool_obs", "硬压缩字符", "int", default="12000"),
+    SettingField(
+        "FAWAI_TOOL_OBS_SOFT_CHARS",
+        "tool_obs",
+        "软压缩字符",
+        "int",
+        default="0",
+    ),
+    SettingField(
+        "FAWAI_TOOL_OBS_MAX_CHARS",
+        "tool_obs",
+        "观察绝对上限",
+        "int",
+        default="48000",
+    ),
+    SettingField("FAWAI_TOOL_OBS_HARD_CHARS", "tool_obs", "压缩后硬顶", "int", default="12000"),
     SettingField(
         "FAWAI_TOOL_OBS_HITS_SOFT_CHARS",
         "tool_obs",
         "检索 hits 软压缩字符",
         "int",
-        default="16000",
+        default="0",
     ),
     SettingField("FAWAI_TOOL_OBS_HEAD_LINES", "tool_obs", "头行数", "int", default="40"),
     SettingField("FAWAI_TOOL_OBS_TAIL_LINES", "tool_obs", "尾行数", "int", default="80"),
     SettingField("FAWAI_TOOL_OBS_KEYWORD_HITS", "tool_obs", "关键字命中数", "int", default="40"),
+    SettingField(
+        "FAWAI_SHELL_MAX_STDOUT_CHARS",
+        "tool_obs",
+        "shell 输出上限",
+        "int",
+        default="120000",
+    ),
 )
 
 _FIELD_BY_KEY = {f.key: f for f in FIELDS}

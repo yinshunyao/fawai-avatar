@@ -118,12 +118,16 @@ def _compact_recent_tool_msg(text: str) -> str:
     if len(text) <= 2500:
         return text
     stripped = _CONTENT_BLOCK_RE.sub(
-        "  content: （已从近窗省略长正文；按 path/行号定向 fs_read）\n",
+        "  content: （已从近窗省略长正文；缺事实时由规划决定是否再用"
+        "头/尾/中间起行或 path/行号定向取证）\n",
         text,
     )
     if len(stripped) <= 3500:
         return stripped
-    return stripped[:3499] + "…"
+    from fawai_avatar.observe.tool_digest import clip_head_tail
+
+    clipped, _ = clip_head_tail(stripped, max_chars=3500)
+    return clipped
 
 
 def _dedupe_older_reads(summaries: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -43,13 +43,14 @@ def route_followup(
     err = str((task.meta or {}).get("error") or "")[:200]
     system = (
         "你是操作分身的任务路由。用户已打开某一任务线程并发送新消息。"
+        "会话模型对齐 Cursor：默认同一对话续写，不要轻易拆新任务。"
         "根据原任务目标、状态与新消息，判断应续跑同一任务还是另开新任务。"
         "只输出一个 JSON 对象，不要其它文字。字段："
         '{"action":"continue"|"new_task","reason":"不超过40字"}。'
         "规则："
-        "1) 同一目标的换法、补救、澄清、追加约束 → continue；"
-        "2) 明显另一件事/新目标/用户明示新开 → new_task；"
-        "3) 不确定时优先 continue（用户已主动留在该线程）。"
+        "1) 同一目标的换法、补救、澄清、追加约束、要结果/导出/继续做 → continue；"
+        "2) 仅当用户明示新开（如「新任务」「另外一件」「别的事」）或与原目标完全无关的新主题 → new_task；"
+        "3) 不确定时必须 continue（用户已主动留在该线程）。"
     )
     user = (
         f"任务状态: {task.status}\n"
@@ -116,14 +117,15 @@ def analyze_running_append(
     err = str((task.meta or {}).get("error") or "")[:200]
     system = (
         "你是操作分身的执行中追加分析器。任务正在执行，用户在同一线程追加了信息。"
+        "会话模型对齐 Cursor：默认并入当前任务，不要轻易拆新任务。"
         "结合原目标、当前状态、近期步骤与追加内容，判断应并入当前任务还是另开新任务。"
         "只输出一个 JSON 对象，不要其它文字。字段："
         '{"action":"apply"|"new_task","instruction":"给执行器的短指令（apply时必填，≤80字）",'
         '"reason":"不超过40字"}。'
         "规则："
-        "1) 同一目标的澄清、改约束、补充材料、纠偏 → apply，并写清 instruction；"
-        "2) 明显另一件事/新目标/用户明示新开 → new_task，instruction 可空；"
-        "3) 不确定时优先 apply。"
+        "1) 同一目标的澄清、改约束、补充材料、纠偏、催结果 → apply，并写清 instruction；"
+        "2) 仅当用户明示新开（如「新任务」「另外一件」）或与当前执行完全无关 → new_task，instruction 可空；"
+        "3) 不确定时必须 apply。"
     )
     user = (
         f"任务状态: {task.status}\n"

@@ -100,7 +100,11 @@ def start_code_watch(
     watch_roots = [Path(r).resolve() for r in roots if Path(r).exists()]
 
     def _run_watchfiles() -> None:
+        import logging
+
         from watchfiles import watch
+
+        logging.getLogger("watchfiles").setLevel(logging.WARNING)
 
         def _watch_filter(change: object, path: str) -> bool:  # noqa: ARG001
             return is_code_path(Path(path))

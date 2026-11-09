@@ -1,6 +1,6 @@
 # 安装包构建与 GitHub Release
 
-给普通用户的**私有 Python 前缀**安装包：解压 → 运行 Start → 本机浏览器打开 `http://127.0.0.1:7980/`。
+给普通用户的**私有 Python 前缀**安装包：解压 → 双击 **Install**（浏览器安装页，默认平滑升级）→ 安装目录里 **Start** → 打开 `http://127.0.0.1:7980/`。
 
 English: [README.en.md](README.en.md)
 
@@ -11,11 +11,13 @@ fawai-avatar-{version}-{target}/
   runtime/     # python-build-standalone
   app/         # fawai_avatar + fawai_lore（可写）
   deps/        # 第三方 wheel（pip --target）
-  i18n/        # 启动器中/英
+  i18n/        # 启动器 / Install 中/英
   launcher.py
+  install.py
+  Install.sh / Install.command / Install.bat
   Start.sh / Start.command / Start.bat
   INSTALL.zh-CN.txt / INSTALL.en.txt
-  data/
+  data/        # 占位；用户数据在「安装目标」的 data/，打包不带开发机 data
 ```
 
 | target | 说明 |
@@ -53,19 +55,31 @@ PWA 内界面语言仍用产品「界面多语言」，与启动器文案独立�
 
 ## 发布到 GitHub Release
 
-1.  bump `pyproject.toml` version，打标签并推送：`git tag v0.1.3 && git push origin v0.1.3`
-2. 推送 `v*` 标签会触发 [`.github/workflows/release-packages.yml`](../.github/workflows/release-packages.yml) 在三端 runner 构建并创建 Release、上传工件。
-3. 或本机构建后手动上传：
+发版纪律：全局 Release Notes + About 见 ai-company `.cursor/rules/rules-github-release.mdc`；本仓落盘见 `.cursor/rules/rules-github-release.mdc` 与 `doc/版本/AGENTS.md`。
+
+1. bump `pyproject.toml` version；写齐 `doc/版本/vX.Y.Z/RELEASE_NOTES.md`（英）与评测；核对并必要时更新 GitHub **About**
+2. 打标签并推送：`git tag v0.1.4 && git push origin v0.1.4`
+3. 推送 `v*` 标签会触发 [`.github/workflows/release-packages.yml`](../.github/workflows/release-packages.yml) 在三端 runner 构建并创建 Release、上传工件。
+4. 或本机构建后手动上传：
 
 ```bash
 bash packaging/publish_github_release.sh
-# TAG=v0.1.3 bash packaging/publish_github_release.sh --draft
+# TAG=v0.1.4 bash packaging/publish_github_release.sh --draft
 ```
 
-需要已 `gh auth login`，仓库 remote 为 `yinshunyao/fawai-avatar`。
+需要已 `gh auth login`，仓库 remote 为 `yinshunyao/fawai-avatar`。Release 正文用英文 Notes，评测链接须为绝对 URL。
 
 ## 用户怎么用
 
 1. 从 GitHub Releases 下载对应系统的 `.tar.gz` / `.zip`
-2. 解压后按 `START_HERE.txt` / `INSTALL.*.txt` 启动
-3. 本机自动打开 127；手机自行打开局域网 IP:端口
+2. 解压到**临时目录**，按 `START_HERE.txt` 运行 **Install**（默认平滑升级，保留已有 `data/`）
+3. 到安装目录运行 **Start**；本机自动打开 127；手机自行打开局域网 IP:端口
+
+升级示例（非交互）：
+
+```bash
+# 停掉旧 Start 后，在新解压目录：
+./Install.sh --target ~/FawaiAvatar --mode smooth --yes
+# 覆盖重装（会清空 data）：
+./Install.sh --target ~/FawaiAvatar --mode overwrite --yes
+```

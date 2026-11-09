@@ -2,8 +2,10 @@
 """规划 JSON 半截修复 + 格式软降级冒烟。"""
 from __future__ import annotations
 
+from fawai_avatar.brain.capabilities import validate_plan
 from fawai_avatar.brain.planner import (
     _parse_json_object,
+    _plan_from_payload,
     _soft_format_continue,
     _failed_plan,
     format_soft_fallback_history_message,
@@ -48,6 +50,28 @@ def main() -> None:
     # 普通 continue 不触发软降级文案
     plain = Plan(thought="ok", actions=[], done=False, status="continue")
     assert format_soft_fallback_history_message(plain) is None
+
+    # 错放 obs_screen 进 actions → 升格 observe_kinds，能力校验通过
+    lifted = _plan_from_payload(
+        {
+            "thought": "需截屏定位",
+            "status": "continue",
+            "done": False,
+            "observe_kinds": ["none"],
+            "actions": [
+                {"kind": "obs_screen", "args": {"screen_target": "frontmost"}},
+                {"kind": "app_focus", "args": {"app": "WeChat"}},
+            ],
+        }
+    )
+    assert "obs_screen" in (lifted.observe_kinds or [])
+    assert (lifted.raw or {}).get("_lifted_observe_from_actions") == ["obs_screen"]
+    assert [a.kind for a in lifted.actions] == ["app_focus"]
+    assert (lifted.observe_args or {}).get("obs_screen", {}).get(
+        "screen_target"
+    ) == "frontmost"
+    goal = "发消息给微信的文件传输助手，发送：你好"
+    assert validate_plan(goal, lifted) is None, validate_plan(goal, lifted)
 
     print("demo_plan_json_parse: ok")
 

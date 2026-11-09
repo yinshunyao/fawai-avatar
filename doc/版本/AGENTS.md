@@ -32,6 +32,16 @@ doc/版本/
 - 根目录除 `AGENTS.md`、`评分量表.md`、总表外，不放其它散文件。
 - **GitHub Release 正文**须用英文 `RELEASE_NOTES.md`，且指向评测/中文说明时用 **blob 绝对 URL**（`…/blob/vX.Y.Z/doc/版本/…`），禁止只写 `./评测结果.md`（Release 页会解析到仓库根导致 404）。
 - 仓内互链可用相对路径；中英文说明文首须互相可跳。
+- **发 GitHub 版本时**另须检查仓库 **About**（description / homepage / topics）：有变化则同回合更新。底线见仓库根（或 ai-company）`.cursor/rules/rules-github-release.mdc`；本仓路径与评测见 `.cursor/rules/rules-github-release.mdc`。
+
+## GitHub 发版检查（强制）
+
+用户要求打 tag / 推 Release / 发版，或已 bump `project.version` 并对外发布时，同一回合遵守**全局**发版规则，并完成本仓：
+
+1. **Release Notes**：本版 `RELEASE_NOTES.md`（英）+ 按需 `RELEASE_NOTES.zh-CN.md`；评测与总表已齐；远程 Release body 用英文 Notes，链接为绝对 URL。  
+2. **About**：对照上一公开发版，检查 GitHub 仓库页 description / homepage / topics；叙事有变则 `PATCH` 仓库元数据（或网页编辑）；无变须明示已核。  
+
+禁止只推 tag/安装包而跳过上述两项。
 
 ## 何时必须写评测（强制）
 

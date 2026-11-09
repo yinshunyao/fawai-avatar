@@ -112,6 +112,27 @@ class Message:
         )
 
     @classmethod
+    def file_out(
+        cls,
+        *,
+        media_path: str | None = None,
+        media_url: str | None = None,
+        text: str = "",
+        task_id: str | None = None,
+        meta: dict[str, Any] | None = None,
+    ) -> "Message":
+        """出站附件（PPT/PDF/音视频等）；跨端靠 media_url + Range。"""
+        return cls(
+            kind="file",
+            role="assistant",
+            text=text,
+            media_path=media_path,
+            media_url=media_url,
+            task_id=task_id,
+            meta=dict(meta or {}),
+        )
+
+    @classmethod
     def progress(cls, text: str, *, task_id: str | None = None, meta: dict[str, Any] | None = None) -> "Message":
         return cls(kind="progress", role="assistant", text=text, task_id=task_id, meta=dict(meta or {}))
 

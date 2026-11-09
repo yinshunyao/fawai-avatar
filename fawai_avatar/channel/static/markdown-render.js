@@ -220,6 +220,11 @@
                 pre.replaceWith(wrap);
             } catch (e) {
                 console.warn('Mermaid render:', e);
+                // mermaid 解析失败时常往 DOM 塞炸弹错误 SVG；清掉并保留代码块
+                document.querySelectorAll('[id="' + id + '"], [id^="' + id + '-"]').forEach((el) => {
+                    el.remove();
+                });
+                pre.classList.add('mermaid-failed');
             }
         }
     }

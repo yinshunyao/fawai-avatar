@@ -4,12 +4,14 @@
 # term:编码闭环  tool:fs_patch/code_check/git_*/explore_*  doc:doc/功能/编码闭环/说明.md
 # term:Python 扩展  tool:py_write/py_pip/py_run  doc:doc/功能/Python扩展/说明.md
 # term:脚本铲子生命周期  tool:shovel_search  doc:doc/功能/脚本铲子生命周期/说明.md
+# term:成败经验与检索极性  tool:skill_search|shovel_search  doc:doc/功能/成败经验与检索极性/说明.md
 # term:任务内上下文查询  tool:task_context_search/task_context_get  doc:doc/功能/任务内上下文查询/说明.md
 """后台动作：文件、代码索引、版本、Skill、编码闭环、Python 扩展、铲检索、任务内上下文（不经 GUI / 不受 FAWAI_DRY_RUN 影响）。"""
 
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -22,12 +24,20 @@ from fawai_avatar.workspace.code_index import CodeIndex
 from fawai_avatar.workspace.explore import coerce_explore_search_args, explore_search
 from fawai_avatar.workspace.fs import (
     WorkspaceFs,
+    allow_broad_search,
+    grep_empty_escaped_pipe_hint,
+    grep_pattern_tokens,
     patch_anchor_quality_error,
     resolve_patch_ops,
     resolve_read_range,
+    search_root_too_broad,
 )
 from fawai_avatar.workspace.git_ops import GitError, git_commit, git_diff, git_status
-from fawai_avatar.workspace.paths import WorkspacePathError, format_file_missing_message
+from fawai_avatar.workspace.paths import (
+    WorkspacePathError,
+    format_file_missing_message,
+    resolve_for_read,
+)
 from fawai_avatar.workspace.pending_diff import PendingDiffStore, unified_diff
 from fawai_avatar.workspace.py_session import (
     PySessionError,
@@ -75,6 +85,12 @@ _VERIFY_KINDS = frozenset({"shell_verify"})
 _PY_KINDS = frozenset({"py_write", "py_pip", "py_run"})
 _SHOVEL_KINDS = frozenset({"shovel_search"})
 _TASK_CONTEXT_KINDS = frozenset({"task_context_search", "task_context_get"})
+_SUCCESS_LEDGER_KINDS = frozenset(
+    {"success_ledger_upsert", "success_ledger_search", "success_ledger_get"}
+)
+_FAILURE_LEDGER_KINDS = frozenset(
+    {"failure_ledger_upsert", "failure_ledger_search", "failure_ledger_get"}
+)
 BACKGROUND_KINDS = (
     _FS_KINDS
     | _CODE_KINDS
@@ -87,6 +103,8 @@ BACKGROUND_KINDS = (
     | _PY_KINDS
     | _SHOVEL_KINDS
     | _TASK_CONTEXT_KINDS
+    | _SUCCESS_LEDGER_KINDS
+    | _FAILURE_LEDGER_KINDS
 )
 
 _WRITE_KINDS = frozenset({"fs_write", "fs_replace", "fs_patch", "version_rollback", "git_commit"})
@@ -111,12 +129,30 @@ class BackgroundTools:
         self.data_dir = data
         # 闭环注入的本任务完整 history（优先于检查点）；None=从任务库加载
         self.history_override: list[dict[str, Any]] | None = None
+        # 成功价值台账旁路：会话进度 / token 回写（由 WorkerLoop 注入）
+        self.gate_on_progress: Any | None = None
+        self.gate_on_usage: Any | None = None
+        self.progress_step: int | None = None
+        self.progress_run_id: str | None = None
         self.full_write_line_limit = cfg.full_write_line_limit
         self.fs = WorkspaceFs(root, read_roots=list(cfg.read_roots))
         self.code = CodeIndex(root, data_dir=data)
         self.versions = VersionStore(data / "versions", root)
         self.skills = SkillStore(data / "skills")
         self.pending = PendingDiffStore(data)
+
+    def _ledger_notify(self, *, phase: str) -> Any | None:
+        from fawai_avatar.brain.ledger_gate import GateNotify
+
+        if self.gate_on_progress is None and self.gate_on_usage is None:
+            return None
+        return GateNotify(
+            on_progress=self.gate_on_progress,
+            on_usage=self.gate_on_usage,
+            step=self.progress_step,
+            run_id=self.progress_run_id,
+            phase=phase,
+        )
 
     def execute(self, action: Action) -> ExecResult:
         kind = (action.kind or "").strip().lower()
@@ -207,6 +243,18 @@ class BackgroundTools:
                 return self._task_context_search(action.args)
             if kind == "task_context_get":
                 return self._task_context_get(action.args)
+            if kind == "success_ledger_upsert":
+                return self._success_ledger_upsert(action.args)
+            if kind == "success_ledger_search":
+                return self._success_ledger_search(action.args)
+            if kind == "success_ledger_get":
+                return self._success_ledger_get(action.args)
+            if kind == "failure_ledger_upsert":
+                return self._failure_ledger_upsert(action.args)
+            if kind == "failure_ledger_search":
+                return self._failure_ledger_search(action.args)
+            if kind == "failure_ledger_get":
+                return self._failure_ledger_get(action.args)
             return ExecResult(ok=False, message=f"unknown background kind: {kind!r}")
         except ShovelOpsError as exc:
             return ExecResult(ok=False, message=str(exc))
@@ -242,6 +290,7 @@ class BackgroundTools:
         search_path = str(
             args.get("path") or args.get("root") or args.get("dir") or "."
         ).strip() or "."
+        allow_broad = allow_broad_search(args=args)
         # 无通配时优先走文件名索引（若已建）
         use_index = bool(args.get("use_index", True))
         if use_index and not any(ch in pattern for ch in "*?[{"):
@@ -275,7 +324,61 @@ class BackgroundTools:
                             )
             except Exception:
                 pass
-        paths = self.fs.glob(pattern, path=search_path, head_limit=limit)
+        # 整根/浅根：再试一次从通配 pattern 抽字面量走 name_index，仍空则拒磁盘扫
+        try:
+            base = resolve_for_read(
+                self.fs.work_root, search_path, read_roots=self.fs.read_roots
+            )
+            broad = search_root_too_broad(
+                base,
+                work_root=self.fs.work_root,
+                kind="glob",
+                pattern=pattern,
+                allow_broad=allow_broad,
+            )
+        except Exception:
+            broad = None
+        if broad and use_index:
+            # 仅「像文件名」的字面量才回落 name_index；扩扩展名宽 glob 直接拒
+            ext_only = bool(
+                re.fullmatch(
+                    r"(\*\*/)?\*\.(\{[^}]+\}|[a-zA-Z0-9]+)",
+                    (pattern or "").strip() or "*",
+                )
+            )
+            lit = re.sub(r"[*?{}\[\]]", "", pattern.replace("**", "")).strip("/.")
+            if (not ext_only) and len(lit) >= 3 and "," not in lit:
+                try:
+                    from fawai_avatar.config import name_index_enabled
+                    from fawai_avatar.memory_index import search_names
+
+                    if name_index_enabled(default=True):
+                        indexed = search_names(lit, limit=limit)
+                        if indexed.get("ok") and indexed.get("hits"):
+                            paths = [
+                                h["path"] for h in indexed["hits"] if h.get("path")
+                            ]
+                            if paths:
+                                return ExecResult(
+                                    ok=True,
+                                    message=f"glob {len(paths)} (name_index)",
+                                    data={
+                                        "paths": paths[:limit],
+                                        "path": search_path,
+                                        "pattern": pattern,
+                                        "via": "name_index",
+                                    },
+                                )
+                except Exception:
+                    pass
+            if broad:
+                return ExecResult(ok=False, message=broad)
+        paths = self.fs.glob(
+            pattern,
+            path=search_path,
+            head_limit=limit,
+            allow_broad=allow_broad,
+        )
         return ExecResult(
             ok=True,
             message=f"glob {len(paths)}",
@@ -304,11 +407,28 @@ class BackgroundTools:
             context_after = 0
         context_before = max(0, min(context_before, 5))
         context_after = max(0, min(context_after, 5))
+        search_path = str(args.get("path") or ".")
+        allow_broad = allow_broad_search(args=args)
         use_index = bool(args.get("use_index", True))
         prefer_fts = bool(args.get("prefer_fts", False)) or str(
             args.get("engine") or ""
         ).lower() in {"fts", "fts5"}
-        if use_index and prefer_fts:
+        # 整根/浅根：强制先走正文 FTS，有命中则不再磁盘扫
+        try:
+            base = resolve_for_read(
+                self.fs.work_root, search_path, read_roots=self.fs.read_roots
+            )
+            broad = search_root_too_broad(
+                base,
+                work_root=self.fs.work_root,
+                kind="grep",
+                pattern=pattern,
+                allow_broad=allow_broad,
+            )
+        except Exception:
+            broad = None
+        want_fts = prefer_fts or bool(broad)
+        if use_index and want_fts:
             try:
                 from fawai_avatar.config import workspace_content_fts_enabled
                 from fawai_avatar.memory_index import search_content
@@ -326,27 +446,182 @@ class BackgroundTools:
                             for h in indexed["hits"]
                             if h.get("path")
                         ]
-                        return ExecResult(
-                            ok=True,
-                            message=f"grep {len(hits)} (fts5)",
-                            data={"hits": hits, "count": len(hits), "via": "content_fts"},
-                        )
+                        if hits:
+                            return ExecResult(
+                                ok=True,
+                                message=f"grep {len(hits)} (fts5)",
+                                data={
+                                    "hits": hits,
+                                    "count": len(hits),
+                                    "via": "content_fts",
+                                },
+                            )
             except Exception:
                 pass
+        if broad:
+            # 索引落空：永不整仓磁盘扫；按相关子目录分批检索
+            batched = self._grep_batched_dirs(
+                pattern,
+                glob=str(args.get("glob") or "*"),
+                case_insensitive=bool(args.get("case_insensitive", False)),
+                head_limit=head_limit,
+                context_before=context_before,
+                context_after=context_after,
+            )
+            if batched is not None:
+                return batched
+            return ExecResult(ok=False, message=broad)
         hits = self.fs.grep(
             pattern,
-            path=str(args.get("path") or "."),
+            path=search_path,
             glob=str(args.get("glob") or "*"),
             case_insensitive=bool(args.get("case_insensitive", False)),
             head_limit=head_limit,
             context_before=context_before,
             context_after=context_after,
+            allow_broad=allow_broad,
         )
-        return ExecResult(
-            ok=True,
-            message=f"grep {len(hits)}",
-            data={"hits": hits, "count": len(hits)},
-        )
+        msg = f"grep {len(hits)}"
+        hint = grep_empty_escaped_pipe_hint(pattern, hit_count=len(hits))
+        data: dict[str, Any] = {"hits": hits, "count": len(hits)}
+        if hint:
+            msg = f"{msg}；{hint}"
+            data["pattern_hint"] = hint
+        return ExecResult(ok=True, message=msg, data=data)
+
+    def _candidate_search_dirs(
+        self, pattern: str, *, max_dirs: int = 5
+    ) -> list[str]:
+        """索引/顶层目录名启发：为分批 grep 选出相关子目录（相对 work_root）。"""
+        tokens = grep_pattern_tokens(pattern)
+        if not tokens:
+            return []
+        root = Path(self.fs.work_root).resolve()
+        found: list[str] = []
+
+        def _add_dir(rel: str) -> None:
+            rel_n = (rel or "").strip().strip("/")
+            if not rel_n or rel_n in {".", ".."}:
+                return
+            # 只取工作区内第一层或已有相对子路径，避免再扩成整仓
+            top = rel_n.split("/", 1)[0]
+            if top not in found:
+                try:
+                    if (root / top).is_dir():
+                        found.append(top)
+                except OSError:
+                    return
+
+        # 1) 文件名索引命中 → 取其顶层目录
+        try:
+            from fawai_avatar.config import name_index_enabled
+            from fawai_avatar.memory_index import search_names
+
+            if name_index_enabled(default=True):
+                for tok in tokens:
+                    indexed = search_names(tok, limit=24)
+                    if not (indexed.get("ok") and indexed.get("hits")):
+                        continue
+                    for h in indexed["hits"]:
+                        p = str(h.get("path") or "").strip()
+                        if not p:
+                            continue
+                        rel: str
+                        try:
+                            abs_p = Path(p).expanduser()
+                            if not abs_p.is_absolute():
+                                abs_p = (root / p).resolve()
+                            else:
+                                abs_p = abs_p.resolve()
+                            rel = abs_p.relative_to(root).as_posix()
+                        except Exception:
+                            rel = p.replace("\\", "/")
+                        parent = str(Path(rel).parent).replace("\\", "/")
+                        if parent in {".", ""}:
+                            _add_dir(Path(rel).parts[0] if Path(rel).parts else rel)
+                        else:
+                            _add_dir(parent.split("/", 1)[0])
+                        if len(found) >= max_dirs:
+                            return found[:max_dirs]
+        except Exception:
+            pass
+
+        # 2) 便宜：只扫 work_root 顶层目录名是否含 token（不 walk 整树）
+        try:
+            for name in sorted(os.listdir(root)):
+                if name.startswith(".") or name.startswith("._"):
+                    continue
+                low = name.lower()
+                if not any(tok.lower() in low for tok in tokens):
+                    continue
+                _add_dir(name)
+                if len(found) >= max_dirs:
+                    break
+        except OSError:
+            pass
+        return found[:max_dirs]
+
+    def _grep_batched_dirs(
+        self,
+        pattern: str,
+        *,
+        glob: str,
+        case_insensitive: bool,
+        head_limit: int,
+        context_before: int,
+        context_after: int,
+        max_dirs: int = 5,
+    ) -> ExecResult | None:
+        """对候选子目录分批 fs_grep；无候选则返回 None（由调用方拒宽根）。"""
+        dirs = self._candidate_search_dirs(pattern, max_dirs=max_dirs)
+        if not dirs:
+            return ExecResult(
+                ok=False,
+                message=(
+                    "【检索根过宽】索引未命中且无法从 pattern 推断相关子目录；"
+                    "禁止整工作区磁盘扫。请先 lore_search scopes=[work_name] "
+                    "或 fs_glob 收到子目录后，再分批 fs_grep(path=子目录)。"
+                ),
+                data={"batched_dirs": [], "tokens": grep_pattern_tokens(pattern)},
+            )
+        merged: list[dict[str, Any]] = []
+        searched: list[str] = []
+        per_dir = max(5, head_limit // max(1, len(dirs)))
+        for d in dirs:
+            remain = head_limit - len(merged)
+            if remain <= 0:
+                break
+            try:
+                hits = self.fs.grep(
+                    pattern,
+                    path=d,
+                    glob=glob,
+                    case_insensitive=case_insensitive,
+                    head_limit=min(per_dir, remain),
+                    context_before=context_before,
+                    context_after=context_after,
+                    allow_broad=False,
+                )
+            except Exception:  # noqa: BLE001
+                searched.append(d)
+                continue
+            searched.append(d)
+            for h in hits:
+                merged.append(h)
+                if len(merged) >= head_limit:
+                    break
+        msg = f"grep {len(merged)} (batched_dirs={len(searched)})"
+        data: dict[str, Any] = {
+            "hits": merged,
+            "count": len(merged),
+            "via": "batched_dirs",
+            "batched_dirs": searched,
+        }
+        hint = grep_empty_escaped_pipe_hint(pattern, hit_count=len(merged))
+        if hint:
+            msg = f"{msg}；{hint}"
+            data["pattern_hint"] = hint
+        return ExecResult(ok=True, message=msg, data=data)
 
     def _fs_read(self, args: dict[str, Any]) -> ExecResult:
         path = str(args.get("path") or "")
@@ -657,7 +932,27 @@ class BackgroundTools:
         ]
         return ExecResult(ok=True, message=f"pending {len(slim)}", data={"pending": slim})
 
+    def _code_index_gate(self) -> ExecResult | None:
+        try:
+            from fawai_avatar.config import code_index_enabled
+        except Exception:  # noqa: BLE001
+            return None
+        if code_index_enabled(default=True):
+            return None
+        return ExecResult(
+            ok=False,
+            message=(
+                "code index disabled (memory FAWAI_CODE_INDEX=0); "
+                "enable in 记忆配置 or use fs_grep"
+            ),
+            data={"disabled": True},
+        )
+
     def _code_symbols(self, args: dict[str, Any]) -> ExecResult:
+        blocked = self._code_index_gate()
+        if blocked is not None:
+            blocked.data = {**(blocked.data or {}), "symbols": []}
+            return blocked
         hits = self.code.symbols(
             str(args.get("path") or "."),
             query=str(args.get("query") or args.get("q") or ""),
@@ -667,6 +962,15 @@ class BackgroundTools:
         return ExecResult(ok=True, message=f"code_symbols {len(hits)}", data={"symbols": hits})
 
     def _code_map(self, args: dict[str, Any]) -> ExecResult:
+        blocked = self._code_index_gate()
+        if blocked is not None:
+            blocked.data = {
+                **(blocked.data or {}),
+                "lines": [],
+                "count": 0,
+                "path": str(args.get("path") or "."),
+            }
+            return blocked
         data = self.code.map(
             str(args.get("path") or "."),
             query=str(args.get("query") or args.get("q") or ""),
@@ -676,6 +980,10 @@ class BackgroundTools:
         return ExecResult(ok=True, message=f"code_map {data.get('count', 0)}", data=data)
 
     def _code_index_refresh(self, args: dict[str, Any]) -> ExecResult:
+        blocked = self._code_index_gate()
+        if blocked is not None:
+            blocked.data = {**(blocked.data or {}), "updated": 0}
+            return blocked
         data = self.code.refresh(str(args.get("path") or "."))
         return ExecResult(
             ok=True,
@@ -733,6 +1041,7 @@ class BackgroundTools:
             context_before=context_before,
             context_after=context_after,
             code_index=self.code,
+            allow_broad=allow_broad_search(args=coerced),
         )
         return ExecResult(ok=True, message="explore_search", data=data)
 
@@ -860,11 +1169,24 @@ class BackgroundTools:
     def _shovel_search(self, args: dict[str, Any]) -> ExecResult:
         query = str(args.get("query") or args.get("q") or args.get("pattern") or "")
         limit = int(args.get("limit") or 20)
-        data = search_shovels(query, work_root=self.fs.work_root, limit=limit)
+        data = search_shovels(
+            query,
+            work_root=self.fs.work_root,
+            data_dir=self.data_dir,
+            limit=limit,
+        )
         n = int(data.get("count") or 0)
+        poor = list(data.get("poor_ids") or [])
+        mixed = list(data.get("mixed_ids") or [])
+        bits = [f"shovel_search {n} hits"]
+        if poor:
+            bits.append(f"poor={','.join(poor[:5])}")
+        if mixed:
+            bits.append(f"mixed={','.join(mixed[:5])}")
+        bits.append("对照当前 goal；差评勿原样照抄")
         return ExecResult(
             ok=True,
-            message=f"shovel_search {n} hits",
+            message=" | ".join(bits),
             data=data,
         )
 
@@ -944,6 +1266,182 @@ class BackgroundTools:
             data=data,
         )
 
+    def _ledger_resolve_tid(
+        self, args: dict[str, Any], *, kind: str = "ledger"
+    ) -> tuple[str | None, str | None]:
+        tid = str(args.get("task_id") or self.task_id or "").strip()
+        if not tid:
+            return None, f"{kind} requires task_id"
+        other = str(args.get("task_id") or "").strip()
+        if other and self.task_id and other != str(self.task_id):
+            return None, f"{kind} 默认仅当前任务；禁止跨任务读写台账"
+        return tid, None
+
+    def _success_ledger_resolve_tid(self, args: dict[str, Any]) -> tuple[str | None, str | None]:
+        return self._ledger_resolve_tid(args, kind="success_ledger")
+
+    def _success_ledger_upsert(self, args: dict[str, Any]) -> ExecResult:
+        from fawai_avatar.brain.success_ledger import upsert_entry
+
+        tid, err = self._success_ledger_resolve_tid(args)
+        if err or not tid:
+            return ExecResult(ok=False, message=err or "task_id required")
+        payload = args.get("entry") if isinstance(args.get("entry"), dict) else dict(args)
+        for drop in ("task_id", "entry", "evaluate", "force_evaluate", "schedule_gate"):
+            payload.pop(drop, None)
+        # 保留 evaluate 开关
+        if "evaluate" in args:
+            payload["evaluate"] = args.get("evaluate")
+        if "force_evaluate" in args:
+            payload["force_evaluate"] = args.get("force_evaluate")
+        schedule = args.get("schedule_gate")
+        if schedule is None:
+            # evaluate=false → 只落台账、不排队三维门控
+            if "evaluate" in args and not bool(args.get("evaluate")):
+                schedule = False
+            else:
+                schedule = True
+        try:
+            entry = upsert_entry(
+                self.data_dir,
+                tid,
+                payload,
+                schedule_gate=bool(schedule),
+                notify=(
+                    self._ledger_notify(phase="success_ledger_gate") if schedule else None
+                ),
+            )
+        except Exception as exc:
+            return ExecResult(ok=False, message=f"success_ledger_upsert failed: {exc}")
+        gate = entry.get("gate") if isinstance(entry.get("gate"), dict) else {}
+        return ExecResult(
+            ok=True,
+            message=(
+                f"success_ledger_upsert {entry.get('id')} "
+                f"gate={gate.get('status') or 'pending'}"
+            ),
+            data={"entry": entry},
+        )
+
+    def _success_ledger_search(self, args: dict[str, Any]) -> ExecResult:
+        from fawai_avatar.brain.success_ledger import search_entries
+
+        tid, err = self._success_ledger_resolve_tid(args)
+        if err or not tid:
+            return ExecResult(ok=False, message=err or "task_id required")
+        query = str(args.get("query") or args.get("q") or "").strip()
+        limit = args.get("limit")
+        data = search_entries(
+            self.data_dir,
+            tid,
+            query,
+            limit=int(limit) if limit is not None else 8,
+        )
+        n = int(data.get("count") or 0)
+        return ExecResult(
+            ok=True,
+            message=f"success_ledger_search {n} hits",
+            data=data,
+        )
+
+    def _success_ledger_get(self, args: dict[str, Any]) -> ExecResult:
+        from fawai_avatar.brain.success_ledger import get_entry
+
+        tid, err = self._success_ledger_resolve_tid(args)
+        if err or not tid:
+            return ExecResult(ok=False, message=err or "task_id required")
+        eid = str(args.get("id") or args.get("entry_id") or "").strip()
+        if not eid:
+            return ExecResult(ok=False, message="success_ledger_get requires id")
+        entry = get_entry(self.data_dir, tid, eid)
+        if not entry:
+            return ExecResult(ok=False, message=f"success_ledger entry not found: {eid}")
+        return ExecResult(
+            ok=True,
+            message=f"success_ledger_get {eid}",
+            data={"entry": entry},
+        )
+
+    def _failure_ledger_upsert(self, args: dict[str, Any]) -> ExecResult:
+        from fawai_avatar.brain.failure_ledger import upsert_entry
+
+        tid, err = self._ledger_resolve_tid(args, kind="failure_ledger")
+        if err or not tid:
+            return ExecResult(ok=False, message=err or "task_id required")
+        payload = args.get("entry") if isinstance(args.get("entry"), dict) else dict(args)
+        for drop in ("task_id", "entry", "evaluate", "force_evaluate", "schedule_gate"):
+            payload.pop(drop, None)
+        if "evaluate" in args:
+            payload["evaluate"] = args.get("evaluate")
+        if "force_evaluate" in args:
+            payload["force_evaluate"] = args.get("force_evaluate")
+        schedule = args.get("schedule_gate")
+        if schedule is None:
+            if "evaluate" in args and not bool(args.get("evaluate")):
+                schedule = False
+            else:
+                schedule = True
+        try:
+            entry = upsert_entry(
+                self.data_dir,
+                tid,
+                payload,
+                schedule_gate=bool(schedule),
+                notify=(
+                    self._ledger_notify(phase="failure_ledger_gate") if schedule else None
+                ),
+            )
+        except Exception as exc:
+            return ExecResult(ok=False, message=f"failure_ledger_upsert failed: {exc}")
+        gate = entry.get("gate") if isinstance(entry.get("gate"), dict) else {}
+        return ExecResult(
+            ok=True,
+            message=(
+                f"failure_ledger_upsert {entry.get('id')} "
+                f"gate={gate.get('status') or 'pending'}"
+            ),
+            data={"entry": entry},
+        )
+
+    def _failure_ledger_search(self, args: dict[str, Any]) -> ExecResult:
+        from fawai_avatar.brain.failure_ledger import search_entries
+
+        tid, err = self._ledger_resolve_tid(args, kind="failure_ledger")
+        if err or not tid:
+            return ExecResult(ok=False, message=err or "task_id required")
+        query = str(args.get("query") or args.get("q") or "").strip()
+        limit = args.get("limit")
+        data = search_entries(
+            self.data_dir,
+            tid,
+            query,
+            limit=int(limit) if limit is not None else 8,
+        )
+        n = int(data.get("count") or 0)
+        return ExecResult(
+            ok=True,
+            message=f"failure_ledger_search {n} hits",
+            data=data,
+        )
+
+    def _failure_ledger_get(self, args: dict[str, Any]) -> ExecResult:
+        from fawai_avatar.brain.failure_ledger import get_entry
+
+        tid, err = self._ledger_resolve_tid(args, kind="failure_ledger")
+        if err or not tid:
+            return ExecResult(ok=False, message=err or "task_id required")
+        eid = str(args.get("id") or args.get("entry_id") or "").strip()
+        if not eid:
+            return ExecResult(ok=False, message="failure_ledger_get requires id")
+        entry = get_entry(self.data_dir, tid, eid)
+        if not entry:
+            return ExecResult(ok=False, message=f"failure_ledger entry not found: {eid}")
+        return ExecResult(
+            ok=True,
+            message=f"failure_ledger_get {eid}",
+            data={"entry": entry},
+        )
+
     def _version_snapshot(self, args: dict[str, Any]) -> ExecResult:
         paths = args.get("paths")
         if not isinstance(paths, list) or not paths:
@@ -992,11 +1490,16 @@ class BackgroundTools:
     def _skill_search(self, args: dict[str, Any]) -> ExecResult:
         query = str(args.get("query") or args.get("q") or "")
         limit = int(args.get("limit") or 10)
-        hits = self.skills.search(query, limit=limit)
+        data = self.skills.search_polarized(query, limit=limit)
+        n_im = len(data.get("imitate") or [])
+        n_av = len(data.get("avoid") or [])
         return ExecResult(
             ok=True,
-            message=f"skill_search {len(hits)}",
-            data={"skills": hits, "query": query},
+            message=(
+                f"skill_search imitate={n_im} avoid={n_av} | "
+                "imitate=可参考；avoid=勿当正例照抄"
+            ),
+            data=data,
         )
 
     def _skill_write(self, args: dict[str, Any]) -> ExecResult:
@@ -1012,9 +1515,15 @@ class BackgroundTools:
         sid = str(args.get("id") or args.get("skill_id") or "")
         if not sid:
             return ExecResult(ok=False, message="skill_get requires id")
-        skill = self.skills.get(sid)
+        skill = self.skills.get(sid, include_disabled=True)
         if skill is None:
             return ExecResult(ok=False, message=f"skill not found: {sid}")
+        if not skill.get("enabled", True):
+            return ExecResult(
+                ok=False,
+                message=f"skill disabled: {sid}",
+                data={"skill_id": sid, "enabled": False},
+            )
         return ExecResult(ok=True, message=f"skill_get {sid}", data={"skill": skill})
 
     def _lore_store(self):

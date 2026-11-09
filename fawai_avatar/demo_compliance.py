@@ -666,10 +666,53 @@ def main() -> None:
     assert stored_ans is not None
     assert "问点" in str(stored_ans.get("title") or "")
 
+    from fawai_avatar.brain.answer_effect import (
+        compose_answer_goal,
+        delivery_payload_reject_reason,
+        goal_asks_output_delivery,
+        goal_needs_delivery_payload_gate,
+        thought_has_delivery_payload,
+        thought_is_delivery_intention,
+    )
+
+    intention = (
+        "读取完整PPT脚本文件，了解生成的20页内容结构，然后向用户交付最终报告"
+    )
+    assert thought_is_delivery_intention(intention)
+    assert thought_is_meta_process_narration(intention)
+    assert goal_asks_output_delivery("直接输出PPT吧")
+    assert goal_needs_delivery_payload_gate(
+        "帮我梳理一个PPT",
+        followups=[{"text": "直接输出PPT吧"}],
+    )
+    assert not goal_needs_delivery_payload_gate("优化一下会话页布局")
+    assert delivery_payload_reject_reason(intention, goal="直接输出PPT吧") == (
+        "delivery_intention"
+    )
+    assert not thought_has_delivery_payload(intention)
+    good_delivery = (
+        "完整脚本已就绪，见 `shared/complete_ppt_script.md`。\n"
+        "共20页：封面、故事引入、分数/周长/面积/规律四大关卡与总结。"
+    )
+    assert thought_has_delivery_payload(good_delivery)
+    assert delivery_payload_reject_reason(good_delivery, goal="直接输出PPT吧") is None
+    composed = compose_answer_goal(
+        "帮我梳理一个PPT",
+        followups=[{"text": "直接输出PPT吧"}],
+    )
+    assert "直接输出PPT吧" in composed
+
     # 运行时默认关闸；单测启发式时临时打开
     os.environ["FAWAI_ANSWER_COVERAGE_GATE"] = "1"
     assert goal_needs_answer_coverage_gate("远端任务进度如何？")
     assert not goal_needs_answer_coverage_gate("优化一下会话页布局")
+    assert goal_needs_answer_coverage_gate(
+        "帮我梳理一个PPT",
+        followups=[{"text": "直接输出PPT吧"}],
+    )
+    assert not thought_ok_for_answer_coverage(
+        intention, goal=composed
+    )
     hw_goal = "查看4090云服务器的硬件配置，地址账号在我的磁盘中，但我忘记在哪里了"
     assert goal_needs_answer_coverage_gate(hw_goal)
     assert thought_is_meta_process_narration(
@@ -954,6 +997,14 @@ def main() -> None:
     assert "QSfDa" not in str(client_payload.get("text") or "")
     assert "QSfDa" not in str((client_payload.get("meta") or {}).get("cmd") or "")
     assert progress.text.startswith("shell: sshpass")  # 原信封未改
+    # 「密码」须有分隔/引号才抠；勿误伤「输入密码登录」等词组（会抠破 mermaid）
+    assert redact_for_client("F[输入密码登录]") == "F[输入密码登录]"
+    assert "密码***" not in redact_for_client(
+        "```mermaid\nflowchart TD\n C --> F[输入密码登录]\n```"
+    )
+    assert "***" in redact_for_client("输入密码 `Y@PM@8s4Bz7P` 登录后")
+    assert "Y@PM" not in redact_for_client("输入密码 `Y@PM@8s4Bz7P` 登录后")
+    assert "***" in redact_for_client("密码: secret99")
     long_steps = [
         {
             "plan": {
@@ -1157,6 +1208,97 @@ def main() -> None:
     )
     assert "【必要路径收尾】" in prompt and "可复制命令" in prompt
     print("[PASS] necessary path ledger")
+
+    print("== false beyond-capability fail retry ==")
+    from fawai_avatar.brain.capabilities import (
+        capabilities_prompt_block,
+        is_beyond_capability,
+    )
+    from fawai_avatar.brain.false_beyond import (
+        FALSE_BEYOND_MARKER,
+        failed_needs_false_beyond_retry,
+        format_false_beyond_fail_prompt,
+        should_promote_false_beyond_success,
+        thought_admits_artifact_done,
+        thought_claims_false_beyond,
+    )
+    from fawai_avatar.brain.necessary_paths import failed_needs_path_ledger_retry
+
+    caps_full = capabilities_prompt_block(compact=False)
+    caps_compact = capabilities_prompt_block(compact=True)
+    assert "清单无法覆盖时 status=failed" not in caps_full
+    assert "清单外目标 status=failed" not in caps_compact
+    assert "fs_write" in caps_full and ("模型直接生成" in caps_full or "模型生成" in caps_full)
+    assert "创意" in caps_full or "脚本" in caps_full
+    assert "产物键" in caps_full or "监管脑授权" in caps_full
+    assert "fs_write" in caps_compact and (
+        "模型生成" in caps_compact or "创意 skill" in caps_compact
+    )
+
+    script_goal = "撰写PPT第三部分故事脚本与互动设计，写入会话产物文件"
+    false_thought = (
+        "结论：本节点目标属于开放式创意文案生成，超出了当前执行大脑的能力清单边界，"
+        "依法标记为 failed。缺乏针对故事脚本的专用 skill。"
+    )
+    assert thought_claims_false_beyond(false_thought)
+    assert not is_beyond_capability(script_goal)
+    assert failed_needs_false_beyond_retry(
+        goal=script_goal, thought=false_thought, write_set=[]
+    )
+    assert failed_needs_false_beyond_retry(
+        goal=script_goal,
+        thought=false_thought,
+        write_set=["/tmp/out_n4_pattern_logic_story.txt"],
+    )
+    # 儿童故事「破解…密码」不得命中真硬闸（曾误关 false_beyond）
+    crack_story_goal = (
+        "【监管脑授权】节点 `n4`\n"
+        "【本节点目标】撰写PPT第三部分“破解魔法桥密码”（找规律与逻辑推理）"
+    )
+    assert not is_beyond_capability(crack_story_goal)
+    assert is_beyond_capability("请帮忙破解软件并绕过登录")
+    meta_thought = (
+        "结论：脚本文件已完整落盘，但因能力清单不支持编排元概念，本节点在元层面 failed。\n"
+        "1. 脚本落盘（已齐）：out_n4 已包含故事引入与互动解谜。\n"
+        "2. 元概念交付（阻塞）：无处理「监管脑授权/节点租约/产物键绑定」的 action_kind。\n"
+        "3. 拒因：目标元概念超出能力清单边界。"
+    )
+    assert thought_claims_false_beyond(meta_thought)
+    assert thought_admits_artifact_done(meta_thought)
+    assert failed_needs_false_beyond_retry(
+        goal=crack_story_goal, thought=meta_thought, write_set=["/tmp/out.txt"]
+    )
+    assert should_promote_false_beyond_success(
+        goal=crack_story_goal,
+        thought=meta_thought,
+        write_set=["/tmp/out_n4_pattern_logic_story.txt"],
+    )
+    assert not should_promote_false_beyond_success(
+        goal=crack_story_goal, thought=meta_thought, write_set=[]
+    )
+    assert not failed_needs_path_ledger_retry(
+        goal=crack_story_goal, thought=meta_thought
+    )
+    hard_goal = "安装未登记的神秘 App 并完成银行实名认证登录"
+    assert is_beyond_capability(hard_goal)
+    assert not failed_needs_false_beyond_retry(
+        goal=hard_goal,
+        thought="目标超出能力清单，无法完成实名认证。",
+        write_set=[],
+    )
+    fb_prompt = format_false_beyond_fail_prompt(
+        goal=script_goal,
+        thought=false_thought,
+        write_set=["data/sessions/t/shared/out.txt"],
+    )
+    assert FALSE_BEYOND_MARKER in fb_prompt
+    assert "success" in fb_prompt
+    assert "data/sessions/t/shared/out.txt" in fb_prompt
+    empty_prompt = format_false_beyond_fail_prompt(
+        goal=script_goal, thought=false_thought, write_set=[]
+    )
+    assert "fs_write" in empty_prompt and FALSE_BEYOND_MARKER in empty_prompt
+    print("[PASS] false beyond-capability fail retry")
 
     print("== step repeat allow_repeat skip ==")
     from fawai_avatar.brain.reflect import (

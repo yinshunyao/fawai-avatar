@@ -86,6 +86,8 @@ def with_delegate(plan: Plan, spec: DelegateSpec | None) -> Plan:
             observe_args=dict(plan.observe_args or {}),
             title=plan.title or "",
             step_label=plan.step_label or "",
+            step_kind=plan.step_kind or "",
+            step_run=plan.step_run or "",
             delegate=None,
         )
     raw["delegate"] = spec.to_dict()
@@ -99,6 +101,8 @@ def with_delegate(plan: Plan, spec: DelegateSpec | None) -> Plan:
         observe_args=dict(plan.observe_args or {}),
         title=plan.title or "",
         step_label=plan.step_label or "",
+        step_kind=plan.step_kind or "",
+        step_run=plan.step_run or "",
         delegate=spec.to_dict(),
     )
 

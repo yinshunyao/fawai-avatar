@@ -32,8 +32,44 @@ _SPLIT_RE = re.compile(r"(?:然后|接着|之后|；)")
 
 
 def plan_mode_enabled() -> bool:
-    raw = os.environ.get("FAWAI_PLAN_MODE", "auto").strip().lower()
-    return raw not in {"0", "false", "off", "no", "disabled"}
+    # 默认关：会话走单 Worker（Cursor 式同聊）；显式 auto/1/on 才自动进图
+    raw = os.environ.get("FAWAI_PLAN_MODE", "0").strip().lower()
+    return raw not in {"0", "false", "off", "no", "disabled", ""}
+
+
+def coerce_plan_auto(value: Any) -> bool:
+    """会话/任务级计划模式偏好；缺省无法识别 → False。"""
+    if value is True or value is False:
+        return bool(value)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return int(value) != 0
+    s = str(value or "").strip().lower()
+    if not s:
+        return False
+    if s in {"1", "true", "yes", "on", "auto", "plan_auto"}:
+        return True
+    if s in {"0", "false", "no", "off"}:
+        return False
+    return False
+
+
+def plan_auto_from_meta(meta: dict[str, Any] | None) -> bool | None:
+    """任务 meta 是否显式带 plan_auto。未带 → None（回退环境变量）。"""
+    if not isinstance(meta, dict) or "plan_auto" not in meta:
+        return None
+    return coerce_plan_auto(meta.get("plan_auto"))
+
+
+def plan_auto_from_inbound_meta(meta: dict[str, Any] | None) -> bool | None:
+    return plan_auto_from_meta(meta)
+
+
+def resolve_plan_mode_allowed(meta: dict[str, Any] | None = None) -> bool:
+    """会话 plan_auto 优先；未声明则看 FAWAI_PLAN_MODE。"""
+    flag = plan_auto_from_meta(meta)
+    if flag is not None:
+        return bool(flag)
+    return plan_mode_enabled()
 
 
 def _mock_enabled() -> bool:
@@ -44,32 +80,127 @@ def _mock_enabled() -> bool:
     }
 
 
-def decide_complexity(
-    goal: str, *, on_llm_delta: Any | None = None
+_EFFORT_MARKERS = (
+    "仔细",
+    "全力",
+    "完整",
+    "务必",
+    "一定要",
+    "别早交",
+    "路径齐",
+    "彻底",
+    "认真",
+    "确保完成",
+    "做完再",
+    "不要敷衍",
+)
+_QUERY_MARKERS = (
+    "查一下",
+    "看看",
+    "看下",
+    "是多少",
+    "什么状态",
+    "帮我看",
+    "告诉我",
+    "有没有",
+    "是否在跑",
+)
+_WRITE_MARKERS = (
+    "改",
+    "修",
+    "写",
+    "替换",
+    "部署",
+    "重启",
+    "提交",
+    "实现",
+    "添加",
+    "删除",
+    "上传",
+    "安装",
+    "配置",
+)
+
+
+def _coerce_bool_field(value: Any) -> bool | None:
+    if value is True or value is False:
+        return bool(value)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return int(value) != 0
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in {"1", "true", "yes", "y", "on"}:
+            return True
+        if s in {"0", "false", "no", "n", "off"}:
+            return False
+    return None
+
+
+def analyze_task_exec_config(
+    goal: str,
+    *,
+    on_llm_delta: Any | None = None,
 ) -> dict[str, Any]:
     """
-    编排脑判定是否进入计划模式（无人审）。
+    首轮任务分析：简单度 / 是否全力 / 是否进计划。
 
-    返回 {"enter": bool, "reason": str, "source": "llm"|"mock"|"heuristic"|"off"|"fallback"}。
-    非 mock 时优先 LLM；失败或 mock 用启发式。FAWAI_PLAN_MODE=0 恒不进。
-    ``on_llm_delta`` 与规划同款：流式思考/输出，不改变判定结果。
+    返回 {"simple","want_effort","enter","reason","source"}。
+    不看 plan_auto 闸——自动模式据此再回写四开关。
     """
-    if not plan_mode_enabled():
-        return {"enter": False, "reason": "FAWAI_PLAN_MODE 关闭", "source": "off"}
     text = (goal or "").strip()
     if not text:
-        return {"enter": False, "reason": "空目标", "source": "fallback"}
+        return {
+            "simple": True,
+            "want_effort": False,
+            "enter": False,
+            "reason": "空目标",
+            "source": "fallback",
+        }
 
     if _mock_enabled():
-        return _heuristic_complexity(text) | {"source": "mock"}
+        return _heuristic_exec_config(text) | {"source": "mock"}
 
     try:
-        out = _llm_complexity(text, on_llm_delta=on_llm_delta)
+        out = _llm_exec_config(text, on_llm_delta=on_llm_delta)
         if out is not None:
             return out
     except Exception:  # noqa: BLE001 — 判定失败回退启发式
         pass
-    return _heuristic_complexity(text) | {"source": "fallback"}
+    return _heuristic_exec_config(text) | {"source": "fallback"}
+
+
+def decide_complexity(
+    goal: str,
+    *,
+    on_llm_delta: Any | None = None,
+    allow_plan: bool | None = None,
+    meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    编排脑判定是否进入计划模式（无人审）。
+
+    返回 {"enter": bool, "reason": str, "source": ..., 可选 simple/want_effort}。
+    ``allow_plan`` 显式时覆盖环境；否则看 ``meta.plan_auto``，再回退 FAWAI_PLAN_MODE。
+    ``on_llm_delta`` 与规划同款：流式思考/输出，不改变判定结果。
+    """
+    if allow_plan is None:
+        enabled = resolve_plan_mode_allowed(meta)
+    else:
+        enabled = bool(allow_plan)
+    if not enabled:
+        return {"enter": False, "reason": "计划模式关闭", "source": "off"}
+    text = (goal or "").strip()
+    if not text:
+        return {"enter": False, "reason": "空目标", "source": "fallback"}
+
+    analyzed = analyze_task_exec_config(goal, on_llm_delta=on_llm_delta)
+    return {
+        "enter": bool(analyzed.get("enter")),
+        "reason": str(analyzed.get("reason") or ""),
+        "source": str(analyzed.get("source") or "fallback"),
+        "simple": bool(analyzed.get("simple")),
+        "want_effort": bool(analyzed.get("want_effort")),
+    }
 
 
 def should_enter_plan_mode(goal: str) -> bool:
@@ -77,40 +208,82 @@ def should_enter_plan_mode(goal: str) -> bool:
     return bool(decide_complexity(goal).get("enter"))
 
 
-def _heuristic_complexity(text: str) -> dict[str, Any]:
-    force = os.environ.get("FAWAI_PLAN_MODE", "auto").strip().lower() in {
+def _heuristic_exec_config(text: str) -> dict[str, Any]:
+    force = os.environ.get("FAWAI_PLAN_MODE", "0").strip().lower() in {
         "1",
         "true",
         "on",
         "force",
         "always",
     }
+    enter = False
+    reason = "单阶段/简单目标"
     if any(m in text for m in _EXPLICIT_MARKERS):
-        return {"enter": True, "reason": "显式计划口令"}
-    stages = len(_STAGE_RE.findall(text))
-    if force and stages >= 1:
-        return {"enter": True, "reason": "FAWAI_PLAN_MODE 强制且含阶段连接"}
-    if stages >= 2:
-        return {"enter": True, "reason": "多阶段连接词"}
-    if stages >= 1 and len(text) >= 36:
-        return {"enter": True, "reason": "可拆阶段且目标较长"}
-    return {"enter": False, "reason": "单阶段/简单目标"}
+        enter = True
+        reason = "显式计划口令"
+    else:
+        stages = len(_STAGE_RE.findall(text))
+        if force and stages >= 1:
+            enter = True
+            reason = "计划模式强制开启且含阶段连接"
+        elif stages >= 2:
+            enter = True
+            reason = "多阶段连接词"
+        elif stages >= 1 and len(text) >= 36:
+            enter = True
+            reason = "可拆阶段且目标较长"
+
+    # 简单：不进计划、无多阶段，且像单次查询 / 极短只读；含改写动词则至少中档
+    stages_n = len(_STAGE_RE.findall(text))
+    has_write = any(m in text for m in _WRITE_MARKERS)
+    has_query = any(m in text for m in _QUERY_MARKERS)
+    simple = False
+    if enter:
+        simple = False
+    elif stages_n == 0 and not has_write and (has_query or len(text) < 18):
+        simple = True
+
+    want_effort = False
+    if any(m in text for m in _EFFORT_MARKERS):
+        want_effort = True
+    elif enter:
+        want_effort = True
+    elif (not simple) and (has_write or len(text) >= 24):
+        want_effort = True
+
+    if simple:
+        want_effort = False
+        enter = False
+
+    return {
+        "simple": bool(simple),
+        "want_effort": bool(want_effort),
+        "enter": bool(enter),
+        "reason": reason,
+    }
 
 
-def _llm_complexity(
+def _heuristic_complexity(text: str) -> dict[str, Any]:
+    cfg = _heuristic_exec_config(text)
+    return {"enter": bool(cfg["enter"]), "reason": str(cfg["reason"])}
+
+
+def _llm_exec_config(
     goal: str, *, on_llm_delta: Any | None = None
 ) -> dict[str, Any] | None:
     from fawai_avatar.llm.client import chat
 
     system = (
-        "你是操作分身的编排脑。只判断用户目标是否需要「计划模式」"
-        "（拆成带依赖的子任务图，再分派监管脑执行）。"
+        "你是操作分身的编排脑。对用户目标做一次执行配置分析。"
         "只输出一个 JSON 对象："
-        '{"enter":true|false,"reason":"不超过40字"}。'
+        '{"simple":true|false,"want_effort":true|false,"enter":true|false,"reason":"不超过40字"}。'
         "规则："
-        "1) 多阶段交付、明确先后/并行、多种互斥资源、或显式要求先规划 → enter=true；"
-        "2) 单文件读写、单次查询答复、已定位窄改动、单一窄 GUI → enter=false；"
-        "3) 不确定时：若拆开后各段可独立验收则 true，否则 false。"
+        "1) simple=true：单次查询答复、已定位窄改动、单文件短读、单一窄 GUI；此时 enter 必须 false，want_effort 通常 false；"
+        "2) enter=true：多阶段交付、明确先后/并行、多种互斥资源、或显式要求先规划/拆任务图；"
+        "3) want_effort=true：需要围绕目标谨慎做完（必要路径齐、能修则修、不早交）；"
+        "若 enter=true 或目标要求完整交付/部署/替换服务，倾向 want_effort=true；"
+        "4) 非 simple 的中等任务（改代码、跑一轮脚本）→ simple=false、enter 按是否需拆图；"
+        "5) 不确定进模：若拆开后各段可独立验收则 enter=true，否则 false。"
         "不要等人确认；你直接判定。"
     )
     stream_kw: dict[str, Any] = {}
@@ -129,15 +302,48 @@ def _llm_complexity(
     if not resp.get("ok"):
         return None
     parsed = _parse_json_object(str(resp.get("content") or ""))
-    if not parsed or "enter" not in parsed:
+    if not parsed:
         return None
-    enter = parsed.get("enter")
-    if isinstance(enter, str):
-        enter = enter.strip().lower() in {"1", "true", "yes", "y"}
-    elif not isinstance(enter, bool):
+    enter = _coerce_bool_field(parsed.get("enter"))
+    simple = _coerce_bool_field(parsed.get("simple"))
+    want_effort = _coerce_bool_field(parsed.get("want_effort"))
+    if enter is None and simple is None:
         return None
+    if enter is None:
+        enter = False
+    if simple is None:
+        simple = not enter
+    if want_effort is None:
+        want_effort = bool(enter) or (not simple)
+    if simple:
+        enter = False
+        want_effort = False
+    if enter:
+        simple = False
     reason = str(parsed.get("reason") or "").strip() or "编排脑判定"
-    return {"enter": bool(enter), "reason": reason[:80], "source": "llm"}
+    return {
+        "simple": bool(simple),
+        "want_effort": bool(want_effort),
+        "enter": bool(enter),
+        "reason": reason[:80],
+        "source": "llm",
+    }
+
+
+def _llm_complexity(
+    goal: str, *, on_llm_delta: Any | None = None
+) -> dict[str, Any] | None:
+    """兼容旧调用：转成仅 enter 视图。"""
+    out = _llm_exec_config(goal, on_llm_delta=on_llm_delta)
+    if out is None:
+        return None
+    return {
+        "enter": bool(out.get("enter")),
+        "reason": str(out.get("reason") or ""),
+        "source": str(out.get("source") or "llm"),
+        "simple": bool(out.get("simple")),
+        "want_effort": bool(out.get("want_effort")),
+    }
 
 
 def build_plan_graph(
@@ -228,7 +434,10 @@ def format_supervisor_goal(
     lines.append(
         "你是监管脑：在本节点授权内自行完成任务并驱动执行步骤；"
         "不要改其它节点或全局租约；完成后在结论中兑现产物键含义。"
-        "若本节点生产共用事实，结论里写清事实本身（如 host、端口、日志路径），不要只写已完成。"
+        "【监管脑授权】/节点租约/产物键由运行时兑现，不是能力清单里的 action_kind；"
+        "执行侧用 fs_write 等写出约定产物并 status=success 即可，"
+        "禁止因清单无「授权/租约/产物键」词条而 failed。"
+        "若本节点生产共用事实，结论里写清事实本身（如 host、端口、日志落点），不要只写已完成。"
     )
     return "\n".join(lines)
 
@@ -384,12 +593,13 @@ def _llm_append_analyze(
 
     system = (
         "你是操作分身的编排脑（追加分析）。任务图已在执行，用户追加了一条消息。"
+        "会话默认同线程续写，不要轻易 new_task。"
         "判断对图与租约的影响。只输出 JSON："
         '{"kind":"no_graph_change|reorder|lease_adjust|dispatch_note|new_task",'
         '"instruction":"给当前监管脑的短指令（≤80字）","reason":"≤40字"}。'
-        "规则：仅补充当前节点说明→no_graph_change 或 dispatch_note；"
+        "规则：仅补充当前节点说明、要结果/导出→no_graph_change 或 dispatch_note；"
         "要改未决顺序/增删节点→reorder；要改写资源/前台占用→lease_adjust；"
-        "明显另一件事→new_task；不确定优先 no_graph_change。"
+        "仅用户明示新开或与本图完全无关→new_task；不确定必须 no_graph_change。"
     )
     sketch = "\n".join(graph.summary_lines())[:800]
     user = (

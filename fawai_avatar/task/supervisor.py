@@ -6,7 +6,11 @@ import uuid
 from typing import Any
 
 from fawai_avatar.task import events as ev
-from fawai_avatar.task.leases import ForegroundLeaseManager, ResourceLeaseManager
+from fawai_avatar.task.leases import (
+    ClaimResult,
+    ForegroundLeaseManager,
+    ResourceLeaseManager,
+)
 from fawai_avatar.task.models import Event, ResourceItem, TaskRecord, TaskStatus
 from fawai_avatar.task.store import TaskStore
 
@@ -220,8 +224,24 @@ class Supervisor:
         return self._set_status(task_id, "waiting", ev.TASK_STATUS, "waiting")
 
     def claim_foreground(self, task_id: str) -> bool:
-        if not self._ensure_claimable(task_id):
-            return False
+        return self.claim_foreground_result(task_id).ok
+
+    def claim_foreground_result(self, task_id: str) -> ClaimResult:
+        """领取前台租约，返回 ClaimResult（含拒因，供执行层写清文案）。"""
+        task = self.get_task(task_id)
+        if task is None:
+            return ClaimResult(ok=False, reason="task_missing")
+        if task.status not in _CLAIMABLE:
+            self._store.append_event(
+                task_id,
+                ev.TASK_STATUS,
+                "claim rejected: task not running or waiting",
+                {"status": task.status},
+            )
+            return ClaimResult(
+                ok=False,
+                reason=f"task_not_claimable:{task.status}",
+            )
         result = self._foreground.claim(task_id)
         if result.ok:
             self._store.append_event(
@@ -230,7 +250,7 @@ class Supervisor:
                 "foreground lease acquired",
                 {},
             )
-            return True
+            return result
         self._store.update_task_status(task_id, "blocked")
         self._store.append_event(
             task_id,
@@ -238,7 +258,7 @@ class Supervisor:
             "foreground held by another task",
             {"holder_task_id": result.holder_task_id},
         )
-        return False
+        return result
 
     def release_foreground(self, task_id: str) -> bool:
         released = self._foreground.release(task_id)
@@ -320,9 +340,29 @@ class Supervisor:
         q: str | None = None,
         limit: int = 200,
         archived: bool | None = False,
+        omit_meta_keys: tuple[str, ...] | None = None,
     ) -> list[TaskRecord]:
-        """archived=False 排除归档（主对话默认）；True 仅归档；None 全部。"""
-        return self._store.list_tasks(status=status, q=q, limit=limit, archived=archived)
+        """archived=False 排除归档（主对话默认）；True 仅归档；None 全部。
+
+        omit_meta_keys：列表可剔除 run_checkpoint 等大键，见 TaskStore.LIST_META_OMIT_KEYS。
+        """
+        return self._store.list_tasks(
+            status=status,
+            q=q,
+            limit=limit,
+            archived=archived,
+            omit_meta_keys=omit_meta_keys,
+        )
+
+    def list_task_ids_by_meta_equals(
+        self,
+        key: str,
+        value: str,
+        *,
+        limit: int = 200,
+    ) -> list[str]:
+        """按 meta JSON 字段精确匹配，只回 id（计划子任务扫描用）。"""
+        return self._store.list_task_ids_by_meta_equals(key, value, limit=limit)
 
     def recent_events(
         self,

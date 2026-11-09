@@ -1,8 +1,9 @@
 """Build a relocatable Fawai Avatar install prefix for one target platform.
 
 Downloads python-build-standalone into ``runtime/``, copies app sources, pip-installs
-dependencies into ``deps/``, writes Start wrappers + bilingual install notes, then
-archives under ``dist/release/``.
+dependencies into ``deps/``, writes Start / Install wrappers + bilingual notes, then
+archives under ``dist/release/``. Install supports smooth upgrade (default, keeps data)
+and overwrite.
 
 CLI (release tooling — argparse OK)::
 
@@ -228,7 +229,7 @@ def _write_install_notes(prefix: Path) -> None:
 
 
 def _write_start_wrappers(prefix: Path, target: str) -> None:
-    # Unix
+    # Unix — Start (run gateway) + Install (fresh / upgrade)
     start_sh = """#!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -246,6 +247,23 @@ cd "$(dirname "$0")"
     (prefix / "Start.command").write_text(start_command, encoding="utf-8")
     (prefix / "Start.command").chmod(0o755)
 
+    install_sh = """#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+PY="$ROOT/runtime/bin/python3"
+if [[ ! -x "$PY" ]]; then PY="$ROOT/runtime/bin/python"; fi
+exec "$PY" "$ROOT/install.py" "$@"
+"""
+    (prefix / "Install.sh").write_text(install_sh, encoding="utf-8")
+    (prefix / "Install.sh").chmod(0o755)
+
+    install_command = """#!/bin/bash
+cd "$(dirname "$0")"
+./Install.sh "$@"
+"""
+    (prefix / "Install.command").write_text(install_command, encoding="utf-8")
+    (prefix / "Install.command").chmod(0o755)
+
     # Windows
     start_bat = """@echo off
 setlocal
@@ -257,23 +275,46 @@ exit /b %ERRORLEVEL%
 """
     (prefix / "Start.bat").write_text(start_bat, encoding="utf-8")
 
+    install_bat = """@echo off
+setlocal
+set ROOT=%~dp0
+set PY=%ROOT%runtime\\python.exe
+if not exist "%PY%" set PY=%ROOT%runtime\\python\\python.exe
+"%PY%" "%ROOT%install.py" %*
+exit /b %ERRORLEVEL%
+"""
+    (prefix / "Install.bat").write_text(install_bat, encoding="utf-8")
+
     # Only include platform-primary hint file
     if target.startswith("darwin"):
         (prefix / "START_HERE.txt").write_text(
-            "Double-click Start.command\n双击 Start.command\n", encoding="utf-8"
+            "1) Double-click Install.command → browser install page (smooth upgrade default)\n"
+            "2) Double-click Start.command in the install folder\n"
+            "1) 双击 Install.command → 浏览器打开安装页（默认平滑升级，保留 data）\n"
+            "2) 到安装目录双击 Start.command\n",
+            encoding="utf-8",
         )
     elif target.startswith("windows"):
         (prefix / "START_HERE.txt").write_text(
-            "Double-click Start.bat\n双击 Start.bat\n", encoding="utf-8"
+            "1) Double-click Install.bat → browser install page (smooth upgrade default)\n"
+            "2) Double-click Start.bat in the install folder\n"
+            "1) 双击 Install.bat → 浏览器打开安装页（默认平滑升级，保留 data）\n"
+            "2) 到安装目录双击 Start.bat\n",
+            encoding="utf-8",
         )
     else:
         (prefix / "START_HERE.txt").write_text(
-            "Run: ./Start.sh\n运行：./Start.sh\n", encoding="utf-8"
+            "1) ./Install.sh → browser install page (smooth upgrade default)\n"
+            "2) Run Start.sh in the install folder\n"
+            "1) ./Install.sh → 浏览器打开安装页（默认平滑升级，保留 data）\n"
+            "2) 到安装目录运行 ./Start.sh\n",
+            encoding="utf-8",
         )
 
 
 def _copy_packaging_runtime_files(prefix: Path) -> None:
     shutil.copy2(PACKAGING / "launcher.py", prefix / "launcher.py")
+    shutil.copy2(PACKAGING / "install.py", prefix / "install.py")
     i18n_dest = prefix / "i18n"
     if i18n_dest.exists():
         shutil.rmtree(i18n_dest)

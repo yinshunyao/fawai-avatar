@@ -22,6 +22,12 @@ KEY_NAME_INDEX_DIR = "FAWAI_NAME_INDEX_DIR"
 KEY_VECTOR = "FAWAI_LORE_VECTOR"
 KEY_VECTOR_DIR = "FAWAI_LORE_VECTOR_DIR"
 KEY_INDEX_POLICY = "FAWAI_INDEX_POLICY"
+# 成功/失败价值台账晋升 lore：三维（完备/通用/效率）百分比门槛
+KEY_LEDGER_GATE_THRESHOLD = "FAWAI_LEDGER_GATE_THRESHOLD"
+# 终态条件短卡蒸馏（E1）：多法成功 / 明确失败 → 台账 → lore
+KEY_TASK_DISTILL = "FAWAI_TASK_DISTILL"
+# 工作区代码符号索引（code_symbols / code_map / code_index_refresh）
+KEY_CODE_INDEX = "FAWAI_CODE_INDEX"
 
 MEMORY_KEYS: tuple[str, ...] = (
     KEY_WORK_ROOT,
@@ -34,7 +40,13 @@ MEMORY_KEYS: tuple[str, ...] = (
     KEY_VECTOR,
     KEY_VECTOR_DIR,
     KEY_INDEX_POLICY,
+    KEY_LEDGER_GATE_THRESHOLD,
+    KEY_TASK_DISTILL,
+    KEY_CODE_INDEX,
 )
+
+# 只落 memory_settings.sqlite，不 sync 进进程 env（避免与旧 FAWAI_* 混读）
+MEMORY_KEYS_NO_ENV: frozenset[str] = frozenset({KEY_TASK_DISTILL, KEY_CODE_INDEX})
 
 # 目录字段哨兵：跟随可读区 / 跟随工作区（用户数据区默认）
 FOLLOW_READ_ROOTS = "read_roots"
@@ -53,6 +65,9 @@ _DEFAULTS: dict[str, str] = {
     KEY_VECTOR: "1",
     KEY_VECTOR_DIR: "",
     KEY_INDEX_POLICY: "",
+    KEY_LEDGER_GATE_THRESHOLD: "80",
+    KEY_TASK_DISTILL: "1",
+    KEY_CODE_INDEX: "1",
 }
 
 _SCHEMA = """
@@ -133,7 +148,9 @@ class MemorySettingsStore:
     """SQLite：``data/memory_settings.sqlite``。"""
 
     def __init__(self, data_dir: str | None = None) -> None:
-        root = os.path.abspath(os.path.expanduser(str(data_dir or _data_dir())))
+        from fawai_avatar.data_dir import resolve_data_dir
+
+        root = resolve_data_dir(data_dir, default=_data_dir())
         self._data_dir = root
         self._lock = threading.RLock()
         os.makedirs(root, exist_ok=True)
@@ -329,9 +346,17 @@ class MemorySettingsStore:
         return changed
 
     def sync_process_env(self) -> None:
-        """热更进程环境，兼容仍读 ``os.environ`` / ``_env`` 的旧路径。"""
+        """热更进程环境，兼容仍读 ``os.environ`` / ``_env`` 的旧路径。
+
+        ``MEMORY_KEYS_NO_ENV`` 中的键只留 sqlite，不写 env；若进程里已有同名键则删掉。
+        """
         for key, val in self.as_map().items():
+            if key in MEMORY_KEYS_NO_ENV:
+                os.environ.pop(key, None)
+                continue
             os.environ[key] = val
+        for key in MEMORY_KEYS_NO_ENV:
+            os.environ.pop(key, None)
 
     def work_root(self) -> str:
         return self.get(KEY_WORK_ROOT) or "."
@@ -345,6 +370,31 @@ class MemorySettingsStore:
         if raw is None or raw == "":
             return bool(default)
         return raw.lower() in {"1", "true", "yes", "on"}
+
+    def ledger_gate_threshold_pct(self, *, default: float = 80.0) -> float:
+        """价值台账三维晋升阈值（0～100）；默认 80。"""
+        raw = self.get(KEY_LEDGER_GATE_THRESHOLD)
+        if raw is None or str(raw).strip() == "":
+            return float(default)
+        try:
+            v = float(str(raw).strip().rstrip("%"))
+        except (TypeError, ValueError):
+            return float(default)
+        return max(0.0, min(100.0, v))
+
+    def task_distill_enabled(self, *, default: bool = True) -> bool:
+        """终态条件短卡蒸馏：默认开。"""
+        raw = self.get(KEY_TASK_DISTILL)
+        if raw is None or str(raw).strip() == "":
+            return bool(default)
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+    def code_index_enabled(self, *, default: bool = True) -> bool:
+        """工作区代码符号索引：默认开。关则 code_symbols/code_map/refresh 拒绝建索。"""
+        raw = self.get(KEY_CODE_INDEX)
+        if raw is None or str(raw).strip() == "":
+            return bool(default)
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
     def index_policy(self) -> dict[str, Any]:
         from fawai_avatar.index_policy import default_policy, parse_policy

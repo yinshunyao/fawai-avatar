@@ -21,7 +21,9 @@
 | 讨论 | `议题/` | 在想什么、定了什么原则、可行性如何——**未等于放行** |
 | 功能 | `功能/` | **准实现 / 实现中 / 实际已支持** 的功能面；实现与验收看这里 |
 
-- **不维护** `doc/or/`，不套 `01-or`～`99-ops`。
+- **不维护** `doc/or/`，**不套** `01-or`～`99-ops`，**不建** `02-dr` / `03-tr` / `91-qa` / `99-ops`。
+- 本仓文档树（议题 / 功能 / 测试 / 版本 / 分析 / 问题）**优先于** workspace 全局「OR→DR→TR」与「方案进 `02-dr`」习惯；冲突时以本文件与 `.cursor/rules/rules-doc-code.mdc` 为准。
+- 经确认的实施方案 / Plan：写入或增补 `功能/{短名}/说明.md`（可链议题结论）；机制对照进 `分析/`；**禁止**为归档另起 `doc/02-dr/`。
 - 写入功能目录须用户明示（放行 / 写入功能目录等）；助理不得只凭议题「已定结论」自动加行。
 - 开工：只实现功能表中 `放行` 或 `实现中` 的条目；做完改为 `已支持` 并填代码列。
 
@@ -74,6 +76,8 @@ doc/
 | `.cursor/rules/rules-doc-code.mdc` | Cursor 强制规则真源 |
 | `.cursor/rules/rules-platform.mdc` | 跨平台：设计与代码须考虑 OS/headless；无法本机调试也要完成支持 |
 | `.cursor/rules/rules-分析.mdc` | 机制/优化/改进讨论归档到 `分析/` |
+| `.cursor/rules/rules-no-intervene-tasks.mdc` | 助手禁止直接插手任务执行；只读分析与改产品代码除外 |
+| `.cursor/rules/rules-github-release.mdc` | 本仓发版落盘/评测细则（全局底线：ai-company `rules-github-release.mdc`） |
 | `.cursor/rules/rules-web-client-redact.mdc` | 发给 Web/中继须脱敏；后端规划不抠口令 |
 
 编辑 `doc/` 前先读本文件与 `术语与称呼索引.md`。

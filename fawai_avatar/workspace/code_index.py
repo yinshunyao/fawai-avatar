@@ -22,6 +22,8 @@ from fawai_avatar.workspace.paths import (
 )
 
 _PY_SUFFIXES = frozenset({".py"})
+_HTML_SUFFIXES = frozenset({".html", ".htm"})
+_CSS_SUFFIXES = frozenset({".css"})
 _SOURCE_SUFFIXES = frozenset(
     {
         ".py",
@@ -45,6 +47,9 @@ _SOURCE_SUFFIXES = frozenset(
         ".php",
         ".swift",
         ".cs",
+        ".html",
+        ".htm",
+        ".css",
     }
 )
 _KIND_ORDER = {
@@ -54,6 +59,9 @@ _KIND_ORDER = {
     "interface": 1,
     "enum": 1,
     "type": 1,
+    "id": 1,
+    "selector": 1,
+    "media": 1,
     "function": 2,
     "method": 3,
     "async_function": 2,
@@ -208,12 +216,24 @@ _SUFFIX_LANG = {
     ".php": "php",
     ".swift": "swift",
     ".cs": "cs",
+    ".html": "html",
+    ".htm": "html",
+    ".css": "css",
 }
 
 _VUE_SCRIPT_RE = re.compile(
     r"<script\b[^>]*>(.*?)</script>",
     re.IGNORECASE | re.DOTALL,
 )
+_STYLE_RE = re.compile(
+    r"<style\b[^>]*>(.*?)</style>",
+    re.IGNORECASE | re.DOTALL,
+)
+_HTML_ID_RE = re.compile(r"""\bid\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+_HTML_CLASS_RE = re.compile(r"""\bclass\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+_CSS_MEDIA_RE = re.compile(r"^\s*(@media\b[^{]*)\{", re.IGNORECASE)
+_CSS_SELECTOR_RE = re.compile(r"^\s*([^{}@/][^{]*?)\s*\{\s*(?:$|/\*)")
+_CLASS_TOKEN_RE = re.compile(r"[A-Za-z_][\w-]*")
 
 
 def _kind_matches(hit_kind: str, kind_filter: str) -> bool:
@@ -226,6 +246,8 @@ def _kind_matches(hit_kind: str, kind_filter: str) -> bool:
     if kind_filter == "method" and hit_kind in ("method", "async_method"):
         return True
     if kind_filter == "class" and hit_kind in ("class", "struct", "interface", "enum", "type", "trait", "module"):
+        return True
+    if kind_filter in {"css", "selector"} and hit_kind in ("selector", "media", "class", "id"):
         return True
     return False
 
@@ -472,6 +494,10 @@ class CodeIndex:
             return [], "unreadable"
         if suffix in _PY_SUFFIXES:
             return self._extract_python(rel, source), "python-ast"
+        if suffix in _HTML_SUFFIXES:
+            return self._extract_html(rel, source), "heuristic-html"
+        if suffix in _CSS_SUFFIXES:
+            return self._extract_css(rel, source), "heuristic-css"
         lang = _SUFFIX_LANG.get(suffix, "generic")
         if suffix == ".vue":
             chunks: list[tuple[str, int]] = []
@@ -486,6 +512,121 @@ class CodeIndex:
                 hits.extend(self._extract_heuristic(rel, block, lang, line_offset=start_line - 1))
             return hits, f"heuristic-{lang}"
         return self._extract_heuristic(rel, source, lang), f"heuristic-{lang}"
+
+    def _extract_html(self, rel: str, source: str) -> list[SymbolHit]:
+        hits: list[SymbolHit] = []
+        seen: set[tuple[str, str]] = set()
+        for m in _HTML_ID_RE.finditer(source):
+            name = (m.group(1) or "").strip()
+            if not name or len(name) < 2:
+                continue
+            key = ("id", name)
+            if key in seen:
+                continue
+            seen.add(key)
+            line = source[: m.start()].count("\n") + 1
+            hits.append(
+                SymbolHit(
+                    path=rel,
+                    name=name,
+                    kind="id",
+                    line=line,
+                    signature="",
+                    parent="",
+                    engine="heuristic-html",
+                )
+            )
+        for m in _HTML_CLASS_RE.finditer(source):
+            raw = m.group(1) or ""
+            line = source[: m.start()].count("\n") + 1
+            for token in _CLASS_TOKEN_RE.findall(raw):
+                if len(token) < 2:
+                    continue
+                key = ("class", token)
+                if key in seen:
+                    continue
+                seen.add(key)
+                hits.append(
+                    SymbolHit(
+                        path=rel,
+                        name=token,
+                        kind="class",
+                        line=line,
+                        signature="",
+                        parent="",
+                        engine="heuristic-html",
+                    )
+                )
+        for m in _STYLE_RE.finditer(source):
+            block = m.group(1) or ""
+            start_line = source[: m.start(1)].count("\n") + 1
+            hits.extend(self._extract_css(rel, block, line_offset=start_line - 1))
+        for m in _VUE_SCRIPT_RE.finditer(source):
+            block = m.group(1) or ""
+            if not block.strip():
+                continue
+            start_line = source[: m.start(1)].count("\n") + 1
+            hits.extend(
+                self._extract_heuristic(rel, block, "js", line_offset=start_line - 1)
+            )
+        return hits
+
+    def _extract_css(
+        self,
+        rel: str,
+        source: str,
+        *,
+        line_offset: int = 0,
+    ) -> list[SymbolHit]:
+        hits: list[SymbolHit] = []
+        seen: set[tuple[str, str]] = set()
+        for i, line in enumerate(source.splitlines(), start=1):
+            lineno = i + line_offset
+            media = _CSS_MEDIA_RE.match(line)
+            if media:
+                name = " ".join((media.group(1) or "").split())
+                if len(name) > 80:
+                    name = name[:77] + "..."
+                key = ("media", name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                hits.append(
+                    SymbolHit(
+                        path=rel,
+                        name=name,
+                        kind="media",
+                        line=lineno,
+                        signature="",
+                        parent="",
+                        engine="heuristic-css",
+                    )
+                )
+                continue
+            sel = _CSS_SELECTOR_RE.match(line)
+            if not sel:
+                continue
+            name = " ".join((sel.group(1) or "").split()).rstrip(",")
+            if not name or name.startswith("/*") or len(name) < 2:
+                continue
+            if len(name) > 80:
+                name = name[:77] + "..."
+            key = ("selector", name)
+            if key in seen:
+                continue
+            seen.add(key)
+            hits.append(
+                SymbolHit(
+                    path=rel,
+                    name=name,
+                    kind="selector",
+                    line=lineno,
+                    signature="",
+                    parent="",
+                    engine="heuristic-css",
+                )
+            )
+        return hits
 
     def _extract_python(self, rel: str, source: str) -> list[SymbolHit]:
         try:

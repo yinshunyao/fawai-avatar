@@ -21,6 +21,12 @@ META_PLAN_ID = "plan_id"
 META_PLAN_NODE_ID = "plan_node_id"
 META_PLAN_PARENT_ID = "plan_parent_task_id"
 META_PLAN_AUTH = "plan_auth"
+# 图上已无活跃节点时，允许编排器父任务同线程跑逐步 Worker（会话续跑回落）
+META_PLAN_ALLOW_SESSION_WORKER = "plan_allow_session_worker"
+
+_ACTIVE_NODE_STATUSES = frozenset(
+    {"pending", "ready", "running", "waiting", "blocked"}
+)
 
 # 同一父计划上 full_replan / retry / apply_revision 互斥，避免连点双拉同节点
 _REVISION_GUARD = threading.RLock()
@@ -56,12 +62,65 @@ def is_supervisor_task(meta: dict[str, Any] | None) -> bool:
     return str((meta or {}).get(META_PLAN_ROLE) or "") == "supervisor"
 
 
+def allows_plan_session_worker(meta: dict[str, Any] | None) -> bool:
+    """编排器父任务是否允许同线程会话 Worker（全图终态后追问回落）。"""
+    return bool((meta or {}).get(META_PLAN_ALLOW_SESSION_WORKER))
+
+
+def graph_has_active_nodes(graph: PlanGraph | None) -> bool:
+    if graph is None or not graph.nodes:
+        return False
+    return any(str(n.status or "") in _ACTIVE_NODE_STATUSES for n in graph.nodes)
+
+
+def soft_append_needs_session_fallback(
+    graph: PlanGraph | None,
+    *,
+    running_targets: list[str] | None = None,
+    spawned: list[str] | None = None,
+) -> bool:
+    """软追加无监管脑可接、且图无活跃节点 → 应回落同线程会话 Worker。"""
+    if running_targets or spawned:
+        return False
+    if graph_has_active_nodes(graph):
+        return False
+    return True
+
+
 # 新建已建卡、编排脑判定/出图尚未完成；禁止拉 Worker / 追问续跑抢跑
 META_AWAITING_PLAN = "awaiting_plan"
+
+# 终态：编排闸门不得再挡住追问/续跑
+_AWAITING_PLAN_TERMINAL = frozenset(
+    {"cancelled", "failed", "completed", "archived"}
+)
 
 
 def is_awaiting_plan(meta: dict[str, Any] | None) -> bool:
     return bool((meta or {}).get(META_AWAITING_PLAN))
+
+
+def clear_awaiting_plan(supervisor: Supervisor, task_id: str) -> bool:
+    """去掉 meta.awaiting_plan；无键或无任务则 False。"""
+    task = supervisor.get_task(task_id)
+    if task is None or not is_awaiting_plan(task.meta):
+        return False
+    meta = dict(task.meta or {})
+    meta.pop(META_AWAITING_PLAN, None)
+    return bool(supervisor.replace_task_meta(task_id, meta))
+
+
+def release_awaiting_plan_if_terminal(
+    supervisor: Supervisor, task_id: str, *, status: str | None = None
+) -> bool:
+    """任务已终态时清掉卡死的 awaiting_plan（取消中断编排的对称清理）。"""
+    task = supervisor.get_task(task_id)
+    if task is None:
+        return False
+    st = status if status is not None else str(task.status or "")
+    if st not in _AWAITING_PLAN_TERMINAL:
+        return False
+    return clear_awaiting_plan(supervisor, task_id)
 
 
 def session_publish_task_id(
@@ -169,7 +228,10 @@ def plan_graph_progress_meta(graph: PlanGraph | None) -> dict[str, Any]:
 
 
 def list_plan_child_ids(supervisor: Supervisor, parent_task_id: str) -> list[str]:
-    """父计划下监管脑任务 id（图上 task_id + meta 扫描，去重保序）。"""
+    """父计划下监管脑任务 id（图上 task_id + meta 索引扫描，去重保序）。
+
+    禁止再 `list_tasks` 全表 SELECT *：run_checkpoint 膨胀时会把打开父计划/列表拖成数百毫秒。
+    """
     parent_id = (parent_task_id or "").strip()
     if not parent_id:
         return []
@@ -190,13 +252,10 @@ def list_plan_child_ids(supervisor: Supervisor, parent_task_id: str) -> list[str
             if n.task_id:
                 _add(n.task_id)
     try:
-        for t in supervisor.list_tasks(limit=200, archived=None):
-            meta = t.meta or {}
-            if not is_supervisor_task(meta):
-                continue
-            if str(meta.get(META_PLAN_PARENT_ID) or "").strip() != parent_id:
-                continue
-            _add(t.task_id)
+        for cid in supervisor.list_task_ids_by_meta_equals(
+            META_PLAN_PARENT_ID, parent_id, limit=200
+        ):
+            _add(cid)
     except Exception:  # noqa: BLE001
         pass
     return ordered
@@ -1434,6 +1493,21 @@ def _create_supervisor_child(
     }
     # 父计划追问/追加约束：新监管脑启动时带入 pending_appends，避免整图重做才听得到
     parent = supervisor.get_task(parent_task_id)
+    from fawai_avatar.brain.effort import effort_from_meta
+    from fawai_avatar.brain.fast import fast_from_meta
+    from fawai_avatar.brain.mode_auto import prefs_from_meta
+    from fawai_avatar.brain.orchestrator import plan_auto_from_meta
+    from fawai_avatar.brain.step_run import step_tier_from_meta
+
+    # 监管子任务继承父计划 effort/fast/step_tier/plan_auto（解耦，可同时开）
+    parent_meta = parent.meta if parent else None
+    meta["fast"] = fast_from_meta(parent_meta)
+    meta["effort"] = effort_from_meta(parent_meta)
+    meta["step_tier"] = step_tier_from_meta(parent_meta)
+    plan_auto_flag = plan_auto_from_meta(parent_meta)
+    if plan_auto_flag is not None:
+        meta["plan_auto"] = bool(plan_auto_flag)
+    meta["mode_prefs"] = prefs_from_meta(parent_meta)
     note = str((parent.meta or {}).get("plan_dispatch_note") or "").strip() if parent else ""
     if not note and parent is not None:
         fus = list((parent.meta or {}).get("followups") or [])

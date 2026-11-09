@@ -76,6 +76,74 @@ def main(
     else:
         print("lsof unavailable; skip fd check")
 
+    print("== data_dir 拒绝 store 对象 ==")
+    from pathlib import Path
+
+    try:
+        TaskStore(store)  # type: ignore[arg-type]
+        raise AssertionError("TaskStore(store) should TypeError")
+    except TypeError as exc:
+        assert "PathLike" in str(exc) or "data_dir" in str(exc)
+    try:
+        TaskStore("<fawai_avatar.task.store.TaskStore object at 0xdeadbeef>")
+        raise AssertionError("object-repr path should TypeError")
+    except TypeError:
+        pass
+    assert TaskStore(Path(data_dir)).data_dir == store.data_dir
+    print("data_dir guard ok")
+
+    print("== TaskStore 列表剔大键 / meta 等值取 id ==")
+    from fawai_avatar.task.store import LIST_META_OMIT_KEYS
+    from fawai_avatar.task.models import TaskRecord
+    import time as _time
+
+    now = _time.time()
+    parent_id = "a" * 32
+    child_id = "b" * 32
+    store.insert_task(
+        TaskRecord(
+            task_id=parent_id,
+            goal="list-omit-parent",
+            status="cancelled",
+            priority=0,
+            meta={"plan_role": "orchestrator", "title": "父"},
+            write_resources=[],
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    store.insert_task(
+        TaskRecord(
+            task_id=child_id,
+            goal="list-omit-child",
+            status="cancelled",
+            priority=0,
+            meta={
+                "plan_role": "supervisor",
+                "plan_parent_task_id": parent_id,
+                "run_checkpoint": {"history": ["z" * 800] * 40},
+                "steps": [{"plan": {}}],
+                "title": "子",
+            },
+            write_resources=[],
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    assert store.list_task_ids_by_meta_equals("plan_parent_task_id", parent_id) == [
+        child_id
+    ]
+    light = {
+        t.task_id: t
+        for t in store.list_tasks(
+            limit=20, archived=None, omit_meta_keys=LIST_META_OMIT_KEYS
+        )
+    }
+    assert "run_checkpoint" not in (light[child_id].meta or {})
+    assert (light[child_id].meta or {}).get("steps")
+    assert "run_checkpoint" in (store.get_task(child_id).meta or {})
+    print("list omit / meta equals ok")
+
     print("== 观察 ==")
     if do_capture:
         obs = observe(os.path.join(data_dir, "observe"))

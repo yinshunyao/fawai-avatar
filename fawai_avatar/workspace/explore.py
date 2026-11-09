@@ -8,13 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from fawai_avatar.workspace.code_index import CodeIndex
-from fawai_avatar.workspace.fs import WorkspaceFs
-from fawai_avatar.workspace.paths import normalize_work_root
+from fawai_avatar.workspace.fs import WorkspaceFs, search_root_too_broad
+from fawai_avatar.workspace.paths import normalize_work_root, resolve_for_read
 
 _EXPLORE_QUERY_ALIASES = ("query", "pattern", "q")
 # 默认收窄到常见源码/配置，避免大仓数据目录拖慢 rg
 _DEFAULT_SOURCE_GLOB = (
     "*.{py,ts,tsx,js,jsx,vue,go,rs,java,kt,c,h,cc,cpp,hpp,"
+    "html,htm,css,"
     "md,yml,yaml,json,toml,sh,txt}"
 )
 
@@ -84,6 +85,7 @@ def explore_search(
     context_before: int = 0,
     context_after: int = 0,
     code_index: CodeIndex | None = None,
+    allow_broad: bool = False,
 ) -> dict[str, Any]:
     """并行探仓。
 
@@ -105,9 +107,29 @@ def explore_search(
     after = max(0, min(int(context_after), 5))
     limit = max(1, min(int(head_limit), 100))
     glob_eff = effective_explore_glob(glob)
+    # 有正文 grep 任务时，整 work_root / 浅根与 fs_grep 同闸
+    if qlist:
+        base = resolve_for_read(root, path or ".", read_roots=fs.read_roots)
+        broad = search_root_too_broad(
+            base,
+            work_root=root,
+            kind="explore_search",
+            pattern=qlist[0],
+            allow_broad=allow_broad,
+        )
+        if broad:
+            raise ValueError(broad)
 
-    # 仅在需要符号通道时建索引（默认跳过，避免大树 AST 拖慢）
-    if want_symbols:
+    symbols_on = True
+    try:
+        from fawai_avatar.config import code_index_enabled
+
+        symbols_on = bool(code_index_enabled(default=True))
+    except Exception:  # noqa: BLE001
+        symbols_on = True
+
+    # 仅在需要符号通道且记忆配置开启时建索引（默认跳过，避免大树 AST 拖慢）
+    if want_symbols and symbols_on:
         try:
             code.ensure_index(path)
         except Exception:  # noqa: BLE001
@@ -116,12 +138,23 @@ def explore_search(
     jobs: list[tuple[str, str]] = []
     for q in qlist:
         jobs.append(("grep", q))
-        if include_symbols:
+        if include_symbols and symbols_on:
             jobs.append(("symbols", q))
-    if extra_sym and (not include_symbols or extra_sym not in qlist):
+    if symbols_on and extra_sym and (not include_symbols or extra_sym not in qlist):
         jobs.append(("symbols", extra_sym))
 
     results: list[dict[str, Any]] = []
+    if want_symbols and not symbols_on:
+        results.append(
+            {
+                "kind": "symbols",
+                "query": extra_sym or (qlist[0] if qlist else ""),
+                "hits": [],
+                "count": 0,
+                "disabled": True,
+                "message": "code index disabled (FAWAI_CODE_INDEX=0)",
+            }
+        )
 
     def _run(kind: str, payload: str) -> dict[str, Any]:
         if kind == "grep":
@@ -132,6 +165,7 @@ def explore_search(
                 head_limit=limit,
                 context_before=before,
                 context_after=after,
+                allow_broad=allow_broad,
             )
             return {"kind": "grep", "query": payload, "hits": hits, "count": len(hits)}
         hits = code.symbols(path, query=payload, head_limit=limit)

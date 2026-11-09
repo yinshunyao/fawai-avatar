@@ -56,6 +56,52 @@ def main() -> None:
     _ok("shovel_search tool ok", res.ok, res.message)
     _ok("shovel_search has hits", int((res.data or {}).get("count") or 0) >= 1, res.message)
 
+    # 观察正文必须带 invoke（调用契约），禁止只留 title/path
+    from fawai_avatar.observe.tool_digest import _render_hits, format_tool_observation
+
+    hits = list((res.data or {}).get("hits") or [])
+    rendered = _render_hits(hits)
+    with_invoke = [h for h in hits if str(h.get("invoke") or "").strip()]
+    _ok(
+        "shovel hits meta has invoke",
+        bool(with_invoke),
+        f"hits={len(hits)} with_invoke={len(with_invoke)}",
+    )
+    sample_inv = str(with_invoke[0].get("invoke") or "").strip() if with_invoke else ""
+    _ok(
+        "render_hits includes invoke",
+        bool(sample_inv) and ("invoke=" in rendered) and (sample_inv in rendered),
+        rendered[:400],
+    )
+    obs_text, _ = format_tool_observation(
+        [Action(kind="shovel_search", args={"query": "ssh", "limit": 8})],
+        [res],
+        goal="远端 ssh 带密执行",
+        data_dir=str(data_dir),
+    )
+    _ok(
+        "tool observation includes shovel invoke",
+        "invoke=" in obs_text and sample_inv in obs_text,
+        obs_text[:500],
+    )
+    # 缺 invoke 字段时仍须显式占位，避免模型当「无契约」
+    missing_line = _render_hits(
+        [
+            {
+                "id": "demo_missing_invoke",
+                "title": "t",
+                "when_to_use": "x",
+                "path": "shell/x.sh",
+                "outcome": {"rate": "unknown"},
+            }
+        ]
+    )
+    _ok(
+        "render_hits marks missing invoke",
+        "invoke=(missing)" in missing_line,
+        missing_line,
+    )
+
     invent = Action(kind="py_write", args={"path": "x.py", "content": "print(1)\n"})
     _ok("py_write invents", action_invents_script(invent))
     _ok(

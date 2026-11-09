@@ -12,6 +12,15 @@ from typing import Any
 
 from fawai_avatar.task.models import Event, ResourceItem, TaskRecord
 
+# 列表/扫描默认剔除的超大 meta 键（续跑仍走 get_task 读全文）
+# 保留 steps 以便列表 has_steps；checkpoint 才是百 KB～MB 级膨胀源
+LIST_META_OMIT_KEYS: tuple[str, ...] = (
+    "run_checkpoint",
+    "reflection",
+    "last_review",
+    "last_review_analysis",
+)
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
     task_id TEXT PRIMARY KEY,
@@ -58,7 +67,10 @@ class TaskStore:
 
     def __init__(self, data_dir: str) -> None:
         # 绝对路径：避免进程 cwd 变化后相对 data/ 打不开库
-        root = os.path.abspath(os.path.expanduser(str(data_dir or "data")))
+        # 拒绝误传 TaskStore/Supervisor 对象（否则会在 cwd 建 "<… object at 0x…>" 目录）
+        from fawai_avatar.data_dir import resolve_data_dir
+
+        root = resolve_data_dir(data_dir)
         self._data_dir = root
         self._lock = threading.RLock()
         os.makedirs(root, exist_ok=True)
@@ -201,6 +213,26 @@ class TaskStore:
             return None
         return TaskRecord.from_row(dict(row))
 
+    @staticmethod
+    def _meta_select_sql(omit_meta_keys: tuple[str, ...] | None) -> str:
+        """列表扫描可 json_remove 掉超大键，避免 SELECT * 拖进 run_checkpoint。"""
+        if not omit_meta_keys:
+            return "SELECT * FROM tasks"
+        paths: list[str] = []
+        for key in omit_meta_keys:
+            k = str(key or "").strip()
+            if not k or not k.replace("_", "").isalnum():
+                continue
+            paths.append(f"'$.{k}'")
+        if not paths:
+            return "SELECT * FROM tasks"
+        removed = ", ".join(paths)
+        return (
+            "SELECT task_id, goal, status, priority, "
+            f"json_remove(meta_json, {removed}) AS meta_json, "
+            "write_resources_json, created_at, updated_at FROM tasks"
+        )
+
     def list_tasks(
         self,
         *,
@@ -208,16 +240,21 @@ class TaskStore:
         q: str | None = None,
         limit: int = 200,
         archived: bool | None = False,
+        omit_meta_keys: tuple[str, ...] | None = None,
     ) -> list[TaskRecord]:
-        """archived=False 排除归档；True 仅归档；None 不过滤归档。"""
+        """archived=False 排除归档；True 仅归档；None 不过滤归档。
+
+        omit_meta_keys：列表场景剔除 run_checkpoint 等大键（默认不剔，兼容续跑/复盘）。
+        """
         query = (q or "").strip().lower()
         fetch_n = max(limit * 5, limit) if query or archived is False else limit
+        base_sql = self._meta_select_sql(omit_meta_keys)
         with self._lock:
             with self._connect() as conn:
                 if status is None:
                     rows = conn.execute(
-                        """
-                        SELECT * FROM tasks
+                        f"""
+                        {base_sql}
                         ORDER BY updated_at DESC, created_at DESC
                         LIMIT ?
                         """,
@@ -225,8 +262,9 @@ class TaskStore:
                     ).fetchall()
                 else:
                     rows = conn.execute(
-                        """
-                        SELECT * FROM tasks WHERE status = ?
+                        f"""
+                        {base_sql}
+                        WHERE status = ?
                         ORDER BY updated_at DESC, created_at DESC
                         LIMIT ?
                         """,
@@ -249,6 +287,33 @@ class TaskStore:
                     break
             return filtered
         return records[:limit]
+
+    def list_task_ids_by_meta_equals(
+        self,
+        key: str,
+        value: str,
+        *,
+        limit: int = 200,
+    ) -> list[str]:
+        """按 meta JSON 标量字段精确匹配，只回 task_id（供计划子任务扫描，避免 SELECT *）。"""
+        k = str(key or "").strip()
+        v = str(value or "").strip()
+        if not k or not v or not k.replace("_", "").isalnum():
+            return []
+        lim = max(1, min(int(limit or 200), 500))
+        path = f"$.{k}"
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT task_id FROM tasks
+                    WHERE json_extract(meta_json, ?) = ?
+                    ORDER BY created_at ASC
+                    LIMIT ?
+                    """,
+                    (path, v, lim),
+                ).fetchall()
+        return [str(r["task_id"]) for r in rows if r["task_id"]]
 
     def append_event(
         self,

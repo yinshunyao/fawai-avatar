@@ -334,7 +334,10 @@ class SystemLogStore:
     """
 
     def __init__(self, data_dir: str) -> None:
-        root = os.path.abspath(os.path.expanduser(str(data_dir or "data")))
+        from fawai_avatar.data_dir import resolve_data_dir
+
+        # TypeError（误传 store 对象）直接抛出，不降级静默建怪目录
+        root = resolve_data_dir(data_dir)
         self._data_dir = root
         self._lock = threading.RLock()
         os.makedirs(root, exist_ok=True)

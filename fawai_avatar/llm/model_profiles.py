@@ -641,7 +641,7 @@ def list_remote_models(
     - DashScope（base 含 dashscope）：优先原生 ``/api/v1/models``，按 kind 过滤
       （text=TG / vlm=VU / asr=ASR / embed=TR）
     - 其它 OpenAI 兼容：``GET /models`` + 启发式分类
-    - 可传 ``provider_id`` 从设置库取凭证
+    - 可传 ``provider_id`` 从设置库取凭证；成功时写入 ``model_catalogs`` 缓存
     """
     from fawai_avatar.config import LlmConfig
     from fawai_avatar.llm.settings_store import get_store
@@ -677,13 +677,31 @@ def list_remote_models(
             "provider_id": pid or None,
         }
 
+    def _persist_catalog(result: dict[str, Any]) -> dict[str, Any]:
+        """按供应商写入本机目录缓存；下次打开配置页可先用水合列表。"""
+        if not pid or not result.get("ok"):
+            if pid:
+                result = {**result, "provider_id": pid}
+            return result
+        try:
+            get_store().set_model_catalog(
+                pid,
+                kind_n,
+                list(result.get("models") or []),
+                source=str(result.get("source") or ""),
+                base_url=str(url or ""),
+            )
+        except Exception:
+            pass
+        return {**result, "provider_id": pid}
+
     host = dashscope_catalog_host(url)
     if host:
         result = _list_dashscope_catalog(
             host=host, api_key=key.strip(), kind=kind_n, timeout_sec=timeout
         )
         if result.get("ok"):
-            return result
+            return _persist_catalog(result)
         # 原生目录失败时回退 compatible /models
         fallback = _list_openai_compatible_models(
             api_key=key.strip(), base_url=url, kind=kind_n, timeout_sec=timeout
@@ -691,11 +709,15 @@ def list_remote_models(
         if fallback.get("ok"):
             fallback["warning"] = result.get("error")
             fallback["fallback_from"] = "dashscope_catalog"
+            return _persist_catalog(fallback)
+        if pid:
+            fallback = {**fallback, "provider_id": pid}
         return fallback
 
-    return _list_openai_compatible_models(
+    result = _list_openai_compatible_models(
         api_key=key.strip(), base_url=url, kind=kind_n, timeout_sec=timeout
     )
+    return _persist_catalog(result)
 
 
 def profiles_payload_for_models(

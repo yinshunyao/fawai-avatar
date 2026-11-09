@@ -98,6 +98,8 @@ class Plan:
     step_label: str = ""
     # 步型：sense | act_serial | act_parallel | analyze | finalize（见步骤分类与执行流）
     step_kind: str = ""
+    # 成功后观察反省档：reflect | brief | act（空=跟现网默认）；见步级执行档
+    step_run: str = ""
     # 主脑委派：{"tier":"fast","goal":"...","stop_when":"...","max_steps":N}；空=不委派
     delegate: dict[str, Any] | None = None
 
@@ -113,6 +115,8 @@ class Plan:
             "step_label": self.step_label,
             "step_kind": self.step_kind,
         }
+        if self.step_run:
+            out["step_run"] = self.step_run
         if self.observe_args:
             out["observe_args"] = dict(self.observe_args)
         if self.delegate:

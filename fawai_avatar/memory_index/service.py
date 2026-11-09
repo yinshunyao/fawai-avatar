@@ -123,11 +123,43 @@ def ensure_content_fts(*, force: bool = False) -> dict[str, Any]:
     return reindex_content_fts()
 
 
+def _filter_out_data_dir_hits(
+    hits: list[dict[str, Any]],
+    *,
+    limit: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """去掉 FAWAI_DATA_DIR 下残留命中；返回 (截断后列表, 滤掉条数)。"""
+    from pathlib import Path
+
+    from fawai_avatar.memory_index.common import _resolve_data_dir, _under_data_dir
+
+    data_dir = _resolve_data_dir()
+    if data_dir is None:
+        return hits[:limit], 0
+    kept: list[dict[str, Any]] = []
+    dropped = 0
+    for h in hits:
+        path = str(h.get("path") or "")
+        if not path:
+            continue
+        try:
+            if _under_data_dir(Path(path), data_dir):
+                dropped += 1
+                continue
+        except Exception:
+            pass
+        kept.append(h)
+        if len(kept) >= limit:
+            break
+    return kept, dropped
+
+
 def search_names(query: str, *, limit: int = 50) -> dict[str, Any]:
     from fawai_avatar.config import name_index_enabled
 
     if not name_index_enabled(default=True):
-        return {"ok": False, "error": "文件名索引已关闭", "hits": []}
+        return {"ok": False, "error": "文件名索引已关闭（记忆配置）", "hits": [], "count": 0}
+    limit = max(1, min(int(limit or 50), 100))
     db = _name_db()
     if not db.is_file():
         built = ensure_name_index()
@@ -140,8 +172,18 @@ def search_names(query: str, *, limit: int = 50) -> dict[str, Any]:
             }
     idx = NameIndex(_name_db())
     try:
-        hits = idx.search(query, limit=limit)
-        return {"ok": True, "query": query, "hits": hits, "count": len(hits)}
+        # 多取一些再滤 data_dir，避免观察落盘残留占满 limit
+        raw = idx.search(query, limit=min(100, max(limit * 4, limit + 20)))
+        hits, dropped = _filter_out_data_dir_hits(raw, limit=limit)
+        out: dict[str, Any] = {
+            "ok": True,
+            "query": query,
+            "hits": hits,
+            "count": len(hits),
+        }
+        if dropped:
+            out["dropped_data_dir"] = dropped
+        return out
     finally:
         idx.close()
 
@@ -150,7 +192,13 @@ def search_content(query: str, *, limit: int = 40) -> dict[str, Any]:
     from fawai_avatar.config import workspace_content_fts_enabled
 
     if not workspace_content_fts_enabled(default=True):
-        return {"ok": False, "error": "工作区/可读区未开启正文 FTS", "hits": []}
+        return {
+            "ok": False,
+            "error": "工作区/可读区未开启正文 FTS（记忆配置）",
+            "hits": [],
+            "count": 0,
+        }
+    limit = max(1, min(int(limit or 40), 100))
     db = _content_db()
     if not db.is_file():
         built = ensure_content_fts()
@@ -163,8 +211,17 @@ def search_content(query: str, *, limit: int = 40) -> dict[str, Any]:
             }
     idx = ContentFtsIndex(_content_db())
     try:
-        hits = idx.search(query, limit=limit)
-        return {"ok": True, "query": query, "hits": hits, "count": len(hits)}
+        raw = idx.search(query, limit=min(100, max(limit * 4, limit + 20)))
+        hits, dropped = _filter_out_data_dir_hits(raw, limit=limit)
+        out: dict[str, Any] = {
+            "ok": True,
+            "query": query,
+            "hits": hits,
+            "count": len(hits),
+        }
+        if dropped:
+            out["dropped_data_dir"] = dropped
+        return out
     finally:
         idx.close()
 

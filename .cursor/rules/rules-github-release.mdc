@@ -1,0 +1,30 @@
+---
+description: fawai-avatar：在全局 GitHub 发版规则之上的落盘与评测细则
+globs:
+  - doc/版本/**
+  - packaging/**
+  - pyproject.toml
+  - .github/workflows/release-packages.yml
+alwaysApply: false
+---
+
+# GitHub 发版（fawai-avatar 细则）
+
+先遵守 **全局** `ai-company/.cursor/rules/rules-github-release.mdc`（Release Notes + About）。本文件只补本仓落盘路径与评测约定。目录约定见 `doc/版本/AGENTS.md`。
+
+## 本仓落盘
+
+| 项 | 路径 / 要求 |
+|:---|:---|
+| 英文 Notes（Release 默认正文） | `doc/版本/v{version}/RELEASE_NOTES.md` |
+| 中文 Notes | `RELEASE_NOTES.zh-CN.md`；文首与英文互链 |
+| 评测 | 同目录 `评测结果.md` + 总表 `【总表】版本评测一览.md` 一行；Notes 链到评测 |
+| Release 页链接 | `…/blob/vX.Y.Z/doc/版本/vX.Y.Z/…` 绝对 URL；禁止 `./评测结果.md` |
+| About homepage 现默认 | `https://hipp.site/fawai/`（变更时同步 About） |
+
+## 建议顺序（本仓）
+
+1. bump `project.version` → 写/更 `评测结果` + `RELEASE_NOTES(.zh-CN)` → 更新总表  
+2. commit + tag + push  
+3. 上传安装包 → Release body = 英文 Notes + 绝对链接  
+4. 核对 About（description / homepage / topics）

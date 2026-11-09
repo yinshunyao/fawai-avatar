@@ -13,7 +13,7 @@ from typing import Any
 
 from contextlib import asynccontextmanager
 
-from fastapi import Body, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -142,14 +142,33 @@ def create_app(
     app.state.releases = release_store
 
     async def _broadcast(message: Message) -> None:
-        # 出站图：若有本地路径则映射为 /media/…
-        if message.kind == "image" and message.media_path and not message.media_url:
+        # 出站图/附件：本地路径映射为 /media/…（跨端浏览器取，支持 Range）
+        if (
+            message.kind in {"image", "file", "audio"}
+            and message.media_path
+            and not message.media_url
+        ):
             src = Path(message.media_path)
             if src.is_file():
-                dest = media_dir / f"out_{message.message_id}{src.suffix or '.png'}"
+                suffix = src.suffix or (
+                    ".bin" if message.kind == "file" else ".png"
+                )
+                dest = media_dir / f"out_{message.message_id}{suffix}"
                 if not dest.exists():
                     dest.write_bytes(src.read_bytes())
                 message.media_url = f"/media/{dest.name}"
+                if message.kind == "file":
+                    meta = dict(message.meta or {})
+                    meta.setdefault("filename", src.name)
+                    meta.setdefault("size", dest.stat().st_size)
+                    meta.setdefault(
+                        "mime",
+                        __import__(
+                            "fawai_avatar.channel.file_deliver",
+                            fromlist=["guess_mime"],
+                        ).guess_mime(src),
+                    )
+                    message.meta = meta
         await manager.broadcast(message)
 
     hub.add_broadcaster(_broadcast)
@@ -510,7 +529,7 @@ def create_app(
         base_url: str | None = None,
         x_fawai_token: str | None = Header(default=None),
     ) -> JSONResponse:
-        """在线拉取模型列表。``kind``=text|vlm|asr|embed|all；可按 ``provider_id``。"""
+        """在线拉取模型列表并写入本机目录缓存。``kind``=text|vlm|asr|embed|all；可按 ``provider_id``。"""
         _check_token(x_fawai_token)
         from fawai_avatar.llm.model_profiles import list_remote_models
 
@@ -597,9 +616,15 @@ def create_app(
     @app.get("/api/session")
     async def session_info(x_fawai_token: str | None = Header(default=None)) -> JSONResponse:
         _check_token(x_fawai_token)
-        listed = list(hub.supervisor.list_tasks(limit=80, archived=False))
+        from fawai_avatar.task.store import LIST_META_OMIT_KEYS
+
+        listed = list(
+            hub.supervisor.list_tasks(
+                limit=80, archived=False, omit_meta_keys=LIST_META_OMIT_KEYS
+            )
+        )
         tasks = [
-            _task_summary(t, supervisor=hub.supervisor)
+            _task_summary(t, supervisor=hub.supervisor, live_plan_stats=False)
             for t in listed
             if not _is_hidden_plan_child(t)
         ][:20]
@@ -764,6 +789,31 @@ def create_app(
             raise HTTPException(status_code=code, detail=err)
         return JSONResponse(result)
 
+    @app.post("/api/lore/entries/update")
+    async def lore_entry_update_api(
+        payload: dict[str, Any] | None = Body(default=None),
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        """更新已入库 KV 值或笔记标题/正文。"""
+        _check_token(x_fawai_token)
+        from fawai_avatar.lore_api import lore_entry_update
+
+        body = payload or {}
+        tags = body.get("tags")
+        result = lore_entry_update(
+            kind=str(body.get("kind") or ""),
+            id=str(body.get("id") or body.get("key") or ""),
+            title=None if body.get("title") is None else str(body.get("title")),
+            body=None if body.get("body") is None else str(body.get("body")),
+            value=body.get("value"),
+            tags=tags if isinstance(tags, list) else None,
+        )
+        if not result.get("ok"):
+            err = str(result.get("error") or "update failed")
+            code = 404 if "not found" in err else 400
+            raise HTTPException(status_code=code, detail=err)
+        return JSONResponse(result)
+
     @app.post("/api/lore/entries/clear")
     async def lore_entries_clear_api(
         x_fawai_token: str | None = Header(default=None),
@@ -904,6 +954,230 @@ def create_app(
         from fawai_avatar.memory_index import search_content
 
         return JSONResponse(search_content(q, limit=limit))
+
+    # --- Skill 管理 ---
+    @app.get("/api/skills")
+    async def skills_list_api(
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.skills.skill_api import skills_list
+
+        return JSONResponse(skills_list())
+
+    @app.get("/api/skills/{skill_id}")
+    async def skills_get_api(
+        skill_id: str,
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.skills.skill_api import skills_get
+
+        result = skills_get(skill_id)
+        if not result.get("ok"):
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        return JSONResponse(result)
+
+    @app.put("/api/skills/{skill_id}")
+    async def skills_put_api(
+        skill_id: str,
+        payload: dict[str, Any] | None = Body(default=None),
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.skills.skill_api import skills_upsert
+
+        result = skills_upsert(skill_id, payload or {})
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error") or "invalid")
+        return JSONResponse(result)
+
+    @app.post("/api/skills/upload")
+    async def skills_upload_api(
+        payload: Any = Body(default=None),
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        """Body: 单个 Skill 对象，或 Skill 数组，或 {\"skills\":[...]}。"""
+        _check_token(x_fawai_token)
+        from fawai_avatar.skills.skill_api import skills_upload
+
+        raw: Any = payload
+        if isinstance(payload, dict) and "skills" in payload:
+            raw = payload.get("skills")
+        result = skills_upload(raw)
+        if not result.get("ok"):
+            raise HTTPException(
+                status_code=400,
+                detail=result.get("error")
+                or "; ".join(result.get("errors") or [])
+                or "upload failed",
+            )
+        return JSONResponse(result)
+
+    @app.post("/api/skills/{skill_id}/enable")
+    async def skills_enable_api(
+        skill_id: str,
+        payload: dict[str, Any] | None = Body(default=None),
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.skills.skill_api import skills_enable
+
+        body = payload or {}
+        enabled = body.get("enabled", True)
+        if isinstance(enabled, str):
+            enabled = enabled.strip().lower() not in {"0", "false", "no", "off"}
+        result = skills_enable(skill_id, enabled=bool(enabled))
+        if not result.get("ok"):
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        return JSONResponse(result)
+
+    @app.post("/api/skills/{skill_id}/delete")
+    async def skills_delete_api(
+        skill_id: str,
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.skills.skill_api import skills_delete
+
+        result = skills_delete(skill_id)
+        if not result.get("ok"):
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        return JSONResponse(result)
+
+    # --- 工具代码（铲子）管理 ---
+    @app.get("/api/shovels")
+    async def shovels_list_api(
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.workspace.shovel_api import shovels_list
+        from fawai_avatar.workspace.shovel_ops import ShovelOpsError
+
+        try:
+            return JSONResponse(shovels_list())
+        except ShovelOpsError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/shovels/{shovel_id}")
+    async def shovels_get_api(
+        shovel_id: str,
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.workspace.shovel_api import shovels_get
+        from fawai_avatar.workspace.shovel_ops import ShovelOpsError
+
+        try:
+            result = shovels_get(shovel_id)
+        except ShovelOpsError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not result.get("ok"):
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        return JSONResponse(result)
+
+    @app.put("/api/shovels/{shovel_id}")
+    async def shovels_put_api(
+        shovel_id: str,
+        payload: dict[str, Any] | None = Body(default=None),
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        """手工改设计三维分与运行成败维。"""
+        _check_token(x_fawai_token)
+        from fawai_avatar.workspace.shovel_api import shovels_update
+
+        result = shovels_update(shovel_id, payload or {})
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error") or "invalid")
+        return JSONResponse(result)
+
+    # --- MCP 外挂 ---
+    @app.get("/api/mcp/status")
+    async def mcp_status_api(
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.mcp.mcp_api import mcp_status
+
+        return JSONResponse(mcp_status())
+
+    @app.get("/api/mcp/servers")
+    async def mcp_servers_list_api(
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.mcp.mcp_api import mcp_list_servers
+
+        return JSONResponse(mcp_list_servers())
+
+    @app.put("/api/mcp/servers")
+    async def mcp_servers_put_api(
+        payload: dict[str, Any] | None = Body(default=None),
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.mcp.mcp_api import mcp_upsert_server
+
+        body = payload or {}
+        server = body.get("server") if isinstance(body.get("server"), dict) else body
+        result = mcp_upsert_server(server if isinstance(server, dict) else {})
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error") or "invalid")
+        return JSONResponse(result)
+
+    @app.post("/api/mcp/servers/{server_id}/enable")
+    async def mcp_server_enable_api(
+        server_id: str,
+        payload: dict[str, Any] | None = Body(default=None),
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.mcp.mcp_api import mcp_enable_server
+
+        body = payload or {}
+        enabled = body.get("enabled", True)
+        if isinstance(enabled, str):
+            enabled = enabled.strip().lower() not in {"0", "false", "no", "off"}
+        result = mcp_enable_server(server_id, enabled=bool(enabled))
+        if not result.get("ok"):
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        return JSONResponse(result)
+
+    @app.post("/api/mcp/servers/{server_id}/delete")
+    async def mcp_server_delete_api(
+        server_id: str,
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.mcp.mcp_api import mcp_delete_server
+
+        result = mcp_delete_server(server_id)
+        if not result.get("ok"):
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        return JSONResponse(result)
+
+    @app.post("/api/mcp/servers/{server_id}/refresh")
+    async def mcp_server_refresh_api(
+        server_id: str,
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.mcp.mcp_api import mcp_refresh_server
+
+        result = mcp_refresh_server(server_id)
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error") or "refresh failed")
+        return JSONResponse(result)
+
+    @app.get("/api/mcp/tools")
+    async def mcp_tools_api(
+        server_id: str | None = None,
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.mcp.mcp_api import mcp_list_tools
+
+        return JSONResponse(mcp_list_tools(server_id))
 
     @app.get("/api/system-logs")
     async def list_system_logs_api(
@@ -1056,15 +1330,19 @@ def create_app(
         elif raw in {"all", "*"}:
             arch_flag = None
         # 多取再滤监管脑子任务，保证侧栏/管理页只见父计划会话
+        # 列表剔除 run_checkpoint 等大键，避免 N 次全表重扫拖慢点开任务
+        from fawai_avatar.task.store import LIST_META_OMIT_KEYS
+
         fetch_n = min(200, max(limit * 3, limit + 20))
         tasks = hub.supervisor.list_tasks(
             status=status or None,
             q=q,
             limit=fetch_n,
             archived=arch_flag,
+            omit_meta_keys=LIST_META_OMIT_KEYS,
         )
         visible = [
-            _task_summary(t, supervisor=hub.supervisor)
+            _task_summary(t, supervisor=hub.supervisor, live_plan_stats=False)
             for t in tasks
             if not _is_hidden_plan_child(t)
         ]
@@ -1209,6 +1487,8 @@ def create_app(
                     worker_alive = True
                     break
         if ok:
+            # 编排判定/出图中取消：清 awaiting_plan，避免「继续任务」永久卡闸
+            await hub._release_awaiting_plan_on_cancel(task.task_id)
             # 有存活 Worker：先推「正在停止」，由闭环收束后再推 cancelled / 终态卡。
             # 无 Worker：状态已是 cancelled，直接推终态进度，避免步骤卡在「正在停止」。
             if worker_alive:
@@ -1492,6 +1772,11 @@ def create_app(
         text: str = Form(default=""),
         task_id: str = Form(default=""),
         message_id: str = Form(default=""),
+        effort: str = Form(default=""),
+        fast: str = Form(default=""),
+        step_tier: str = Form(default=""),
+        plan_auto: str = Form(default=""),
+        mode_prefs: str = Form(default=""),
         file: UploadFile = File(...),
     ) -> JSONResponse:
         _check_token(x_fawai_token)
@@ -1499,6 +1784,29 @@ def create_app(
         dest = media_dir / f"in_{secrets.token_hex(8)}{suffix}"
         dest.write_bytes(await file.read())
         mid = (message_id or "").strip()
+        from fawai_avatar.brain.effort import coerce_effort
+        from fawai_avatar.brain.fast import coerce_fast
+        from fawai_avatar.brain.mode_auto import normalize_mode_prefs
+        from fawai_avatar.brain.orchestrator import coerce_plan_auto
+        from fawai_avatar.brain.step_run import coerce_step_tier
+
+        meta: dict[str, Any] = {}
+        if str(effort or "").strip() != "":
+            meta["effort"] = coerce_effort(effort)
+        if str(fast or "").strip() != "":
+            meta["fast"] = coerce_fast(fast)
+        if str(step_tier or "").strip() != "":
+            meta["step_tier"] = coerce_step_tier(step_tier)
+        if str(plan_auto or "").strip() != "":
+            meta["plan_auto"] = coerce_plan_auto(plan_auto)
+        prefs_raw = str(mode_prefs or "").strip()
+        if prefs_raw:
+            try:
+                import json as _json
+
+                meta["mode_prefs"] = normalize_mode_prefs(_json.loads(prefs_raw))
+            except Exception:  # noqa: BLE001
+                pass
         msg = Message(
             kind="image",
             role="user",
@@ -1507,6 +1815,7 @@ def create_app(
             media_url=f"/media/{dest.name}",
             task_id=(task_id or "").strip() or None,
             message_id=mid or secrets.token_hex(16),
+            meta=meta,
         )
         from fawai_avatar.channel.redact import message_dict_for_client
 
@@ -1573,12 +1882,50 @@ def create_app(
         )
 
     @app.get("/media/{name}")
-    async def media(name: str) -> FileResponse:
-        # 媒体只读；仍要求同网可达。首期不另验 token，文件名不可猜测。
+    async def media(
+        name: str,
+        download: int = Query(default=0),
+        filename: str = Query(default=""),
+    ) -> FileResponse:
+        # 媒体只读；同网可达。首期不另验 token，文件名不可猜测。
+        # Starlette FileResponse 支持 HTTP Range 分片；?download=1 触发另存。
         path = media_dir / Path(name).name
         if not path.is_file():
             raise HTTPException(status_code=404)
-        return FileResponse(path)
+        from urllib.parse import quote
+
+        from fawai_avatar.channel.file_deliver import guess_mime
+
+        mime = guess_mime(path)
+        headers: dict[str, str] = {"Accept-Ranges": "bytes"}
+        as_download = int(download or 0) == 1
+        save_as = (filename or "").strip() or path.name
+        # 禁止路径片段
+        save_as = Path(save_as).name or path.name
+        if as_download:
+            headers["Content-Disposition"] = (
+                f"attachment; filename=\"{save_as}\"; "
+                f"filename*=UTF-8''{quote(save_as)}"
+            )
+        return FileResponse(
+            path,
+            media_type=mime,
+            headers=headers,
+            filename=save_as if as_download else None,
+        )
+
+    @app.get("/media/{name}/preview")
+    async def media_preview(name: str) -> JSONResponse:
+        """办公/文本懒加载预览（跨端浏览器）；大文件不整包塞进历史。"""
+        path = media_dir / Path(name).name
+        if not path.is_file():
+            raise HTTPException(status_code=404)
+        from fawai_avatar.channel.file_deliver import describe_file
+
+        info = describe_file(path)
+        # 不回传本机绝对路径
+        info.pop("path", None)
+        return JSONResponse({"ok": True, **info})
 
     @app.websocket("/ws")
     async def ws_endpoint(websocket: WebSocket, token: str = "") -> None:
@@ -1664,7 +2011,17 @@ def _client_text(text: str) -> str:
     return redact_for_client(text or "")
 
 
-def _task_summary(t: Any, *, supervisor: Any = None) -> dict[str, Any]:
+def _task_summary(
+    t: Any,
+    *,
+    supervisor: Any = None,
+    live_plan_stats: bool = False,
+) -> dict[str, Any]:
+    """任务列表/详情摘要。
+
+    live_plan_stats：仅详情为 True 时现算父计划子任务用量；列表默认吃 meta.stats，
+    避免每个编排父任务再全表扫描（点开任务体感卡顿的慢查询根因）。
+    """
     from fawai_avatar.brain.plan_scheduler import resolve_session_title
 
     meta = getattr(t, "meta", None) or {}
@@ -1689,6 +2046,11 @@ def _task_summary(t: Any, *, supervisor: Any = None) -> dict[str, Any]:
         out["plan_mode"] = True
         nodes = meta["plan_graph"].get("nodes") or []
         out["plan_node_count"] = len(nodes) if isinstance(nodes, list) else 0
+    if meta.get("plan_allow_session_worker"):
+        out["plan_allow_session_worker"] = True
+    mode = str(meta.get("mode") or "").strip()
+    if mode:
+        out["mode"] = mode
     if plan_role == "supervisor":
         parent = str(meta.get("plan_parent_task_id") or "").strip()
         if parent:
@@ -1697,7 +2059,11 @@ def _task_summary(t: Any, *, supervisor: Any = None) -> dict[str, Any]:
         if node_id:
             out["plan_node_id"] = node_id
     stats = None
-    if plan_role == "orchestrator" and supervisor is not None:
+    if (
+        live_plan_stats
+        and plan_role == "orchestrator"
+        and supervisor is not None
+    ):
         try:
             from fawai_avatar.brain.plan_scheduler import plan_parent_stats_summary
 
@@ -1714,7 +2080,7 @@ def _task_summary(t: Any, *, supervisor: Any = None) -> dict[str, Any]:
 def _task_detail(t: Any, *, supervisor: Any = None) -> dict[str, Any]:
     from fawai_avatar.channel.redact import redact_tree_for_client
 
-    data = _task_summary(t, supervisor=supervisor)
+    data = _task_summary(t, supervisor=supervisor, live_plan_stats=True)
     meta = dict(getattr(t, "meta", None) or {})
     detail_meta: dict[str, Any] = {
         # 与列表同源：优先 _task_summary 已 resolve/回填的短标题

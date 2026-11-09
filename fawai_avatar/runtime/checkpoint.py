@@ -19,6 +19,14 @@ _TRACE_THOUGHT_MAX = 800
 _TRACE_MSG_MAX = 400
 
 
+def _clip_text(text: str, max_chars: int) -> str:
+    """超长保留头+尾（大文件取证常看尾部指标，禁止只留前缀）。"""
+    from fawai_avatar.observe.tool_digest import clip_head_tail
+
+    clipped, _ = clip_head_tail(text, max_chars=max_chars)
+    return clipped
+
+
 def dump_checkpoint(state: dict[str, Any]) -> dict[str, Any]:
     """序列化可变闭环状态（调用方保证字段齐全）。"""
     history = [_clip_history_item(m) for m in (state.get("history") or [])]
@@ -148,7 +156,7 @@ def history_from_step_dicts(steps: list[dict[str, Any]]) -> list[dict[str, Any]]
             history.append(
                 {
                     "role": "assistant",
-                    "content": f"[step {i}] {thought}"[:_HISTORY_CONTENT_MAX],
+                    "content": _clip_text(f"[step {i}] {thought}", _HISTORY_CONTENT_MAX),
                 }
             )
         for r in raw.get("results") or []:
@@ -159,7 +167,9 @@ def history_from_step_dicts(steps: list[dict[str, Any]]) -> list[dict[str, Any]]
             line = f"工具结果：{'成功' if ok else '失败'}"
             if msg:
                 line = f"{line} {msg}"
-            history.append({"role": "user", "content": line[:_HISTORY_CONTENT_MAX]})
+            history.append(
+                {"role": "user", "content": _clip_text(line, _HISTORY_CONTENT_MAX)}
+            )
     return history
 
 
@@ -495,9 +505,7 @@ def _load_read_windows(raw: Any) -> dict[str, list[tuple[int, int]]]:
 
 
 def _clip_history_item(item: dict[str, Any]) -> dict[str, Any]:
-    content = str(item.get("content") or "")
-    if len(content) > _HISTORY_CONTENT_MAX:
-        content = content[: _HISTORY_CONTENT_MAX - 1] + "…"
+    content = _clip_text(str(item.get("content") or ""), _HISTORY_CONTENT_MAX)
     return {"role": str(item.get("role") or "user"), "content": content}
 
 
@@ -625,6 +633,8 @@ def _plan_from_dict(data: Any) -> Plan | None:
         observe_args=observe_args,
         title=str(data.get("title") or ""),
         step_label=str(data.get("step_label") or ""),
+        step_kind=str(data.get("step_kind") or ""),
+        step_run=str(data.get("step_run") or ""),
         delegate=delegate,
     )
 

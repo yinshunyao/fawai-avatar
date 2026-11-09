@@ -132,6 +132,28 @@ def step_label_from_plan_payload(data: dict | None, *, max_len: int = 16) -> str
     return ""
 
 
+_STEP_LABEL_PLACEHOLDERS = frozenset(
+    {
+        "native tool_calls",
+        "native tool call",
+        "tool_calls",
+        "tool call",
+    }
+)
+
+
+def _is_step_label_placeholder(text: str) -> bool:
+    raw = _WS_RE.sub(" ", (text or "").strip()).lower()
+    if not raw:
+        return True
+    if raw in _STEP_LABEL_PLACEHOLDERS:
+        return True
+    # 截断展示常见形态：native tool_cal…
+    if raw.startswith("native tool_cal"):
+        return True
+    return False
+
+
 def resolve_step_label(
     *,
     step_label: str = "",
@@ -139,21 +161,25 @@ def resolve_step_label(
     actions: list | None = None,
     max_len: int = 16,
 ) -> str:
-    """显式 step_label → thought 首句 → 动作种类 兜底。"""
+    """显式 step_label → thought 首句 → 动作种类 兜底。
+
+    跳过 native tool_calls 等占位 thought，避免簇头显示成工具通道内部名。
+    """
     labeled = normalize_step_label(step_label, max_len=max_len)
-    if labeled:
+    if labeled and not _is_step_label_placeholder(labeled):
         return labeled
     thought_text = _WS_RE.sub(" ", (thought or "").strip())
-    if thought_text:
+    if thought_text and not _is_step_label_placeholder(thought_text):
         for sep in ("。", "；", ";", "\n", "！", "!", "？", "?"):
             if sep in thought_text:
                 head = thought_text.split(sep, 1)[0].strip()
                 if head:
                     thought_text = head
                     break
-        from_thought = normalize_step_label(thought_text, max_len=max_len)
-        if from_thought:
-            return from_thought
+        if not _is_step_label_placeholder(thought_text):
+            from_thought = normalize_step_label(thought_text, max_len=max_len)
+            if from_thought and not _is_step_label_placeholder(from_thought):
+                return from_thought
     kinds: list[str] = []
     for item in actions or []:
         kind = ""

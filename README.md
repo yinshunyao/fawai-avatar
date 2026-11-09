@@ -18,6 +18,49 @@ Not a chat-only bot, and not an IDE plugin that only edits code. It is a long-ru
 
 Single-task loop: `observe → brain → control → observe again`. The supervisor takes user requests and arbitrates resources; each worker keeps its own trace and checkpoint (resume after process restart, or from a chosen step in the PWA).
 
+## Why fawai (vs common AI tools)
+
+Long-form contrast and version bounds: [`doc/分析/相对常见AI工具为何选fawai.md`](doc/分析/相对常见AI工具为何选fawai.md) (when conclusions change, update **this section and that file in the same turn**). Eval grades: [`doc/版本/`](doc/版本/【总表】版本评测一览.md) (current headline: **v0.1.4 — 81.3 / A**).
+
+Most “competitors” are not substitutes; people often need several of them. fawai competes for **hosted work on this machine**, not for app factories or the IDE itself.
+
+| Tool | What it is | Relation to fawai |
+|:---|:---|:---|
+| **LangChain / Deep Agents** | Developer Agent harness / library | For **building** agents; not a finished local avatar |
+| **Dify** | LLM app builder (workflows / RAG / publishable APIs) | Ships apps; does not run multi-step jobs on your PC |
+| **Cursor** | In-IDE coding agent | Best at repo edits; off-IDE GUI, whole-machine leases, phone→PC is not the main story |
+| **Qoder** | Commercial agent workbench (incl. Computer Use) | Closest capability surface; closed product, vendor-owned model/policy |
+| **WorkBuddy** | Tencent-family office desktop agent | Strong at docs / IM entry; not an open self-modify + hard-gate stack |
+| **Doubao Work** | ByteDance closed office suite | Strong computer-use / multimodal feel; model-locked, not self-host rewriteable |
+
+```text
+Ship an app / API              → Dify (or LangChain DIY)
+Edit a repo in an IDE          → Cursor (or Qoder coding surface)
+Office drafts / IM ecosystems  → WorkBuddy / Doubao
+Local hosted work + own models + rewritable core + hard gates → fawai
+```
+
+**Why pick us anyway**
+
+1. **Local operation avatar**: phone / PWA goals → observe · plan · act · verify on the machine; file goals must use `fs_*`.
+2. **Hard gates**: foreground lease, writes limited to work_root, no shell bypass of fs, Web outbound redact.
+3. **Sovereignty**: OpenAI-compatible model choice; most of the product tree rewritable (keeper / gate minimum core blocked); runtime version archive / switch.
+4. **Evolution chain**: task review → Skill / lesson / code; shovel catalog before inventing scripts—the assistant as an evolvable runtime.
+5. **Complex-task scheduling**: plan graph + retry failed nodes (keep completed) + GUI serial / background parallel.
+6. **Cursor-aligned coding without living in the IDE**: assign work, watch the step stream, resume from a step when you are away from the desk.
+
+**When not to replace the others with us**
+
+| Goal | Better fit |
+|:---|:---|
+| Publish a stable AI app / API for a team or customers | Dify (or DIY + LangChain) |
+| Human-in-the-loop repo edits with IDE index / diff review | Cursor |
+| Office drafts and Tencent / ByteDance IM one-click | WorkBuddy / Doubao |
+| Compose an agent from a library, no long-running process | LangChain / Deep Agents |
+| “Click anything on any desktop app” as the hard requirement | Commercial Computer Use—or wait for broader C3 here (0.1.x is narrow-scene only) |
+
+One line: others cover chat / app building / IDE coding / office drafts; fawai covers a **self-hostable, resumable, rewritable local operation avatar**. Honest sell today stays at an **A-grade main-path skeleton** (background files / coding / execution modes and extension surface work)—do not inflate the installer or lore into “arbitrary GUI is trustworthy.”
+
 ## Assistant capabilities (supported)
 
 Source of truth: [`doc/功能/【总表】功能一览.md`](doc/功能/【总表】功能一览.md). Grouped by what you can ask it to do.
@@ -35,7 +78,7 @@ Source of truth: [`doc/功能/【总表】功能一览.md`](doc/功能/【总表
 
 - **LLM access**: OpenAI-compatible; text / multimodal routing; remote `/models` list; generation params per model profile; deep thinking by role + profile (main on / fast & obs_reflect off); Web model settings; after restart, routes follow disk `.env`
 - **Brain → fast delegate**: main planner may hand a sub-goal to the fast-model route in Web model settings (empty = off); segment summary returns to the main brain
-- **Complex-task plan mode**: orchestrator auto-judges complexity → emits a graph and schedules immediately (no human gate); three layers = orchestrator → supervisor → executor; mid-run append can truly `reorder` / `lease_adjust`; on failure default **retry failed nodes** (keep completed); full-graph replan only with explicit phrase / button; sidebar shows parent plan only, in-thread node cards + top-right digraph float; off with `FAWAI_PLAN_MODE=0`
+- **Complex-task plan mode** (**off by default**): set `FAWAI_PLAN_MODE=auto` to let the orchestrator judge complexity → emit a graph and schedule immediately; three layers = orchestrator → supervisor → executor. Default is Cursor-like single-worker chat per thread.
 - **Capability registry**: only registered tools; file goals must use `fs_*` (no GUI pretending to write files)
 - **Prompt profiles**: trim system prompt / images by round purpose (`vision` / `fs` / `gui` / `full`)
 - **Mid-run clarification**: try hard by default; `need_input` (optionally multiple-choice) only for high-cost ambiguity, then resume
@@ -74,7 +117,7 @@ Source of truth: [`doc/功能/【总表】功能一览.md`](doc/功能/【总表
 
 ### Memory, evolution & ops
 
-- **Personal lore** (`fawai_lore`): KV + notes + sidecar buffer; PWA memory page with three tabs (pending / stored / recent); stored entries enable / disable / delete
+- **Personal lore** (`fawai_lore`): KV + notes + sidecar buffer; PWA memory page tabs (settings / stored / tool tests); stored entries can open a detail modal to view/edit, plus enable / disable / delete
 - **Skills**: searchable injection into planning; quality-gated writes; failures can land as `lesson`
 - **Task review & failure analysis**: after approve, mechanism-first full analysis (plan / observe / act / reflect / outcome) → checklist (Skill / lesson / code / rule / prompt) → select, backup, apply; PWA single-task review (joint API retained); success and failure both reviewable
 - **Self-evolution writes**: most of the tree writable; **blocked** minimum core (rollback / keeper / gates). Cursor / human disk edits unrestricted
@@ -165,7 +208,7 @@ Capability suite: **C1 LLM / C2 complete-task / C4 self-evolution** are in place
 |:---|:---|
 | `doc/功能/` | Released / supported features and acceptance |
 | `doc/议题/` | Discussion & principles (≠ auto-release) |
-| `doc/分析/` | Mechanism contrasts & improvement notes (≠ release) |
+| `doc/分析/` | Mechanism contrasts & improvement notes (≠ release); why-fawai long form: [相对常见AI工具为何选fawai](doc/分析/相对常见AI工具为何选fawai.md) |
 | `doc/测试/` | Smoke / system / end-to-end test-task notes |
 | `doc/版本/` | Weighted eval totals per release |
 | `doc/术语与称呼索引.md` | Canonical names and tool ids |
@@ -183,7 +226,7 @@ pip install -e .                 # headless / coding·files·shell / gateway; ma
 cp .env.example .env   # system knobs; LLM credentials live in Web model settings DB; .env is gitignored
 # default routes: text → qwen3.7-plus; multimodal → qwen3-vl-plus
 # LLM / fast-model routes: configure in Web model settings (llm_settings.sqlite)
-# optional: FAWAI_PLAN_MODE=0               # disable complex-task plan mode (default auto)
+# optional: FAWAI_PLAN_MODE=auto            # enable complex-task plan mode (default off)
 export FAWAI_DRY_RUN=1
 .venv/bin/python -m fawai_avatar.llm.client        # smoke-test text route
 .venv/bin/python -m fawai_avatar.demo_thinking     # deep thinking by role / profile
@@ -236,7 +279,7 @@ python3 packaging/build_release.py --target auto   # build for this host
 # Or: bash packaging/publish_github_release.sh
 ```
 
-Details + launcher zh/en: [`packaging/README.en.md`](packaging/README.en.md). After extract, run Start; local browser opens `http://127.0.0.1:7980/`; phones open the LAN URL manually.
+Details + launcher zh/en: [`packaging/README.en.md`](packaging/README.en.md). Releases follow the workspace GitHub release rule (Notes + About); this repo’s paths are in [`.cursor/rules/rules-github-release.mdc`](.cursor/rules/rules-github-release.mdc). After extract, run Start; local browser opens `http://127.0.0.1:7980/`; phones open the LAN URL manually.
 
 ## Cross-device session (LAN PWA)
 

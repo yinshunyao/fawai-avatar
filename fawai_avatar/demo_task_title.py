@@ -102,6 +102,21 @@ def main() -> None:
     assert resolve_step_label(
         actions=[{"kind": "fs_glob"}, {"kind": "fs_read"}]
     ) == "fs_glob、fs_read"
+    assert (
+        resolve_step_label(
+            thought="native tool_calls",
+            actions=[{"kind": "fs_grep"}, {"kind": "fs_glob"}],
+        )
+        == "fs_grep、fs_glob"
+    )
+    from fawai_avatar.brain.native_tools import plan_from_tool_calls
+
+    native_plan = plan_from_tool_calls(
+        [{"name": "fs_glob", "arguments_obj": {"pattern": "**/*.py"}}]
+    )
+    assert native_plan is not None
+    assert "native" not in (native_plan.step_label or "").lower(), native_plan.step_label
+    assert "fs_glob" in (native_plan.step_label or ""), native_plan.step_label
 
     plan = _plan_from_payload(
         {

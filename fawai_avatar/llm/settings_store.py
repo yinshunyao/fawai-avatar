@@ -85,6 +85,16 @@ CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS model_catalogs (
+    provider_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    models_json TEXT NOT NULL DEFAULT '[]',
+    source TEXT NOT NULL DEFAULT '',
+    base_url TEXT NOT NULL DEFAULT '',
+    fetched_at REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (provider_id, kind)
+);
 """
 
 _store_lock = threading.RLock()
@@ -126,10 +136,12 @@ def _data_dir() -> str:
 
 
 class LlmSettingsStore:
-    """SQLite：providers / routes / model_profiles。"""
+    """SQLite：providers / routes / model_profiles / model_catalogs。"""
 
     def __init__(self, data_dir: str | None = None) -> None:
-        root = os.path.abspath(os.path.expanduser(str(data_dir or _data_dir())))
+        from fawai_avatar.data_dir import resolve_data_dir
+
+        root = resolve_data_dir(data_dir, default=_data_dir())
         self._data_dir = root
         self._lock = threading.RLock()
         os.makedirs(root, exist_ok=True)
@@ -417,6 +429,7 @@ class LlmSettingsStore:
                     )
                 else:
                     new_label = (label if label is not None else str(existing["label"] or pid)).strip()
+                    old_url = str(existing["base_url"] or "").strip().rstrip("/")
                     new_url = (
                         base_url.strip()
                         if base_url is not None
@@ -443,6 +456,11 @@ class LlmSettingsStore:
                         """,
                         (new_label, new_url, new_key, new_timeout, new_builtin, pid),
                     )
+                    # Base URL 变了则旧目录不可信，避免串台
+                    if old_url != str(new_url or "").strip().rstrip("/"):
+                        conn.execute(
+                            "DELETE FROM model_catalogs WHERE provider_id = ?", (pid,)
+                        )
                 conn.commit()
         bump_generation()
         out = self.get_provider(pid)
@@ -465,6 +483,7 @@ class LlmSettingsStore:
                     "UPDATE routes SET provider_id = '', model_id = '' WHERE provider_id = ?",
                     (pid,),
                 )
+                conn.execute("DELETE FROM model_catalogs WHERE provider_id = ?", (pid,))
                 conn.commit()
         bump_generation()
 
@@ -599,6 +618,82 @@ class LlmSettingsStore:
         bump_generation()
         return value
 
+    # --- model catalogs (synced remote lists) ---
+
+    def list_model_catalogs(self) -> dict[str, dict[str, list[Any]]]:
+        """``{provider_id: {kind: [model, ...]}}``；供 Web 打开页先填下拉。"""
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT provider_id, kind, models_json FROM model_catalogs"
+                ).fetchall()
+        out: dict[str, dict[str, list[Any]]] = {}
+        for r in rows:
+            pid = str(r["provider_id"] or "").strip()
+            kind = str(r["kind"] or "").strip() or "all"
+            if not pid:
+                continue
+            try:
+                models = json.loads(r["models_json"] or "[]")
+            except json.JSONDecodeError:
+                models = []
+            if not isinstance(models, list):
+                models = []
+            out.setdefault(pid, {})[kind] = models
+        return out
+
+    def set_model_catalog(
+        self,
+        provider_id: str,
+        kind: str,
+        models: list[Any],
+        *,
+        source: str = "",
+        base_url: str = "",
+    ) -> None:
+        pid = (provider_id or "").strip()
+        kind_n = (kind or "").strip() or "all"
+        if not pid:
+            return
+        payload = models if isinstance(models, list) else []
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO model_catalogs(
+                        provider_id, kind, models_json, source, base_url, fetched_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(provider_id, kind) DO UPDATE SET
+                        models_json = excluded.models_json,
+                        source = excluded.source,
+                        base_url = excluded.base_url,
+                        fetched_at = excluded.fetched_at
+                    """,
+                    (
+                        pid,
+                        kind_n,
+                        json.dumps(payload, ensure_ascii=False),
+                        str(source or ""),
+                        str(base_url or ""),
+                        time.time(),
+                    ),
+                )
+                conn.commit()
+        bump_generation()
+
+    def clear_model_catalogs(self, provider_id: str | None = None) -> None:
+        pid = (provider_id or "").strip()
+        with self._lock:
+            with self._connect() as conn:
+                if pid:
+                    conn.execute(
+                        "DELETE FROM model_catalogs WHERE provider_id = ?", (pid,)
+                    )
+                else:
+                    conn.execute("DELETE FROM model_catalogs")
+                conn.commit()
+        bump_generation()
+
     def settings_payload(self) -> dict[str, Any]:
         providers = self.list_providers(include_secrets=False)
         routes = self.list_routes()
@@ -610,6 +705,7 @@ class LlmSettingsStore:
             "routes": routes,
             "roles": list(ROUTE_ROLES),
             "screenshot_grounding": self.get_screenshot_grounding(),
+            "model_catalogs": self.list_model_catalogs(),
             "updated_at": time.time(),
         }
 

@@ -55,7 +55,7 @@ def main(work_root: str, data_dir: str) -> None:
     )
     assert r.ok and [row["n"] for row in r.data["lines"]] == [1], r.message
 
-    r = tools.execute(Action(kind="fs_glob", args={"pattern": "**/*.txt"}))
+    r = tools.execute(Action(kind="fs_glob", args={"pattern": "**/*.txt", "path": "notes"}))
     print("glob", r.data)
     assert "notes/a.txt" in (r.data or {}).get("paths", [])
 
@@ -65,6 +65,35 @@ def main(work_root: str, data_dir: str) -> None:
     r = tools.execute(Action(kind="fs_glob", args={"pattern": "notes/**/*.{txt,md}"}))
     assert "notes/a.txt" in (r.data or {}).get("paths", []), r.data
 
+    # 整 work_root + 仅扩展名 glob → 拒
+    r = tools.execute(
+        Action(kind="fs_glob", args={"pattern": "**/*.{yaml,yml,json}"})
+    )
+    assert not r.ok and "检索根过宽" in (r.message or ""), r.message
+
+    # 整 work_root + 无法定目录 → 拒（禁止回退整仓扫）
+    r = tools.execute(
+        Action(
+            kind="fs_grep",
+            args={"pattern": "zzz_no_such_token_xyz", "use_index": False},
+        )
+    )
+    assert not r.ok and "检索根过宽" in (r.message or ""), r.message
+
+    # 索引/宽根路径：按顶层相关目录分批 grep，不扫整仓
+    insect = Path(work_root, "insect")
+    insect.mkdir(exist_ok=True)
+    (insect / "train.yaml").write_text("max_epochs: 12\n", encoding="utf-8")
+    r = tools.execute(
+        Action(
+            kind="fs_grep",
+            args={"pattern": "insect|max_epochs", "use_index": False},
+        )
+    )
+    assert r.ok and (r.data or {}).get("via") == "batched_dirs", r
+    assert (r.data or {}).get("hits"), r.data
+    assert "insect" in ((r.data or {}).get("batched_dirs") or [])
+
     # 短 pattern（2 字）须可搜；勿再加最小长度闸
     r = tools.execute(Action(kind="fs_grep", args={"pattern": "v2", "path": "notes"}))
     print("grep", r.data)
@@ -72,6 +101,47 @@ def main(work_root: str, data_dir: str) -> None:
     # 兼容模型误写 query
     r = tools.execute(Action(kind="fs_grep", args={"query": "v2", "path": "notes"}))
     assert r.ok and (r.data or {}).get("hits"), r
+
+    # 字面 \| 且 0 命中 → 旁注（勿当成「文件无匹配」）
+    r = tools.execute(
+        Action(
+            kind="fs_grep",
+            args={
+                "pattern": r"v2\|no_such_token_xyz",
+                "path": "notes",
+                "use_index": False,
+            },
+        )
+    )
+    assert r.ok and (r.data or {}).get("count", 1) == 0, r
+    assert "pattern_hint" in (r.data or {}), r.data
+    assert "\\|" in (r.message or "") or "字面" in (r.message or ""), r.message
+    # 正确或运算仍可命中，且无旁注
+    r = tools.execute(
+        Action(
+            kind="fs_grep",
+            args={"pattern": "v2|no_such_token_xyz", "path": "notes", "use_index": False},
+        )
+    )
+    assert r.ok and (r.data or {}).get("hits"), r
+    assert "pattern_hint" not in (r.data or {}), r.data
+
+    from fawai_avatar.brain.false_missing_source import (
+        failed_needs_false_missing_retry,
+        thought_claims_missing_source,
+    )
+
+    assert thought_claims_missing_source(
+        "已穷尽：.send/.stop 样式未找到；fs_glob 未命中任何 .css"
+    )
+    assert failed_needs_false_missing_retry(
+        thought="找不到样式定义来源，可能位于 dist",
+        read_ok_paths=["fawai-avatar/fawai_avatar/channel/static/index.html"],
+    )
+    assert not failed_needs_false_missing_retry(
+        thought="找不到样式定义来源",
+        read_ok_paths=["notes/a.txt"],
+    )
 
     r = tools.execute(Action(kind="version_list", args={"path_prefix": "notes"}))
     assert any(v["id"] == vid for v in r.data["versions"]), r.data

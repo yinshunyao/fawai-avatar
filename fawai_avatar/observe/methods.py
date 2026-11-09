@@ -31,6 +31,34 @@ def observe_label(method: str) -> str:
     return OBSERVE_LABELS.get(method, method or "观察")
 
 
+def is_env_observe_skipped(methods: list[str] | None) -> bool:
+    """方式仅为 none（或空）→ 真跳过环境观察。"""
+    cleaned = [str(m).strip() for m in (methods or []) if str(m).strip()]
+    return (not cleaned) or cleaned == ["none"]
+
+
+def skipped_env_observation(
+    *,
+    goal: str = "",
+    capture: bool = True,
+    extra_meta: dict[str, Any] | None = None,
+) -> Observation:
+    """真跳过空壳：不截屏、不探前台；供规划读 observe_candidates / 标题上下文。"""
+    meta: dict[str, Any] = {
+        "observe_method": "none",
+        "observe_methods": ["none"],
+        "observe_label": observe_label("none"),
+        "skipped_env": True,
+        "observe_candidates": candidate_observe_methods(goal, capture=capture),
+    }
+    if extra_meta:
+        meta.update(extra_meta)
+    return Observation(
+        summary="（本步跳过环境观察；需要画面/控件树请点选 obs_screen / obs_ax。）",
+        meta=meta,
+    )
+
+
 # 路径/源码扩展：可作为「结构化只读取证」硬闸门信号
 _STRUCTURED_OBS_EXTS = (
     ".py",
@@ -129,6 +157,8 @@ def _looks_like_structured_observe_goal(goal: str) -> bool:
     lowered = (goal or "").lower()
     if any(ext in lowered for ext in _STRUCTURED_OBS_EXTS):
         return True
+    # 禁止裸「文件」子串：会误伤 GUI 会话名（如「文件传输助手」），
+    # 导致候选剔除 obs_screen/obs_ax，计划点选截屏也被静默降成 obs_fs。
     return any(
         tip in lowered
         for tip in (
@@ -136,7 +166,19 @@ def _looks_like_structured_observe_goal(goal: str) -> bool:
             "仓库",
             "源码",
             "代码",
-            "文件",
+            "写文件",
+            "读文件",
+            "打开文件",
+            "列出文件",
+            "文件列表",
+            "文件内容",
+            "源文件",
+            "文件路径",
+            "修改文件",
+            "创建文件",
+            "保存文件",
+            "工作区文件",
+            "仓库文件",
             "目录",
             "fs_",
             "glob",
@@ -251,7 +293,8 @@ def collect_observation(
 ) -> Observation:
     """按方式采集并合并为一条 Observation；meta 带 observe_methods / 下一步候选。
 
-    无论何种环境观察方式，都会附加廉价前台窗摘要（可注入 frontmost_probe 便于冒烟）。
+    方式仅为 `none` 时真跳过：不截屏、不探前台（见 skipped_env_observation）。
+    真实取证会附加廉价前台窗摘要（可注入 frontmost_probe 便于冒烟）。
     observe_args.obs_screen.screen_target 控制截哪块屏（默认 frontmost）。
     若提供 on_progress：截屏本机完成与 OCR API 分开发射（见 rules-progress-local-vs-api）。
     """
@@ -262,6 +305,8 @@ def collect_observation(
     )
 
     methods = [m for m in methods if m] or ["none"]
+    if is_env_observe_skipped(methods):
+        return skipped_env_observation(goal=goal, capture=capture)
     base = dict(progress_base or {})
     stages: list[str] = []
 
@@ -492,16 +537,8 @@ def collect_observation(
                     )
                 )
         elif method == "none":
-            parts.append(
-                Observation(
-                    summary=(
-                        "本步未截屏、未采工作区目录（capture 关闭、步 0 默认跳过或模型点选 none）。"
-                        "可见前台态见下方前台窗摘要；需要画面时请在 observe_kinds 点选 obs_screen；"
-                        "需要控件树时点选 obs_ax。"
-                    ),
-                    meta={"observe_method": "none"},
-                )
-            )
+            # 与其它方式并存时忽略 none；仅 none 已在入口短路
+            continue
         elif method == "obs_shell":
             parts.append(
                 Observation(

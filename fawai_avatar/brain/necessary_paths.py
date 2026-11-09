@@ -282,6 +282,14 @@ def failed_needs_path_ledger_retry(*, goal: str, thought: str) -> bool:
     t = (thought or "").strip()
     if not t:
         return goal_needs_path_ledger_gate(goal)
+    # 假归因「超出能力 / 编排元概念」交给 false_beyond，勿先抢台账回灌
+    try:
+        from fawai_avatar.brain.false_beyond import thought_claims_false_beyond
+
+        if thought_claims_false_beyond(t):
+            return False
+    except Exception:  # noqa: BLE001
+        pass
     if thought_claims_command_delivery(t) and not thought_has_copyable_command(t):
         return True
     if goal_needs_path_ledger_gate(goal) and not thought_has_path_breakdown(t):

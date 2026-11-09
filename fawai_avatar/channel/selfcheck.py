@@ -583,6 +583,11 @@ def main() -> None:
                 assert "newClientMessageId" in index_html
                 assert "waitForInboundAck" in index_html
                 assert "chat.sending" in index_html or "tr(\"chat.sending\")" in index_html
+                # 任务产物附件卡 / 预览 / 另存
+                assert "appendBubbleFile" in index_html
+                assert "openFilePreview" in index_html
+                assert 'id="filePreviewModal"' in index_html
+                assert Message.file_out(text="x.pptx", meta={"filename": "x.pptx"}).kind == "file"
 
         asyncio.run(run())
         print("channel self-check ok", "outbound=", len(seen))

@@ -572,23 +572,81 @@ def reflection_from_payload(data: dict[str, Any], *, fingerprint: str = "") -> R
     )
 
 
-def reflect_system_prompt() -> str:
-    return """你是操作分身的执行反省模块。动作刚失败，请分析原因并裁决下一步策略。
+def reflect_system_prompt(*, effort: bool = False) -> str:
+    from fawai_avatar.brain.effort import reflect_effort_rule
+
+    effort_extra = reflect_effort_rule(effort=effort)
+    effort_block = f"\n{effort_extra}" if effort_extra else ""
+    return f"""你是操作分身的执行反省模块。动作刚失败，请分析原因并裁决下一步策略。
 只输出一个 JSON 对象，不要 markdown 或其它前后缀。
 字段：
-{"cause":"一两句根因","decision":"retry|alternate","constraints":["给下一轮规划的硬约束"],"thought":"简短说明"}
+{{"cause":"一两句根因","decision":"retry|alternate","constraints":["给下一轮规划的硬约束"],"thought":"简短说明"}}
 裁决含义：
 - retry：瞬态或参数可微调，允许同工具族再试，但禁止与失败动作完全相同
 - alternate：选型/命令族错误，必须换工具或换命令结构；若确认无进展，constraints 写明下一轮规划须 status=failed
 禁止输出 decision=abort（已废除）；任务终态只由规划 status=success|failed 决定。
 禁止假装已成功；禁止建议原样重复同一命令。
 constraints 必须 grounded：只依据失败结果与已观察路径。
+根因必须优先依据下方「失败证据」（工具原文 / stdout / stderr / expect 前 message）；
+若证据已写明具体 FAIL/退出原因，禁止只凭「expect failed」短标签升成沙箱不可用、工具族不可用或无法建连。
 若失败是 fs_read 路径越界：改用 FAWAI_READ_ROOTS 下绝对路径 fs_read，或 work_root 相对路径 / data/observe；
 禁止写「用 shell cat/cp 绕过沙箱读绝对路径」。
+若需重新截屏/AX 取证：constraints 写「下一轮 observe_kinds 含 obs_screen 或 obs_ax」，
+**禁止**写「执行 screenshot/obs_screen 动作」或把取证方式当成 action.kind。
+GUI 是否获焦/是否打开：约束下一步观察回证；禁止要求 expect.contains 臆造「获得焦点」等回执口令。
 若需用户本机执行才能继续：constraints 须含可复制命令要点，供规划 failed 终稿交付。
 多必要路径目标：constraints 须兼顾台账——一条路径阻塞时不得要求只攻该条而丢掉已齐路径；
-failed 交付须按路径分项（已齐/阻塞），声称交命令则须含可复制命令体。"""
+failed 交付须按路径分项（已齐/阻塞），声称交命令则须含可复制命令体。{effort_block}"""
 
+
+_REFLECT_EVIDENCE_CHARS = 3000
+
+
+def _clip_reflect_evidence(text: str, *, limit: int = _REFLECT_EVIDENCE_CHARS) -> str:
+    """失败反省证据截断：头+尾，避免超长 stdout 灌爆反省。"""
+    raw = text if isinstance(text, str) else str(text or "")
+    if not raw.strip():
+        return ""
+    from fawai_avatar.observe.tool_digest import clip_head_tail
+
+    clipped, _ = clip_head_tail(raw, max_chars=max(64, int(limit)))
+    return clipped.strip()
+
+
+def _text_already_covered(needle: str, *haystacks: str) -> bool:
+    n = (needle or "").strip()
+    if not n:
+        return True
+    for h in haystacks:
+        if n in (h or ""):
+            return True
+    return False
+
+
+def format_failure_evidence_lines(result: ExecResult) -> list[str]:
+    """失败动作的可机读证据行（stdout / stderr / expect 前原文）。
+
+    成功结果返回空列表——成功预期路径保持轻量，不在反省主输入堆证据。
+    """
+    if result.ok:
+        return []
+    lines: list[str] = []
+    msg = str(result.message or "")
+    data = result.data if isinstance(result.data, dict) else {}
+    pre = str(data.get("expect_pre_message") or "").strip()
+    if pre and not _text_already_covered(pre, msg):
+        lines.append(f"  工具原文（expect 前）:\n{_clip_reflect_evidence(pre)}")
+    covered = "\n".join([msg, pre])
+    stdout = str(data.get("stdout") or "").strip()
+    if stdout and not _text_already_covered(stdout, covered):
+        lines.append(f"  stdout:\n{_clip_reflect_evidence(stdout)}")
+        covered = f"{covered}\n{stdout}"
+    stderr = str(data.get("stderr") or "").strip()
+    if stderr and not _text_already_covered(stderr, covered):
+        lines.append(f"  stderr:\n{_clip_reflect_evidence(stderr)}")
+    if "returncode" in data and data.get("returncode") is not None:
+        lines.append(f"  returncode: {data.get('returncode')}")
+    return lines
 
 
 def format_reflect_user_message(
@@ -599,6 +657,7 @@ def format_reflect_user_message(
     fingerprint: str,
     fail_count: int,
     history_tail: str = "",
+    tool_obs_summary: str = "",
 ) -> str:
     lines = [
         f"目标：{goal}",
@@ -613,6 +672,13 @@ def format_reflect_user_message(
             f"- {kind} args={json.dumps(args, ensure_ascii=False)[:400]} "
             f"→ {'ok' if result.ok else 'FAIL'}: {result.message}"
         )
+        if not result.ok:
+            lines.extend(format_failure_evidence_lines(result))
+    obs = (tool_obs_summary or "").strip()
+    if obs:
+        lines.append("")
+        lines.append("本步工具结果观察摘要（失败反省优先依据）：")
+        lines.append(_clip_reflect_evidence(obs, limit=4000))
     if history_tail:
         lines.append("")
         lines.append("近期上下文摘要：")
@@ -673,6 +739,59 @@ def _mock_enabled() -> bool:
     return os.environ.get("FAWAI_BRAIN_MOCK", "").strip() in ("1", "true", "yes")
 
 
+def _looks_like_tool_observation(content: str) -> bool:
+    s = content or ""
+    if "stdout" in s or "stderr" in s or "工具原文" in s:
+        return True
+    if "→ FAIL" in s or "→ ok:" in s or "→ FAIL:" in s:
+        return True
+    return s.lstrip().startswith("- ") and (" cmd=" in s or " path=" in s)
+
+
+def _history_tool_obs_summary(
+    history: list[dict[str, Any]] | None,
+    *,
+    explicit: str = "",
+) -> str:
+    """失败反省优先吃本步工具观察；显式传入优先，否则从 history 末条回捞。"""
+    if (explicit or "").strip():
+        return explicit.strip()
+    if not history:
+        return ""
+    for msg in reversed(history[-6:]):
+        if str(msg.get("role") or "") != "user":
+            continue
+        content = str(msg.get("content") or "")
+        if _looks_like_tool_observation(content):
+            return content
+    return ""
+
+
+def _history_tail_for_reflect(
+    history: list[dict[str, Any]] | None,
+    *,
+    tool_obs_summary: str = "",
+) -> str:
+    """近期上下文：普通条仍短截；工具观察条若未进主证据则放宽。"""
+    if not history:
+        return ""
+    obs = (tool_obs_summary or "").strip()
+    bits: list[str] = []
+    for msg in history[-4:]:
+        role = msg.get("role")
+        content = str(msg.get("content") or "")
+        if obs and content.strip() == obs:
+            # 已作为「本步工具结果观察摘要」全文进主输入，尾巴不再重复截断版
+            continue
+        if _looks_like_tool_observation(content):
+            # 其它轮次的观察仍给够证据窗，避免只剩 cmd 前缀
+            piece = content if len(content) <= 2000 else (content[:1999] + "…")
+        else:
+            piece = content[:400]
+        bits.append(f"{role}: {piece}")
+    return "\n".join(bits)
+
+
 def run_reflect(
     goal: str,
     actions: list[Action],
@@ -684,6 +803,9 @@ def run_reflect(
     prior_alternate_fps: set[str] | None = None,
     llm: Any | None = None,
     on_llm_delta: Any | None = None,
+    effort: bool = False,
+    fast: bool = False,
+    tool_obs_summary: str = "",
 ) -> Reflection:
     """执行反省入口（供 Brain.reflect / 闭环调用）。"""
     if _mock_enabled() or llm is None:
@@ -692,16 +814,12 @@ def run_reflect(
         from fawai_avatar.llm.client import LlmClient
 
         client = llm if isinstance(llm, LlmClient) else LlmClient()
-        tail = ""
-        if history:
-            bits = []
-            for msg in history[-4:]:
-                role = msg.get("role")
-                content = str(msg.get("content") or "")[:400]
-                bits.append(f"{role}: {content}")
-            tail = "\n".join(bits)
+        obs_summary = _history_tool_obs_summary(
+            history, explicit=tool_obs_summary
+        )
+        tail = _history_tail_for_reflect(history, tool_obs_summary=obs_summary)
         messages = [
-            {"role": "system", "content": reflect_system_prompt()},
+            {"role": "system", "content": reflect_system_prompt(effort=bool(effort))},
             {
                 "role": "user",
                 "content": format_reflect_user_message(
@@ -711,16 +829,18 @@ def run_reflect(
                     fingerprint=fingerprint,
                     fail_count=fail_count,
                     history_tail=tail,
+                    tool_obs_summary=obs_summary,
                 ),
             },
         ]
-        # 执行反省：裁决质量优先，按主脑角色开思考（可预算）
-        result = client.chat(
-            messages,
-            tools=None,
-            thinking_role="main",
-            on_delta=on_llm_delta,
-        )
+        # 执行反省：裁决质量优先，按主脑角色开思考；Fast 任务强制关思考
+        chat_kw: dict[str, Any] = {
+            "thinking_role": "main",
+            "on_delta": on_llm_delta,
+        }
+        if fast:
+            chat_kw["enable_thinking"] = False
+        result = client.chat(messages, tools=None, **chat_kw)
         if not result.get("ok"):
             base = mock_reflect(goal, actions, results, fingerprint=fingerprint)
             base.cause = f"反省 LLM 失败，回退启发式：{base.cause}"
@@ -756,6 +876,23 @@ def run_reflect(
         prior_alternate_fps=prior_alternate_fps,
     )
     grounded = ground_reflect_constraints(guarded, actions=actions, results=results)
+    if effort:
+        from fawai_avatar.brain.effort import ground_effort_constraints
+
+        err_blob = " ".join(str(r.message or "") for r in (results or []) if not r.ok)
+        grounded = Reflection(
+            cause=grounded.cause,
+            decision=grounded.decision,
+            constraints=ground_effort_constraints(
+                list(grounded.constraints or []),
+                effort=True,
+                err_blob=err_blob,
+            ),
+            thought=grounded.thought,
+            fingerprint=grounded.fingerprint,
+            forced=grounded.forced,
+            raw={**(grounded.raw or {}), "effort": True},
+        )
     from fawai_avatar.brain.method_recovery import enrich_reflection_method_switch
     from fawai_avatar.brain.necessary_paths import enrich_reflection_path_ledger
 
@@ -925,6 +1062,7 @@ def run_stagnation(
     llm: Any | None = None,
     prior_judged: bool = False,
     locate_anchors: list[str] | None = None,
+    fast: bool = False,
 ) -> Reflection:
     """步骤重复命中后的 LLM/mock 裁决（不含代码硬 abort）。"""
     if _mock_enabled() or llm is None:
@@ -968,7 +1106,10 @@ def run_stagnation(
                 ),
             },
         ]
-        result = client.chat(messages, tools=None, thinking_role="main")
+        stag_kw: dict[str, Any] = {"thinking_role": "main"}
+        if fast:
+            stag_kw["enable_thinking"] = False
+        result = client.chat(messages, tools=None, **stag_kw)
         if not result.get("ok"):
             base = mock_stagnation(
                 goal,

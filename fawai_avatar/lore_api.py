@@ -363,6 +363,124 @@ def lore_entry_delete(*, kind: str, id: str) -> dict[str, Any]:
     return {"ok": True, "kind": "note", "id": eid, "deleted": True}
 
 
+def _parse_kv_edit_value(raw: Any) -> Any:
+    """Web textarea may send JSON text; keep plain strings as strings."""
+    if not isinstance(raw, str):
+        return raw
+    text = raw.strip()
+    if not text:
+        return ""
+    if text[0] in "{[" or text in {"true", "false", "null"}:
+        try:
+            import json
+
+            return json.loads(text)
+        except Exception:
+            return raw
+    if text[0] in "-0123456789":
+        try:
+            import json
+
+            parsed = json.loads(text)
+            if isinstance(parsed, (int, float)):
+                return parsed
+        except Exception:
+            pass
+    return raw
+
+
+def lore_entry_update(
+    *,
+    kind: str,
+    id: str,
+    title: str | None = None,
+    body: str | None = None,
+    value: Any = None,
+    tags: list[str] | None = None,
+) -> dict[str, Any]:
+    """Update committed KV value or note title/body (Web detail editor)."""
+    from fawai_lore import KvValidationError, NoteValidationError, open_lore
+
+    kind_n = str(kind or "").strip().lower()
+    eid = str(id or "").strip()
+    if kind_n not in {"kv", "note"} or not eid:
+        return {"ok": False, "error": "kind (kv|note) and id required"}
+    lore = open_lore(resolve_lore_dir())
+    if kind_n == "kv":
+        existing = lore.kv.get(eid)
+        if existing is None:
+            return {"ok": False, "error": "kv not found"}
+        if value is None:
+            return {"ok": False, "error": "value required"}
+        try:
+            entry = lore.kv.set(
+                eid,
+                _parse_kv_edit_value(value),
+                source=existing.source,
+                aliases=list(existing.aliases),
+                merge_aliases=False,
+                enabled=bool(existing.enabled),
+            )
+        except KvValidationError as exc:
+            return {"ok": False, "error": str(exc)}
+        sync_lore_fts_entry(
+            kind="kv",
+            id=entry.key,
+            value=entry.value,
+            aliases=list(entry.aliases),
+            enabled=bool(entry.enabled),
+        )
+        return {
+            "ok": True,
+            "kind": "kv",
+            "id": entry.key,
+            "entry": entry.to_dict(),
+        }
+
+    existing_note = lore.notes.get(eid)
+    if existing_note is None:
+        return {"ok": False, "error": "note not found"}
+    next_title = existing_note.title if title is None else str(title)
+    next_body = existing_note.body if body is None else str(body)
+    next_tags = list(existing_note.tags) if tags is None else list(tags)
+    try:
+        note = lore.notes.upsert(
+            {
+                "id": existing_note.id,
+                "title": next_title,
+                "body": next_body,
+                "tags": next_tags,
+                "related_keys": list(existing_note.related_keys),
+                "source": existing_note.source,
+                "enabled": bool(existing_note.enabled),
+            }
+        )
+    except NoteValidationError as exc:
+        return {"ok": False, "error": str(exc)}
+    sync_lore_fts_entry(
+        kind="note",
+        id=note.id,
+        title=note.title,
+        body=note.body,
+        tags=list(note.tags),
+        related_keys=list(note.related_keys),
+        source=note.source,
+        enabled=bool(note.enabled),
+    )
+    try:
+        from fawai_avatar.lore_embed import index_note_text
+
+        index_note_text(note.id, f"{note.title}\n{note.body}")
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "kind": "note",
+        "id": note.id,
+        "entry": note.to_dict(),
+    }
+
+
 def lore_vector_reindex_api() -> dict[str, Any]:
     from fawai_avatar.lore_embed import reindex_all_notes
     from fawai_avatar.memory_index.progress import report_progress

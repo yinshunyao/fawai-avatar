@@ -184,6 +184,60 @@ def main() -> None:
     )
     _assert(a2.get("kind") == "reorder", a2)
 
+    print("== soft append session fallback (all completed) ==")
+    from fawai_avatar.brain.plan_graph import PlanGraph, PlanNode
+    from fawai_avatar.brain.plan_scheduler import soft_append_needs_session_fallback
+
+    g_done = PlanGraph(
+        plan_id="done",
+        root_goal="已完成图",
+        nodes=[
+            PlanNode(id="n1", goal="a", status="completed"),
+            PlanNode(id="n2", goal="b", status="completed", depends_on=["n1"]),
+        ],
+    )
+    _assert(
+        soft_append_needs_session_fallback(
+            g_done, running_targets=[], spawned=[]
+        ),
+        "all completed must fallback",
+    )
+    _assert(
+        not soft_append_needs_session_fallback(
+            g_done, running_targets=["child"], spawned=[]
+        ),
+        "running targets skip fallback",
+    )
+    g_active = PlanGraph(
+        plan_id="act",
+        root_goal="未决",
+        nodes=[PlanNode(id="n1", goal="a", status="ready")],
+    )
+    _assert(
+        not soft_append_needs_session_fallback(
+            g_active, running_targets=[], spawned=[]
+        ),
+        "active nodes must not empty-fallback",
+    )
+    # 默认关计划模式
+    os.environ["FAWAI_PLAN_MODE"] = "0"
+    d_off = decide_complexity("先规划：写 a 然后写 b")
+    _assert(d_off.get("enter") is False and d_off.get("source") == "off", d_off)
+    # 会话 plan_auto 覆盖环境关：可开
+    d_ui_on = decide_complexity(
+        "先规划：写 a 然后写 b", meta={"plan_auto": True}
+    )
+    _assert(d_ui_on.get("source") != "off", d_ui_on)
+    os.environ["FAWAI_PLAN_MODE"] = "auto"
+    # 会话 plan_auto=false 覆盖环境开：强制关
+    d_ui_off = decide_complexity(
+        "先规划：写 a 然后写 b", meta={"plan_auto": False}
+    )
+    _assert(
+        d_ui_off.get("enter") is False and d_ui_off.get("source") == "off",
+        d_ui_off,
+    )
+
     print("== reorder revision (cancel + reschedule) ==")
     with tempfile.TemporaryDirectory() as tmp:
         data_dir = Path(tmp)

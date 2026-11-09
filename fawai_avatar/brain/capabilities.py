@@ -106,6 +106,8 @@ _CODING_GOAL_HINTS = (
     "git_status",
 )
 # 明显超出首期清单：应 failed，禁止 GUI 假成功
+# 真硬闸提示词须够具体。禁止裸「破解」：儿童故事「破解魔法桥密码」等会误伤，
+# 且会连带关掉假归因回灌（false_beyond 见 is_beyond 即放行真失败）。
 _BEYOND_CAPABILITY_HINTS = (
     "实名认证",
     "银行转账",
@@ -114,8 +116,13 @@ _BEYOND_CAPABILITY_HINTS = (
     "神秘 app",
     "神秘 App",
     "未登记软件",
-    "破解",
     "绕过登录",
+    "破解软件",
+    "软件破解",
+    "破解系统",
+    "破解账号",
+    "破解支付",
+    "盗版破解",
 )
 
 
@@ -141,9 +148,9 @@ CAPABILITIES: tuple[Capability, ...] = (
         name="工作区文件·查找",
         modality="background",
         when_to_use=(
-            "按 glob 列路径（支持 ** 与 {a,b}）；args.path 默认可省略（扫 work_root）；"
-            "仓外目录须显式 path=FAWAI_READ_ROOTS 下绝对路径（会真正从该目录扫，不静默空返回）；"
-            "path=/ 时 pattern 须含明确字面量；定位文件优先用本工具，空结果再 shell ls/find"
+            "按 glob 列路径（支持 ** 与 {a,b}）；须收窄 path=子目录；"
+            "整 work_root 仅当 pattern 含明确文件名片段（≥3 字面）；禁止 **/*.{yaml,json} 扫整仓；"
+            "仓外须显式子目录 path；优先 lore work_name；空结果再 shell ls/find"
         ),
         action_kind="fs_glob",
     ),
@@ -152,9 +159,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         name="工作区文件·搜索",
         modality="background",
         when_to_use=(
-            "按内容搜工作区文本；args.pattern 必填；推荐 path + 适度 head_limit + context≤5；"
-            "目录命中易过宽时收窄 pattern 或改单文件 path；"
-            "命中以 path:line 回灌，禁止臆造 grep_result_*.txt 再 fs_read"
+            "按内容搜文本；args.pattern 必填；path 须为子目录或单文件（禁止 . / 整 work_root）；"
+            "先 lore_search(work_name) 定目录；整根会拒磁盘扫（可先走 FTS）；"
+            "有线索后尽量用本工具收窄（少同文件盲读）；已确认相关处理后尽量精确 pattern；"
+            "命中以 path:line 回灌，禁止臆造 grep_result_*.txt 再 fs_read；"
+            "正则多选一用 a|b（勿写成 a\\|b，否则变字面竖线、易假 0 命中）；"
+            "搜 CSS 类名优先 button.send / 类名正文，勿只搜转义后的 \\.send\\|\\.stop"
         ),
         action_kind="fs_grep",
     ),
@@ -217,8 +227,9 @@ CAPABILITIES: tuple[Capability, ...] = (
         name="代码索引·符号",
         modality="background",
         when_to_use=(
-            "列出工作区多语言类/函数/方法符号（py/js/ts/go/rs/java 等；可按 path/query/kind）；"
-            "查询自动借用落盘索引"
+            "列出工作区符号（py/js/ts/… 类函数；html/css 的 id/class/selector/@media）；"
+            "可按 path/query/kind；须记忆配置 FAWAI_CODE_INDEX 开（默认开）；"
+            "关则改用 fs_grep；查询自动借用落盘索引"
         ),
         action_kind="code_symbols",
     ),
@@ -226,14 +237,20 @@ CAPABILITIES: tuple[Capability, ...] = (
         id="code_map",
         name="代码索引·仓地图",
         modality="background",
-        when_to_use="生成精简仓地图（多语言符号摘要），改代码前定位入口；自动借用落盘索引",
+        when_to_use=(
+            "生成精简仓地图（含前端选择器摘要），改代码前定位入口；"
+            "须 FAWAI_CODE_INDEX 开；自动借用落盘索引"
+        ),
         action_kind="code_map",
     ),
     Capability(
         id="code_index_refresh",
         name="代码索引·刷新",
         modality="background",
-        when_to_use="强制重建/增量刷新工作区符号索引（mtime 变更后或索引可疑时）",
+        when_to_use=(
+            "强制重建/增量刷新工作区符号索引（mtime 变更后或索引可疑时）；"
+            "须 FAWAI_CODE_INDEX 开"
+        ),
         action_kind="code_index_refresh",
     ),
     Capability(
@@ -261,7 +278,9 @@ CAPABILITIES: tuple[Capability, ...] = (
         when_to_use=(
             "在 data/sessions/{task_id}/ 新建或覆盖临时脚本/结果文件；"
             "args.path 相对会话根 + content；临时算数/脚本优先于此，改产品源码仍用 fs_patch。"
-            "新建脚本尽最大努力 stdout 打一行 OK 或 FAIL:原因，失败非零退出，便于调用侧 expect（精确或模糊）；非硬闸"
+            "新建脚本尽最大努力 stdout 打一行 OK 或 FAIL:原因，失败非零退出，便于调用侧 expect（精确或模糊）；非硬闸。"
+            "交付物默认写会话根（相对路径/`FAWAI_PY_SESSION_ROOT`），勿默认 work_root/仓根；"
+            "仅当上下文已感知具体项目目录时再写到该处"
         ),
         action_kind="py_write",
     ),
@@ -281,7 +300,8 @@ CAPABILITIES: tuple[Capability, ...] = (
         modality="background",
         when_to_use=(
             "用主程序解释器跑会话脚本/临时代码/模块；三选一 script|code|module；"
-            "stdout/stderr/meta 落盘 runs/{ts}/；可选 result_path；不做 pdb。"
+            "stdout/stderr/meta 落盘 runs/{ts}/；可选 result_path（相对会话根，交付物优先）；不做 pdb。"
+            "生成文件：无项目证据时写出会话根；有感知目录则写该处；stdout `OK: 路径`。"
             "多步执行时倾向带 expect（contains 精确，或 contains_any 模糊）；非硬闸"
         ),
         action_kind="py_run",
@@ -292,8 +312,9 @@ CAPABILITIES: tuple[Capability, ...] = (
         modality="background",
         when_to_use=(
             "造临时脚本/临时代码前先检索 fawai_shovels 台账；args.query 关键词；"
-            "命中则 shell 调 invoke 或复用；无命中再 py_* / 临时脚本；"
-            "通用性≥3 才可升公共铲"
+            "命中带 outcome.rate（运行成败维，≠设计三维分）与近失败一句；"
+            "对照当前 goal：poor/近失败勿原样照抄；能调好铲则 shell 调 invoke；"
+            "无命中再 py_* / 临时脚本；通用性≥3 才可升公共铲"
         ),
         action_kind="shovel_search",
     ),
@@ -393,7 +414,10 @@ CAPABILITIES: tuple[Capability, ...] = (
         id="skill_search",
         name="自我进化·检索 Skill",
         modality="background",
-        when_to_use="按关键词检索已沉淀的 Skill/教训",
+        when_to_use=(
+            "按关键词检索已沉淀的 Skill/教训；结果分 imitate（可参考）与 avoid（勿照抄）；"
+            "lesson/failure 在 avoid 栏"
+        ),
         action_kind="skill_search",
     ),
     Capability(
@@ -507,6 +531,61 @@ CAPABILITIES: tuple[Capability, ...] = (
         action_kind="task_context_get",
     ),
     Capability(
+        id="success_ledger_upsert",
+        name="成功价值台账·写入",
+        modality="background",
+        when_to_use=(
+            "本步业务操作已确认成功时写入价值卡（acceptance/commands/config_refs/"
+            "code_refs/targets/evidence 等）；后台自评三维，过门则实写 lore；"
+            "勿把失败试错整段灌进卡"
+        ),
+        action_kind="success_ledger_upsert",
+    ),
+    Capability(
+        id="success_ledger_search",
+        name="成功价值台账·检索",
+        modality="background",
+        when_to_use=(
+            "搜**本任务**已落盘的成功价值台账；是否调用由你自决；"
+            "跨任务可复用经验仍走 lore_search(scopes=[lore])"
+        ),
+        action_kind="success_ledger_search",
+    ),
+    Capability(
+        id="success_ledger_get",
+        name="成功价值台账·读取",
+        modality="background",
+        when_to_use="按 success_ledger_search 命中的 id 回灌整张成功卡",
+        action_kind="success_ledger_get",
+    ),
+    Capability(
+        id="failure_ledger_upsert",
+        name="失败价值台账·写入",
+        modality="background",
+        when_to_use=(
+            "已确认有价值的失败/换道错族时写入避坑卡（symptom/cause/do_not_retry/"
+            "commands_tried 等）；勿把每次 ok=false 都灌进卡；过门后进 avoid lore"
+        ),
+        action_kind="failure_ledger_upsert",
+    ),
+    Capability(
+        id="failure_ledger_search",
+        name="失败价值台账·检索",
+        modality="background",
+        when_to_use=(
+            "搜**本任务**失败价值台账（避坑）；是否调用由你自决；"
+            "跨任务避坑用 lore_search，命中 avoid/lesson 勿当正例"
+        ),
+        action_kind="failure_ledger_search",
+    ),
+    Capability(
+        id="failure_ledger_get",
+        name="失败价值台账·读取",
+        modality="background",
+        when_to_use="按 failure_ledger_search 命中的 id 回灌整张失败卡",
+        action_kind="failure_ledger_get",
+    ),
+    Capability(
         id="shell",
         name="控制·shell",
         modality="background",
@@ -589,7 +668,11 @@ CAPABILITIES: tuple[Capability, ...] = (
         name="控制·应用前台",
         modality="foreground",
         when_to_use=(
-            "激活指定 App（args.app 为应用名）；找回外接屏/全屏 Space 上的窗时优先于盲目滑桌面；"
+            "激活指定 App（args.app 为应用名/bundle；兼容 app_name）；"
+            "成功以 frontmost 回证为准，假成功会 ok=false 并写明前台仍是谁；"
+            "找回外接屏/全屏 Space 上的窗时优先于盲目滑桌面；"
+            "若仍非目标前台：换 hotkey 切 Space 后再 focus，或 status=failed 交付手动切出全屏；"
+            "禁止只信 activated 文案、禁止 open -g（不抢前台）；"
             "macOS 主路径；Linux 有桌面尽力（wmctrl/xdotool）"
         ),
         action_kind="app_focus",
@@ -745,13 +828,23 @@ def _effective_capability(cap: Capability) -> Capability:
 
 def list_capabilities(*, available_only: bool = True) -> list[Capability]:
     items = [_effective_capability(c) for c in CAPABILITIES]
+    try:
+        from fawai_avatar.mcp.capabilities_dyn import list_mcp_capabilities
+
+        items = list(items) + list(
+            list_mcp_capabilities(available_only=available_only)
+        )
+    except Exception:  # noqa: BLE001
+        pass
     if available_only:
         items = [c for c in items if c.available]
     return items
 
 
 def known_action_kinds(*, available_only: bool = True) -> frozenset[str]:
-    return frozenset(c.action_kind for c in list_capabilities(available_only=available_only))
+    kinds = frozenset(c.action_kind for c in list_capabilities(available_only=available_only))
+    # 允许规划发出任意已缓存 mcp__ 形态（refresh 后进清单；未 refresh 时仍拒）
+    return kinds
 
 
 def capabilities_prompt_block(
@@ -777,10 +870,13 @@ def capabilities_prompt_block(
         ]
         rules = (
             "硬规则：工作区读写/版本 → fs_* / version_*；改代码优先 fs_patch；"
-            "缺 path 时定位优先 fs_grep/fs_glob（收窄 path/glob）；多词并行才 explore_search；"
+            "缺 path：先 lore/work_name 定目录再窄 fs_grep；禁止整仓 path=.；多词才 explore_search；"
             "已有 path 定向读 fs_read offset+limit；"
             "写后 code_check（须 path/paths，或 shell_verify）；禁止用 GUI 代替写文件；"
-            "清单外目标 status=failed。"
+            "清单约束的是 action_kind：缺无法等价完成的动作族、"
+            "或真硬闸（实名/支付/软件破解等）、或无界面却规划 GUI → status=failed；"
+            "大纲/脚本/故事=模型生成+fs_write，禁止因无创意 skill 而 failed；"
+            "监管授权/租约/产物键由运行时兑现，勿当缺工具而 failed。"
         )
         if kinds is not None and not kinds.isdisjoint(_BROWSER_KINDS):
             rules += (
@@ -793,10 +889,14 @@ def capabilities_prompt_block(
             rules += "无界面：禁止 GUI/截屏/obs_ax；网页用 browser_*。"
         elif kinds is not None and not kinds.isdisjoint(_GUI_KINDS):
             rules += (
-                "GUI：优先 obs_ax+ui_click/ui_type(ref)；"
+                "GUI：obs_screen/obs_ax 只写 observe_kinds 勿进 actions；"
+                "优先 obs_ax+ui_click/ui_type(表内 ref)；"
                 "键入后须界面回证；坐标 click 仅兜底；"
-                "待发文案已在输入框时优先 press/hotkey 提交。"
+                "待发文案已在输入框时优先 press/hotkey 提交；"
+                "勿用 expect 断言获得焦点。"
             )
+        if any(c.action_kind.startswith("mcp__") for c in caps):
+            rules += " MCP：仅调用清单中的 mcp__server__tool；args 按该工具 inputSchema。"
         lines.append(rules)
         return "\n".join(lines)
 
@@ -812,13 +912,16 @@ def capabilities_prompt_block(
     rules = (
         "选型硬规则：工作区文件的创建/读写/替换/版本 → 必须用 fs_* / version_*；"
         "改已有代码优先 fs_patch（唯一匹配）；大文件禁止无 force_full_write 的整文件 fs_write；"
-        "缺明确 path 时定位：优先 fs_grep（单词 pattern）与 fs_glob（列文件，须收窄 path/glob）；"
+        "缺明确 path：先 lore_search(work_name)/窄 fs_glob 定目录，再 fs_grep(path=子目录)；禁止整 work_root；"
         "已有 path 或 path:line 则定向读改，勿再宽探仓；"
         "连续空 glob 再用 shell ls/find（遵守平台口径）；"
-        "定位代码结构 → code_symbols / code_map（勿默认走 explore）；"
+        "定位代码结构 → code_symbols / code_map（含 html/css；须 FAWAI_CODE_INDEX 开；勿默认走 explore）；"
         "explore_search 暂时降权：仅多关键词并行时用；默认只 grep；"
         "要符号须 include_symbols=true 或 symbols_query；queries 兼容 query/pattern/q；"
-        "单关键词文本搜索必须优先 fs_grep；索引过期可 code_index_refresh；"
+            "单关键词文本搜索必须优先 fs_grep；pattern 多选一用 a|b 勿 a\\|b；"
+            "CSS/类名优先 button.send 或 send 正文；索引过期可 code_index_refresh；"
+            "检索软偏好（不定死）：有线索后尽量 fs_grep 收窄；已确认相关处理后尽量精确 pattern 再小窗读/patch；"
+            "仍允许宽搜翻页、code_symbols、必要小窗读；禁止无新问题同文件盲读冒充进展；"
         "定向读文件用 fs_read 的 offset+limit（1-based，0 按文件头；也认 start_line/end_line）；"
         "写后用 code_check（或 shell_verify）回证，须带 path/paths；编码类目标未 check 不得直接 success；"
         "Git 用 git_status/git_diff/git_commit（不 push）；多文件改动须 write_resources 列全路径；"
@@ -831,6 +934,10 @@ def capabilities_prompt_block(
         "检索先读提示里的【索引配置】：按区/业务已开 methods 自行选工具；"
         "本任务历史细节（近窗/摘要没有的追问或工具结果）→ task_context_search → task_context_get；"
         "勿用 lore_search/fts_search 冒充任务上下文；"
+        "本步已确认成功 → success_ledger_upsert 写价值卡（可搜；是否 search 自决）；"
+        "已确认错族/换道失败 → failure_ledger_upsert 写避坑卡（勿每步 fail 都写）；"
+        "跨任务复用须台账三维过门（记忆配置阈值，默认 80%）后进 lore；"
+        "成功卡用 lore_search(scopes=[lore])；失败卡过门为 avoid，勿当正例；勿只标 promoted；"
         "个人知识库 → lore_search（**传 scopes**，读 search_menu 效率档）/ lore_get；"
         "lore_set / lore_note_upsert / lore_buffer_list / lore_vector_reindex / lore_fts_reindex；"
         "专用 name_index_search / fts_search；现扫 fs_grep（效率1）；重建 → memory_index_reindex；"
@@ -839,6 +946,7 @@ def capabilities_prompt_block(
         "禁止用 click/type/hotkey 代替写文件或写 Skill；"
         "禁止改进化最少核（versioning/、runtime/releases|keeper|code_watch|reload_gate|port_guard.py、"
         "workspace/paths.py）与已存在的 doc/版本/v*/ 归档（仅本智能体写路径；人工/Cursor 不限）；"
+        "MCP 外挂（若清单含 mcp__*）→ 仅调用列出的 mcp__server__tool，args 按 inputSchema；优先内置能力；"
     )
     rules += (
         "网页内操作 → browser_navigate / browser_snapshot / browser_click|type|press；"
@@ -848,13 +956,18 @@ def capabilities_prompt_block(
         rules += (
             "当前为无界面运行：GUI（click/type/hotkey/app_focus）与截屏均不可用；"
             "网页仍可用 browser_*（无头）；"
-            "清单无法覆盖时 status=failed，禁止空动作或 GUI 假 success。"
         )
     else:
-        rules += (
-            "GUI 仅在目标明确依赖屏幕 App UI 时使用；"
-            "清单无法覆盖时 status=failed，禁止空动作或 GUI 假 success。"
-        )
+        rules += "GUI 仅在目标明确依赖屏幕 App UI 时使用；"
+    rules += (
+        "清单约束的是 action_kind 选型，不是禁止模型写正文，也不是能力上限："
+        "仅当需要清单没有且无法用现有族等价完成的动作族、或命中真硬闸（实名/支付/软件破解等）、"
+        "或无界面却规划 GUI 时 status=failed 并说明边界；禁止空动作或 GUI 假 success。"
+        "大纲/脚本/故事/PPT 文案/互动设计=模型直接生成并用 fs_write（或会话产物路径）落盘，"
+        "属清单内交付；禁止因「无创意专用 skill / 超出能力清单」而 failed。"
+        "计划模式里的监管脑授权、节点租约、产物键绑定由运行时兑现，不是 action_kind；"
+        "执行脑只需写出约定产物文件并 status=success，勿因清单无这些词而 failed。"
+    )
     lines.append(rules)
     return "\n".join(lines)
 

@@ -1,0 +1,31 @@
+---
+description: fawai-avatar：助手禁止直接插手运行中/落盘任务的执行；只读分析与改产品代码除外
+alwaysApply: true
+---
+
+# 禁止插手任务执行（强制）
+
+面向在 Cursor / 本仓对话里协助维护 **fawai-avatar** 的助手。用户点名 `task_id`、问「还在跑吗 / 卡住了」时：**只查状态与机制，不代替用户或网关驱动该任务**。
+
+## 禁止
+
+未获用户**明示**「代我取消 / 代我重试 / 代我续跑 / 改这条任务库态」时，禁止：
+
+1. 改 `data/tasks.sqlite`（或等价任务库）的 `status` / `meta` / lease / 事件
+2. 调网关或内部 API：`cancel`、`retry-nodes`、`resume-from-step`、`requeue`、手工 `_maybe_start_worker`
+3. 向会话 `publish` / 写入 `session_history` 假用户消息，或注入 `pending_appends` / `followups`「替用户续跑」
+4. 为「把卡住任务跑完」直接改运行中进程、杀 Worker、伪造完成态
+
+## 允许
+
+- **只读**查任务态、会话历史、产物目录、日志，并答复「是否在执行 / 假 running」等
+- 写 `doc/分析/`、`doc/问题/`、任务复盘材料（遵守 `rules-task-analysis.mdc` / `rules-分析.mdc`）
+- 改**产品代码与规则**以修复机制（须用户授权实现；修的是通用路径，不是手改某一条任务库行「救场」）
+
+## 边界
+
+| 场景 | 做法 |
+|:---|:---|
+| 「这个任务还在跑吗」 | 读库/历史说明状态；**不** reopen / 不注入 |
+| 「帮我把这个任务跑完」 | 拒绝代跑；说明应用内如何追问/重试；可提机制缺陷与代码改法 |
+| 「按方案修假 running」 | 改 hub/路由等通用代码 + 文档；**不**手改该 `task_id` 行当验收 |

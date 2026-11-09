@@ -334,6 +334,8 @@ def report_delivery_rule(goal: str) -> str:
         "- 面向用户的终稿（success 或 failed，且本步是交稿）：thought 写成可读报告，"
         "先一句结论，再分项；有对照用 Markdown 表；有步骤、分支、依赖或结构关系时，"
         "在 thought 内加一段 mermaid（```mermaid 围栏，优先 flowchart TD）。"
+        "节点/边上若含空格、/、@、()、.py 等，标签须用双引号："
+        'A["ssh -p 22 root@host"]；不要把命令原文硬塞进未加引号的 []。'
         "没有这种关系就不要硬画，也不要编造数字。换行写在 JSON 字符串里，双引号要转义，"
         "JSON 前后不要再包 markdown。\n"
     )
@@ -422,7 +424,11 @@ def infer_prompt_profile(
     history: list[dict[str, Any]] | None = None,
     observation_has_screen: bool = False,
 ) -> PromptProfile:
-    """规则推断本轮提示档（不加额外 LLM）。"""
+    """规则推断本轮提示档（不加额外 LLM）。
+
+    有图 ≠ 全程 VLM：首轮可 vision 附图；一旦已有工具回合且本轮非 GUI/截屏，
+    强制卸图走 fs（即使 goal 未命中 file hint），避免每轮重塞用户图绑死 VLM。
+    """
     coding = looks_like_coding_goal(goal)
     file_like = (
         looks_like_file_goal(goal)
@@ -442,8 +448,8 @@ def infer_prompt_profile(
     if gui_like:
         return profile_gui()
 
-    # 已进入工具闭环的文件/前端任务：卸图走 fs
-    if tools_done and file_like:
+    # 已进入工具闭环：文件/前端，或附图后继续探索——卸图走 fs
+    if tools_done and (file_like or has_img):
         if observation_has_screen:
             return profile_gui()
         return profile_fs(coding=coding)

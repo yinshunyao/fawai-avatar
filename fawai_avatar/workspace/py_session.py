@@ -221,6 +221,7 @@ def run_script(
     env["PYTHONPATH"] = str(root) + (os.pathsep + prev if prev else "")
     env["FAWAI_PY_SESSION_ROOT"] = str(root)
 
+    wall_started = time.time()
     started = time.monotonic()
     timed_out = False
     try:
@@ -277,4 +278,19 @@ def run_script(
     meta["stderr"] = stderr
     meta["session_root"] = str(root)
     meta["run_id"] = run_id
+    # 交付物：result_path / stdout OK 行 / 本趟会话根内新文件（供会话附件卡）
+    try:
+        from fawai_avatar.channel.file_deliver import collect_py_run_deliverables
+
+        if meta.get("ok"):
+            meta["deliverables"] = collect_py_run_deliverables(
+                session_root=root,
+                result_abs=result_abs,
+                stdout=stdout,
+                started_mtime=wall_started,
+            )
+        else:
+            meta["deliverables"] = []
+    except Exception:  # noqa: BLE001 — 登记失败不挡跑测
+        meta["deliverables"] = []
     return meta

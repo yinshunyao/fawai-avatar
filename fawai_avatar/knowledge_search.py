@@ -335,11 +335,32 @@ def _merge_fair(
     return picked, counts
 
 
-def _want_scope(scopes: list[str] | None, scope_id: str) -> bool:
-    """scopes=None → 兼容全开；否则仅跑列出的范围。"""
-    if scopes is None:
-        return True
+def _want_scope(scopes: list[str], scope_id: str) -> bool:
+    """仅跑 resolve 后的实际范围列表。"""
     return scope_id in scopes
+
+
+def _drop_data_dir_file_hits(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """工作区索引命中剔除 FAWAI_DATA_DIR 残留（不重建也能立刻止血）。"""
+    try:
+        from fawai_avatar.memory_index.common import _resolve_data_dir, _under_data_dir
+    except Exception:
+        return rows
+    data_dir = _resolve_data_dir()
+    if data_dir is None:
+        return rows
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        path = str(row.get("id") or (row.get("raw") or {}).get("path") or "")
+        if not path:
+            continue
+        try:
+            if _under_data_dir(Path(path), data_dir):
+                continue
+        except Exception:
+            pass
+        out.append(row)
+    return out
 
 
 def knowledge_search(
@@ -349,15 +370,21 @@ def knowledge_search(
     scopes: list[str] | Any | None = None,
 ) -> dict[str, Any]:
     """
-    lore_search 真源。LLM 应传 scopes 选定范围；缺省仍混合已开通道（兼容）。
-    附带 index_catalog / search_menu 供感知能力与效率。
+    lore_search 真源。LLM 应传 scopes；缺省混合**当前记忆配置已开**通道。
+    已关开关的范围不查（即使 SQLite 里仍有旧索引行）。附带 index_catalog / search_menu。
     """
-    from fawai_avatar.index_policy import normalize_scopes
+    from fawai_avatar.index_policy import resolve_search_scopes
+    from fawai_avatar.memory_settings import get_memory_store
 
     q = str(query or "").strip()
     limit = max(1, min(int(limit or 10), 50))
     catalog = _index_catalog_brief()
-    scope_list = normalize_scopes(scopes)
+    try:
+        policy = get_memory_store().index_policy()
+    except Exception:
+        policy = {}
+    scope_list, skipped_disabled = resolve_search_scopes(scopes, policy)
+    menu = (catalog or {}).get("search_menu") or []
     if not q:
         return {
             "ok": True,
@@ -366,13 +393,14 @@ def knowledge_search(
             "count": 0,
             "engine": "hybrid",
             "scopes": scope_list,
-            "channels": ["content_fts", "name_index", "lore_fts", "vector", "tasks", "logs"],
+            "scopes_skipped_disabled": skipped_disabled,
+            "channels": [],
             "channel_counts": {},
             "index_catalog": catalog,
-            "search_menu": (catalog or {}).get("search_menu") or [],
+            "search_menu": menu,
         }
 
-    # 每通道多取一些，供保底合并
+    # 每通道多取一些，供保底合并；正文/文件名再滤 data_dir 后可能变少
     per = max(limit, min(40, limit * 2))
     raw_name = _name_hits(q, limit=per) if _want_scope(scope_list, "work_name") else []
     raw_content = (
@@ -408,6 +436,9 @@ def knowledge_search(
         else:
             log_hits.append(row)
 
+    name_hits = _drop_data_dir_file_hits(name_hits)
+    content_hits = _drop_data_dir_file_hits(content_hits)
+
     hits, channel_counts = _merge_fair(
         {
             "file_content": content_hits,
@@ -436,6 +467,7 @@ def knowledge_search(
         "count": len(hits),
         "engine": "hybrid",
         "scopes": scope_list,
+        "scopes_skipped_disabled": skipped_disabled,
         "channels": ran,
         "channel_counts": {
             "file_content": channel_counts.get("file_content", 0),
@@ -445,20 +477,27 @@ def knowledge_search(
             "log": channel_counts.get("log", 0),
         },
         "index_catalog": catalog,
-        "search_menu": (catalog or {}).get("search_menu") or [],
+        "search_menu": menu,
     }
     if channel_errors:
         out["channel_errors"] = channel_errors
-    # 仅文件名范围空命中：常见是自然语言整句过窄；提示扩 scope / 拆词
-    if (
-        not hits
-        and scope_list == ["work_name"]
-        and not channel_errors
-    ):
-        out["hint"] = (
+    hints: list[str] = []
+    if skipped_disabled:
+        hints.append(
+            "以下范围已在记忆配置关闭，已跳过（无需重建索引）: "
+            + ", ".join(skipped_disabled)
+        )
+    if not hits and scope_list == ["work_name"] and not channel_errors:
+        hints.append(
             "文件名未命中：可改 scopes=[work_content] 或 [lore]/[tasks]，"
             "或拆成短词再搜（如 4090 / 云服务）；ssh 口令类正文多在配置 md，不在文件名。"
         )
+    if not scope_list and not hits:
+        hints.append(
+            "当前记忆配置未开启任何可检索范围；请在「记忆配置」勾选工作区/知识库等后再搜。"
+        )
+    if hints:
+        out["hint"] = "；".join(hints)
     return out
 
 

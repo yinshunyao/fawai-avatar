@@ -16,6 +16,37 @@ from fawai_avatar.task.supervisor import Supervisor
 
 _VALID_KINDS = frozenset({"skill", "lesson", "code_patch", "rule_patch", "prompt_patch"})
 _PATCH_KINDS = frozenset({"code_patch", "rule_patch", "prompt_patch"})
+# 优化方向：改哪一类能力面（与 kind=落盘形态分开）
+_VALID_DIRECTIONS = frozenset(
+    {
+        "tool_code",
+        "prompt",
+        "skill",
+        "lesson",
+        "mcp",
+        "runtime",
+        "rule",
+    }
+)
+_PROMPT_SCOPES = frozenset(
+    {"tool_use", "planning", "reflect", "outcome", "other"}
+)
+_DIRECTION_LABELS = {
+    "tool_code": "工具代码",
+    "prompt": "提示词",
+    "skill": "Skill",
+    "lesson": "Lesson",
+    "mcp": "MCP",
+    "runtime": "闭环运行时",
+    "rule": "规则",
+}
+_PROMPT_SCOPE_LABELS = {
+    "tool_use": "工具使用",
+    "planning": "任务规划",
+    "reflect": "反省",
+    "outcome": "结果判定",
+    "other": "其它",
+}
 _DIMENSION_KEYS = (
     "planning",
     "execution",
@@ -1041,11 +1072,22 @@ def _summarize_item_change(item: dict[str, Any]) -> dict[str, Any]:
                 "执行前整包备份；验收看同类任务是否不再重复本案机制失败。"
             )
 
+    direction = str(item.get("direction") or "").strip().lower()
+    prompt_scope = str(item.get("prompt_scope") or "").strip().lower()
+    dir_label = _direction_label(direction, prompt_scope) if direction else ""
+    if impact and dir_label and not impact.startswith("【"):
+        impact = f"{dir_label}{impact}"
+    elif not impact and dir_label:
+        impact = f"{dir_label}见理由与将改摘要。"
+
     return {
         "impact": impact[:360],
         "change_summary": summary[:220],
         "preview": "\n".join(preview_lines)[:1800],
         "paths": paths[:12],
+        "direction": direction,
+        "prompt_scope": prompt_scope,
+        "direction_label": dir_label,
     }
 
 
@@ -1058,6 +1100,9 @@ def items_for_ui(items: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
             {
                 "id": str(it["id"]),
                 "kind": str(it.get("kind") or ""),
+                "direction": str(it.get("direction") or ""),
+                "prompt_scope": str(it.get("prompt_scope") or ""),
+                "direction_label": str(summary.get("direction_label") or ""),
                 "title": str(it.get("title") or "")[:200],
                 "rationale": str(it.get("rationale") or "")[:360],
                 "impact": summary["impact"],
@@ -1077,14 +1122,18 @@ def format_optimization_checklist(items: list[dict[str, Any]]) -> str:
     lines = [
         "【优化清单】请勾选后执行（分析阶段尚未改任何东西）：",
         "可用界面勾选，或回复：全部 / 执行 1,3 / 不要 2 / 取消；其它文字视为改写建议并重新分析。",
-        "每项含：理由、影响与验收、将改什么（展开详情见界面）。",
+        "每项含：优化方向（工具代码/提示词·…/Skill/MCP/闭环运行时等）、理由、影响与验收、将改什么。",
         "",
     ]
     for it in catalog:
         mark = "✓建议" if it.get("selected_default", True) else "·可选"
         summary = _summarize_item_change(it)
+        dir_label = str(summary.get("direction_label") or "") or _direction_label(
+            str(it.get("direction") or ""),
+            str(it.get("prompt_scope") or ""),
+        )
         lines.append(
-            f"{it['id']}. [{it.get('kind')}] {it.get('title')}（{mark}）"
+            f"{it['id']}. {dir_label}[{it.get('kind')}] {it.get('title')}（{mark}）"
         )
         rationale = str(it.get("rationale") or "").strip()
         if rationale:
@@ -1217,24 +1266,57 @@ def _analyze_rule_based(
     items: list[dict[str, Any]] = []
     try:
         from fawai_avatar.brain.answer_effect import (
+            compose_answer_goal,
+            delivery_payload_reject_reason,
             goal_needs_answer_coverage_gate,
+            goal_needs_delivery_payload_gate,
+            thought_is_delivery_intention,
             thought_ok_for_answer_coverage,
         )
     except Exception:  # noqa: BLE001
         goal_needs_answer_coverage_gate = None  # type: ignore[assignment]
         thought_ok_for_answer_coverage = None  # type: ignore[assignment]
+        goal_needs_delivery_payload_gate = None  # type: ignore[assignment]
+        thought_is_delivery_intention = None  # type: ignore[assignment]
+        compose_answer_goal = None  # type: ignore[assignment]
+        delivery_payload_reject_reason = None  # type: ignore[assignment]
 
     answer_misses: list[str] = []
     if goal_needs_answer_coverage_gate and thought_ok_for_answer_coverage:
         for t in tasks:
             thought = str((t.meta or {}).get("final_thought") or "")
-            if goal_needs_answer_coverage_gate(t.goal or "") and not thought_ok_for_answer_coverage(
-                thought, goal=t.goal or ""
+            fus = list((t.meta or {}).get("followups") or [])
+            answer_goal = (
+                compose_answer_goal(t.goal or "", fus)
+                if compose_answer_goal
+                else (t.goal or "")
+            )
+            delivery_hit = False
+            if thought_is_delivery_intention and thought_is_delivery_intention(
+                thought
             ):
+                delivery_hit = True
+            elif (
+                goal_needs_delivery_payload_gate
+                and delivery_payload_reject_reason
+                and goal_needs_delivery_payload_gate(t.goal or "", followups=fus)
+                and delivery_payload_reject_reason(thought, goal=answer_goal)
+                is not None
+            ):
+                delivery_hit = True
+            coverage_hit = goal_needs_answer_coverage_gate(
+                t.goal or "", followups=fus
+            ) and not thought_ok_for_answer_coverage(thought, goal=answer_goal)
+            if delivery_hit or coverage_hit:
                 answer_misses.append(t.task_id[:8])
-                judge_bits.append(
-                    f"[{t.task_id[:8]}] 问询类终稿疑似过程元叙述，未覆盖 goal 问点"
-                )
+                if delivery_hit:
+                    judge_bits.append(
+                        f"[{t.task_id[:8]}] 交稿/输出类终稿为意图句或缺少会话载荷"
+                    )
+                else:
+                    judge_bits.append(
+                        f"[{t.task_id[:8]}] 问询类终稿疑似过程元叙述，未覆盖 goal 问点"
+                    )
         if answer_misses:
             dims["outcome_judgment"] = "；".join(judge_bits) or dims.get(
                 "outcome_judgment", ""
@@ -1494,12 +1576,21 @@ def _analyze_with_llm(
 - 智能体机制优先：须指出规划/观察/动作/反省/步骤重复/结果判定哪环失效；禁止只复述终态错误句；机制叙述须能回指工具双栏。
 - 再评必要路径与调用细节：列出必要/可选路径（抽象槽位，如鉴权材料、作用对象/脚本、副作用动作）；查是否偏科只攻一条而遗忘另一条已就绪路径、是否把可选探索当必要；远端与其它任务同一尺子。analysis 须含路径表结论。
 - 优化须针对通用任务（可迁移到同类目标）；单任务细节只作证据，不得当唯一优化标题。
+- 优化方向强制（与 kind 分开）：每项必填 direction=
+  tool_code（工具代码：实现/schema/报错/能力契约）|
+  prompt（提示词；另必填 prompt_scope=tool_use|planning|reflect|outcome|other）|
+  skill | lesson | mcp |
+  runtime（闭环运行时：租约/Worker 续跑/调度闸/结果判定代码等非单工具）|
+  rule（规则/文档）。
+  title 或 impact 开头用中文标签【工具代码】【提示词·工具使用】【提示词·任务规划】【Skill】【Lesson】【MCP】【闭环运行时】【规则】。
+  禁止只写「改工具层/改闭环」含糊话；一项一个主方向，需两处改则拆条。
+  明确工具 bug → direction 须为 tool_code（或确属租约续跑则 runtime），禁止只开 lesson/prompt 交差。
 - 禁止本案故事线升闸：换掉专有名词后 title/验收须仍成立；已有必要路径台账/进度闸/方法族/abort 交付/工具契约能覆盖时只写「补强既有层」，禁止平行新开专名专用门。
 - 区分表面失败与机制失败（例：fingerprint abort 可能只是止损，根因常是工具报错误导、必要路径偏科、从未 mutate、或 alternate 误伤）。
-- analysis 总述建议含：用户多轮结论 → 工具双栏（本身优先）→ 必要/可选路径 → 机制根因（可复用模式名）→ 证据要点 → 通用优化方向（明确工具项置顶 P0；标明改工具层还是调用/闭环层）。
-- 最终答复用户（analysis / dimensions / items 的 title 与 rationale）：须同时保证全面性、准确性、专业性、易读性——覆盖命中机制、工具双栏与有材料的五维；断言可落到证据，不确定则写材料不足；用机制术语写清改哪一层；短段先结论后证据，禁止堆内部字段名当主文。
+- analysis 总述建议含：用户多轮结论 → 工具双栏（本身优先）→ 必要/可选路径 → 机制根因（可复用模式名）→ 证据要点 → 通用优化方向（明确工具项置顶 P0；每项标 direction）。
+- 最终答复用户（analysis / dimensions / items 的 title 与 rationale）：须同时保证全面性、准确性、专业性、易读性——覆盖命中机制、工具双栏与有材料的五维；断言可落到证据，不确定则写材料不足；用机制术语并标优化方向；短段先结论后证据，禁止堆内部字段名当主文。
 - 问询/状态类假成功（强制）：若 goal 在问状态/进度/是否/多少/配置落点/硬件配置，而 final_thought 或末步 thought 只写「已获取/已汇总/已找到并结束」等过程元叙述、或硬件盘点只报一两项缺来源路径 → 须把「假成功 / 答复未覆盖目标」或「配置盘点过薄」升为机制根因之一，并至少给一条默认勾选优化（lesson 或 prompt_patch/code_patch：答复覆盖闸门）；禁止只写在 outcome_judgment 末句却清单不跟进。轨迹材料含 steps_index 与头尾采样时，必须核对末步，禁止只根据前缀探索噪声定主因。
-- 假归因/交付：工具为 not found/shell 闸而终稿写「沙箱禁读」且未交已齐路径上的可执行交付 → 升假归因 + 交付兑现；并在工具双栏区分「报错是否误导」vs「调用是否未换道」；勿写专名菜谱。
+- 假归因/交付：工具为 not found/shell 闸而终稿写「沙箱禁读」且未交已齐路径上的可执行交付 → 升假归因 + 交付兑现；并在工具双栏区分「报错是否误导」vs「调用是否未换道」；勿写专名菜谱。文案/脚本类自称「超出能力清单 / 无创意 skill」（尤其已 fs_write 仍 failed）同升假归因；闭环有 false_beyond 回灌，勿开创意 Agent 专名闸。
 
 必须覆盖以下五维（dimensions 每键一两段，禁止空话；须落到机制而非流水账）：
 - planning 任务规划：必要/可选路径是否拆清；能力选型；探索 vs 改写；是否偏科；是否误走 GUI/超清单
@@ -1510,9 +1601,11 @@ def _analyze_with_llm(
 
 然后给出可勾选优化清单 items（可空）。每项须让用户**不看代码也能判断是否执行**：
 - id: 从 "1" 起的字符串编号
-- kind: skill | lesson | code_patch | rule_patch | prompt_patch
-- title / rationale（对应哪一维；title 写通用机制，勿绑死单一 goal 文案；文案过「最终答复用户」四性）
-- impact: 必填，一两句——改哪一层（工具实现/契约 vs 规划/观察/闸门/提示词/知识库等）、执行后会怎样、如何验收（类任务可观察指标）
+- direction: tool_code | prompt | skill | lesson | mcp | runtime | rule（必填；见上「优化方向强制」）
+- prompt_scope: 仅 direction=prompt 时必填：tool_use | planning | reflect | outcome | other
+- kind: skill | lesson | code_patch | rule_patch | prompt_patch（落盘形态，不能代替 direction）
+- title / rationale（title 建议带【工具代码】等中文方向标签；写通用机制，勿绑死单一 goal 文案；文案过「最终答复用户」四性）
+- impact: 必填，一两句——先重复方向中文标签，再写执行后会怎样、如何验收（类任务可观察指标）
 - selected_default: bool（是否建议默认勾选）
 - payload: 必须可执行且具体（禁止空壳）；用户勾选前会看到由此生成的路径/步骤/补丁摘要
   - skill/lesson: {{id,title,when_to_use,steps,tags}}（steps 写清可执行步骤，非口号）
@@ -1855,8 +1948,82 @@ _TOOL_LAYER_MARKERS = (
 )
 
 
+def _direction_label(direction: str, prompt_scope: str = "") -> str:
+    """给人读的方向标签，如【工具代码】【提示词·任务规划】。"""
+    d = (direction or "").strip().lower()
+    base = _DIRECTION_LABELS.get(d, d or "未标方向")
+    if d == "prompt":
+        scope = (prompt_scope or "").strip().lower()
+        scope_zh = _PROMPT_SCOPE_LABELS.get(scope, scope or "未细分")
+        return f"【提示词·{scope_zh}】"
+    return f"【{base}】"
+
+
+def _infer_direction(
+    *,
+    kind: str,
+    explicit: str,
+    prompt_scope: str,
+    title: str,
+    rationale: str,
+    impact: str,
+) -> tuple[str, str]:
+    """归一 direction + prompt_scope；缺省时按 kind/文案推断。"""
+    direction = (explicit or "").strip().lower()
+    scope = (prompt_scope or "").strip().lower()
+    if direction in _VALID_DIRECTIONS:
+        if direction == "prompt" and scope not in _PROMPT_SCOPES:
+            scope = "other"
+        if direction != "prompt":
+            scope = ""
+        return direction, scope
+
+    # 显式缺省：按 kind
+    if kind == "skill":
+        return "skill", ""
+    if kind == "lesson":
+        return "lesson", ""
+    if kind == "rule_patch":
+        return "rule", ""
+    if kind == "prompt_patch":
+        blob = f"{title} {rationale} {impact}"
+        for code, markers in (
+            ("tool_use", ("工具使用", "选型", "换道", "参数")),
+            ("planning", ("任务规划", "必要路径", "规划提示", "相位")),
+            ("reflect", ("反省", "步骤重复", "alternate")),
+            ("outcome", ("结果判定", "finalize", "答复覆盖", "终稿")),
+        ):
+            if any(m in blob for m in markers):
+                return "prompt", code
+        return "prompt", "other"
+
+    blob = f"{title} {rationale} {impact}"
+    if any(m in blob for m in ("MCP", "mcp", "Model Context Protocol")):
+        return "mcp", ""
+    if any(
+        m in blob
+        for m in (
+            "租约",
+            "foreground_lease",
+            "Worker",
+            "续跑",
+            "set_running",
+            "闭环运行时",
+        )
+    ):
+        return "runtime", ""
+    if any(m in blob for m in _TOOL_LAYER_MARKERS) or "工具代码" in blob:
+        return "tool_code", ""
+    if kind == "code_patch":
+        return "runtime", ""
+    return "runtime", ""
+
+
 def _looks_like_tool_layer_item(item: dict[str, Any]) -> bool:
-    """启发式：impact/rationale/title 标明工具层则软置顶。"""
+    """工具代码 / 闭环运行时项软置顶。"""
+    direction = str(item.get("direction") or "").strip().lower()
+    if direction in {"tool_code", "runtime"}:
+        return True
     blob = " ".join(
         str(item.get(k) or "") for k in ("title", "rationale", "impact")
     )
@@ -1883,12 +2050,31 @@ def _normalize_items(raw: Any) -> list[dict[str, Any]]:
             for pk in ("path", "content", "old", "new", "patches", "code_patches"):
                 if pk in item and pk not in payload:
                     payload[pk] = item[pk]
+        title = str(item.get("title") or kind)[:200]
+        rationale = str(item.get("rationale") or "")[:500]
+        impact = str(item.get("impact") or "")[:400]
+        direction, prompt_scope = _infer_direction(
+            kind=kind,
+            explicit=str(item.get("direction") or ""),
+            prompt_scope=str(item.get("prompt_scope") or ""),
+            title=title,
+            rationale=rationale,
+            impact=impact,
+        )
+        dir_label = _direction_label(direction, prompt_scope)
+        if impact and not impact.startswith("【"):
+            impact = f"{dir_label}{impact}"[:400]
+        elif not impact:
+            impact = f"{dir_label}见理由与将改摘要。"[:400]
+        # title 可由模型自带【标签】；清单展示另打 direction_label，此处不重复前缀
         row = {
             "id": iid,
             "kind": kind,
-            "title": str(item.get("title") or kind)[:200],
-            "rationale": str(item.get("rationale") or "")[:500],
-            "impact": str(item.get("impact") or "")[:400],
+            "direction": direction,
+            "prompt_scope": prompt_scope,
+            "title": title,
+            "rationale": rationale,
+            "impact": impact,
             "selected_default": bool(item.get("selected_default", True)),
             "payload": payload,
         }

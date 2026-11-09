@@ -1,15 +1,22 @@
 # term:脚本铲子生命周期  tool:shovel_search  doc:doc/功能/脚本铲子生命周期/说明.md
-"""写前搜铲软闸 + 写后提炼软提示（默认不开硬失败）。"""
+# term:成败经验与检索极性  doc:doc/功能/成败经验与检索极性/说明.md
+"""写前搜铲软闸 + 写后提炼软提示 + 差评铲对照软闸（默认不开硬失败）。"""
 
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 
 from fawai_avatar.types import Action
+from fawai_avatar.workspace.shovel_outcome import (
+    extract_shovel_ids_from_actions,
+    get_outcome,
+)
 
 SEARCH_GATE_MARKER = "【铲子优先】"
 PROMOTE_HINT_MARKER = "【铲子提炼】"
+OUTCOME_GATE_MARKER = "【成败对照】"
 
 _INVENT_KINDS = frozenset({"py_write", "py_run", "py_pip"})
 _SCRIPT_SUFFIXES = (".py", ".sh", ".bash", ".zsh")
@@ -192,4 +199,71 @@ def hard_reject_invent_without_search(
         return None
     return (
         "rejected: FAWAI_SHOVEL_SEARCH_HARD — invent script requires prior shovel_search ok"
+    )
+
+
+def shovel_outcome_gate_enabled() -> bool:
+    raw = (os.environ.get("FAWAI_SHOVEL_OUTCOME_GATE") or "1").strip().lower()
+    return raw not in {"0", "false", "off", "no"}
+
+
+def _flagged_shovels_for_actions(
+    actions: list[Action] | None,
+    *,
+    data_dir: str | Path | None,
+) -> list[dict[str, Any]]:
+    if not data_dir:
+        return []
+    flagged: list[dict[str, Any]] = []
+    for sid in extract_shovel_ids_from_actions(actions):
+        outcome = get_outcome(data_dir, sid)
+        rate = str(outcome.get("rate") or "unknown")
+        if rate == "poor" or (
+            rate == "mixed" and str(outcome.get("last_fail_one_liner") or "").strip()
+        ):
+            flagged.append({"id": sid, "outcome": outcome})
+    return flagged
+
+
+def should_inject_outcome_gate(
+    *,
+    history: list[dict[str, Any]] | None,
+    actions: list[Action] | None,
+    data_dir: str | Path | None = None,
+    goal: str = "",
+) -> bool:
+    if not shovel_outcome_gate_enabled():
+        return False
+    if history_has_marker(history, OUTCOME_GATE_MARKER):
+        return False
+    flagged = _flagged_shovels_for_actions(actions, data_dir=data_dir)
+    _ = goal
+    return bool(flagged)
+
+
+def format_outcome_gate_message(
+    *,
+    actions: list[Action] | None = None,
+    data_dir: str | Path | None = None,
+    goal: str = "",
+) -> str:
+    flagged = _flagged_shovels_for_actions(actions, data_dir=data_dir)
+    bits: list[str] = []
+    for item in flagged[:5]:
+        sid = item.get("id")
+        oc = item.get("outcome") or {}
+        rate = oc.get("rate")
+        fail = str(oc.get("last_fail_one_liner") or "").strip()
+        piece = f"{sid} rate={rate}"
+        if fail:
+            piece += f" last_fail={fail[:120]}"
+        bits.append(piece)
+    detail = "；".join(bits) if bits else "差评铲"
+    goal_hint = (goal or "").strip()
+    goal_part = f"当前 goal「{goal_hint[:80]}」" if goal_hint else "当前 goal"
+    return (
+        f"{OUTCOME_GATE_MARKER}本步拟调用运行态差评/近失败铲子：{detail}。"
+        f"请对照{goal_part}：禁止无视成败维原样照抄 invoke；"
+        "须换道、改参，或显式说明为何本次不适用该失败模式后再执行。"
+        "设计态三维分（完备/通用/效率）≠ 运行成败维。"
     )

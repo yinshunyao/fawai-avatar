@@ -89,6 +89,9 @@ def _system_prompt(
     goal: str = "",
     profile: PromptProfile | None = None,
     planner_role: str = "main",
+    effort: bool = False,
+    fast: bool = False,
+    step_tier: bool = False,
 ) -> str:
     from fawai_avatar.platform_info import is_headless, platform_prompt_block
     from fawai_avatar.workspace.paths import workspace_paths_prompt_block
@@ -130,6 +133,11 @@ def _system_prompt(
             "多步执行流倾向带 expect（精确 contains，或模糊 contains_any/not_contains），非硬闸。\n"
             "- **临时脚本/算数/装包**：先 `shovel_search`；无命中再 `py_write`→`py_pip`（需依赖时）→`py_run`（落盘"
             "data/sessions/{task_id}/）；参数/env；新建脚本尽最大努力 stdout 打 OK 或 FAIL:原因、失败非零退出；"
+            "**交付形态（软）**：要 PPT 默认交 `.pptx`（非仅大纲 md，明确只要提纲除外）。"
+            "**交付物落点（模型判断，非硬闸）**：用户未点名项目/目录 → 脚本写出相对会话根"
+            "（cwd=`FAWAI_PY_SESSION_ROOT`，禁默认 work_root/仓根）；上下文已感知具体目录/项目"
+            "（用户路径、本任务已定位子树、编码目标落在已点名仓内子树）→ 写到该处；"
+            "stdout 宜 `OK: <相对或绝对路径>` 并尽量带 `result_path`；"
             "通用性≥3 可升铲；改产品源码仍用 fs_patch，勿用 py_* 改仓内业务文件。\n"
             "- 若启用原生 tool_calls：直接调用工具，不必再包一层 JSON plan；结束时调用 done。"
             "分层写路径由系统按 path 自动绑定默认 doc_refs；也可在写工具 args 里带 doc_refs"
@@ -138,9 +146,15 @@ def _system_prompt(
             "（系统可按 path 自动补默认 doc_refs）。\n"
             "- **改写优先**：历史已给出明确 path + 渲染/修改点后，本步优先 fs_patch/fs_replace/fs_write；"
             "禁止无新问题继续盲读同一文件或整文件扫读；需要细节时按行号小窗 fs_read。\n"
+            "- **检索软偏好（不定死）**：有线索（path/目录/类名片段/path:line）后尽量 fs_grep 收窄，"
+            "少同文件盲读；已确认相关处理（样式定义/函数体/明确选择器）后尽量精确 pattern 再小窗读或 patch；"
+            "仍允许宽搜翻页、code_symbols（含 html/css）、必要小窗读。\n"
             "- **定位（条件）**：目标已给明确 path → 定向 fs_read/fs_patch，不必探仓；"
-            "仅缺 path 时优先 fs_grep（pattern）+ fs_glob（收窄 path/glob）；"
-            "多词并行才 explore_search（默认只 grep）；禁止整文件盲读；已有 path:line 禁止同范围宽搜。\n"
+            "仅缺 path：先 lore_search(scopes=[work_name]) 或含项目名的窄 fs_glob 定目录，"
+            "再对子目录分批 fs_grep；索引未命中也禁止回退整仓扫，应换目录批次而非扩大 path；"
+            "禁止 path=. / 整 work_root / /Users 磁盘扫；禁止同意图 lore∥fs_grep；"
+            "多词并行才 explore_search（仍须收窄 path）。禁止整文件盲读；已有 path:line 禁止同范围宽搜。"
+            "追问续跑：先 task_context_search 取旧命中目录，禁止再扩到整仓。\n"
             "- **可见副作用**：若目标含页面/布局/附图，补丁须产生用户可感知变化；"
             "禁止只堆未引用 CSS 变量；success 的 thought 须写清可见变化，禁止 native tool_calls 占位。"
             "实机截屏/浏览器验页为可选；做不到不得因此 failed。"
@@ -150,16 +164,20 @@ def _system_prompt(
         coding_extra = (
             "- 编码：优先 fs_patch；写后 code_check（须 path/paths）；不冲突的读和写可一段多 actions（约 4～8）并 act_parallel；同一路径不要同批；前台和 shell 不要与其它动作同批；多步倾向带 expect（精确或模糊，非硬闸）；原生 tool_calls 时可直接调工具"
             "（分层写自动绑定 doc_refs）。已有 path 则定向读改，禁止无新问题盲读/为探仓而探仓；"
-            "仅缺 path 时优先 fs_grep/fs_glob；多词才 explore_search。禁止整文件盲读。"
+            "仅缺 path：先 lore/work_name 定目录再窄 fs_grep；禁止整仓 path=.；"
+            "多词才 explore_search。禁止整文件盲读。"
+            "检索软偏好：有线索尽量 grep 收窄；确认相关后尽量精确 pattern 再改（不定死）。"
+            "code_symbols 含 html/css（记忆配置默认开）。"
             "临时脚本先 shovel_search，再 py_write/py_pip/py_run；改产品源码勿用 py_*。"
             "页面/布局类禁止未引用 CSS 变量假成功；收尾 thought 须写可见变化；"
             "实机验页可选，验窄屏用 browser_*+viewport=mobile。\n"
         )
     elif not coding and prof.id == "fs":
         coding_extra = (
-            "- 前端/文件改页：已有入口 path/渲染点 → 直接 fs_patch/fs_replace；"
-            "仅不知文件时优先 fs_grep/fs_glob（收窄 path）；多词才 explore_search；"
-            "禁止反复整文件 fs_read / 同范围宽 grep；分层写自动绑定 doc_refs。\n"
+            "- 前端/文件改页：已有入口 path/渲染点 → 尽量精确 grep 或直接 fs_patch/fs_replace；"
+            "仅不知文件：先 work_name/窄 glob 定目录再 fs_grep；禁止整仓扫；多词才 explore_search；"
+            "有线索后尽量 grep 收窄（不定死）；禁止无新问题反复整文件 fs_read / 同范围宽 grep；"
+            "code_symbols 可查 html/css 选择器（记忆配置默认开）；分层写自动绑定 doc_refs。\n"
             "- **可见副作用**：改布局/样式须改到实际生效的选择器或属性；"
             "禁止只新增未 var() 引用的 CSS 变量/注释后 success；"
             "write_set 非空≠验收通过。目标含用户附图时，须对照图中可见问题下刀。"
@@ -170,15 +188,25 @@ def _system_prompt(
         "- 无界面：禁止规划 click/type/hotkey/app_focus/ui_*；observe_kinds 勿选 obs_screen/obs_ax。\n"
         if is_headless()
         else (
+            "- **取证≠动作**：obs_screen/obs_ax/obs_fs/none 只能写在 observe_kinds，"
+            "禁止写入 actions[].kind（会当未知能力失败）；要截屏就点选 observe_kinds。\n"
             "- GUI：click/type/hotkey/app_focus/ui_click/ui_type/ui_verify 设 needs_foreground=true；"
             "纯 shell/后台设 false。\n"
             "- 控件级优先：observe_kinds 含 obs_ax → ui_click/ui_type；"
-            "args.ref 抄 AX 编号（\"1\"/\"2\"…）或 OCR 表编号（\"ocr1\"…），禁止臆造 chat-input-field 等 id；"
+            "args.ref 须抄**当前观察摘要表**里的 AX 编号（\"1\"/\"2\"…）或 OCR 编号（\"ocr1\"…），"
+            "禁止臆造 chat-input-field / 无表时的 ocrN；"
             "观察已含 OCR 表时优先 ui_click(ocrN)，勿再估像素 click；"
-            "表中无控件再 obs_screen+click 或 failed；键入后须界面回证，未回证不得 success。\n"
+            "表中无控件再点选下一步 obs_screen 后 click，或 failed；"
+            "键入后须界面回证，未回证不得 success。\n"
+            f"{_screenshot_grounding_prompt_line()}"
+            "- GUI 的 expect.contains 只能断言工具回执真实子串（如 clicked/typed）；"
+            "禁止用 expect 断言「获得焦点/光标闪烁/已打开」等画面态——改下一步 obs_screen/obs_ax 回证。\n"
             "- 多屏：观察 meta.displays；选 obs_screen 时用 observe_args."
             '{"obs_screen":{"screen_target":"frontmost|main|index:N|all"}}（默认 frontmost）；'
             "未见目标则换 target 或 app_focus，禁止假定只在主屏。\n"
+            "- app_focus（args.app，兼容 app_name）成功以 frontmost 回证为准；"
+            "若 ok=false 写明前台仍是 X 或观察≠目标：换 hotkey 切 Space / 再 focus / failed，"
+            "禁止只信 activated、禁止 open -g。\n"
             "- click 的 x/y 为**图内坐标**（相对截图 origin）；闭环加 origin_x/y；"
             "勿与全局坐标混用（除非 args.coord_space=global）。\n"
             "- 截图已见输入框有待发文案时：优先 press/hotkey 提交（如 enter 或应用惯用快捷键），"
@@ -213,6 +241,17 @@ def _system_prompt(
         "只有目标明确要看或操作当前桌面/某 App 界面时才截屏。\n"
     )
     path_ledger = path_ledger_prompt_lines(short=prof.short_rules)
+    from fawai_avatar.brain.effort import planner_effort_rule
+    from fawai_avatar.brain.fast import planner_fast_rule
+    from fawai_avatar.brain.step_run import (
+        planner_step_run_format_field,
+        planner_step_tier_rule,
+    )
+
+    effort_rule = planner_effort_rule(effort=bool(effort))
+    fast_rule = planner_fast_rule(fast=bool(fast))
+    step_tier_rule = planner_step_tier_rule(step_tier=bool(step_tier))
+    step_run_fmt = planner_step_run_format_field(step_tier=bool(step_tier))
     profile_line = f"本轮提示档：{prof.id}（按目的精简；硬校验仍用全量能力）。\n"
     if prof.short_rules:
         return f"""你是操作分身的执行大脑。据目标与观察规划**下一步**动作，并点选 observe_kinds。
@@ -223,23 +262,24 @@ def _system_prompt(
 {caps_block}
 {index_cfg_block}{rules_inject}{ctx_block}{thought_rule}{doc_screen_rule}规则：
 - 只输出一个 JSON 对象，无 markdown 其它前后缀；禁止声称已执行物理操作。
-- shell 用 args.cmd；fs_read 用 path + offset/limit；故意同窗再读加 allow_repeat=true；fs_grep 用 pattern；fs_patch/replace 的 old 须与原文一致。
+- shell 用 args.cmd；fs_read 用 path + offset/limit；故意同窗再读加 allow_repeat=true；fs_grep 用 pattern（多选一写 a|b，禁止 a\\|b；CSS 类优先 button.send / 类名正文）；fs_patch/replace 的 old 须与原文一致。
 - 近窗/【已完成步骤摘要】里没有的**本任务**事实（追问、工具命中细节）→ `task_context_search` 再 `task_context_get`；文件再 `fs_read`。禁止因「曾经读过」且正文已不在上下文就 failed。勿用 lore_search 冒充任务上下文。
-- 缺 path 时定位：优先 fs_grep/fs_glob（收窄 path/glob，支持 `**` 与 `{{html,js}}`）；多词才 explore_search（默认只 grep）；结构用 code_symbols；已有 path 定向读改；禁止整文件盲读。
+- 缺 path 时定位：先 lore_search(work_name) / 窄 fs_glob 定子目录，再分批 fs_grep(path=子目录)；索引落空禁止回退整仓，应换一批目录再搜；禁止 path=.、整 work_root、/Users；禁止同意图索引∥磁盘扫；多词才 explore_search；结构用 code_symbols（含 html/css）；已有 path 定向读改；禁止整文件盲读。追问先 task_context 取旧目录。
+- **检索软偏好（不定死）**：有线索后尽量 fs_grep 收窄；已确认相关处理后尽量精确 pattern 再小窗读/patch；仍允许宽搜翻页、code_symbols、必要小窗读。
 - **动作段**：不冲突的读和写可一次排 4～8 个 actions（减少反复进模），`step_kind` 用 `act_parallel`。同一路径的读与写、同一路径的多写不要同批。前台、`shell` 不要与其它动作同批。多步执行流倾向带 `"expect"`（精确 `contains`，模糊 `contains_any` / `not_contains`）；纯探路与 **fs_patch/replace 默认可不带**；勿断言不存在的 `patch applied`（成功回执是 `· applied`）。非硬闸。带 expect 的动作单独成串行段。新建脚本 stdout 打 `OK` 或 `FAIL:原因`，失败非零退出。
 - **step_kind**（本步类型）：`sense` 取证；`act_serial` 串行执行段；`act_parallel` 不冲突的读和写并发；`analyze` 分析；`finalize` 收尾。纯执行/分析/收尾时 observe_kinds 优先 `none`（勿空刷工作区顶层列表）；需画面/AX 再点选。
 - 工具结果默认全文回灌；检索体量靠 `head_limit`（默认宜小）与 `context_before/after`（≤5）控制，达上限可自行加大 limit 或收窄翻页，无宽检索降质闸。
-- **过程相位（必要）**：定位 → 取证（小窗 fs_read / 已有 path:line）→ 改写或作答 → 验收。宽搜/整文件盲读属可选，不得替代取证。
-- observe_kinds 必须从观察候选选；查代码/改产品在 act_* 后优先 **none**（已有工具结果够用）；首轮 sense 可用 obs_fs；GUI 可选 obs_ax / obs_screen。读文档或附图时候选里没有截屏，不要改去截本机屏幕。
+- **过程相位（必要）**：定位 → 取证（尽量 grep / 小窗 fs_read / 已有 path:line）→ 改写或作答 → 验收。宽搜/整文件盲读属可选，不得替代取证。
+- observe_kinds 必须从观察候选选；**禁止**把 obs_screen/obs_ax/obs_fs/none 写进 actions[].kind；查代码/改产品在 act_* 后优先 **none**（已有工具结果够用）；首轮 sense 可用 obs_fs；GUI 可选 obs_ax / obs_screen。读文档或附图时候选里没有截屏，不要改去截本机屏幕。
 - 遵守历史中的【执行反省】/【步骤重复】constraints；可参考【观察反省】hints（软建议），失败时仍以执行反省为准。
 - 最终给用户的话写在 success/failed 的 thought；勿贴原始 stdout。
 - 查找落点/账号优先 lore 与 fs_read（绝对路径须在上方只读根或工作区根内）；禁止开场 `grep -r ~`；勿用 shell cat/cp 绕过 fs。
 - 升级/同步远端：优先 `fawai_shovels/shell/rsync-ssh-deploy.sh` 或 `ssh-run-with-pass.sh`（口令仅 env）；可在 work_root 临时写脚本再跑；禁止无口令 BatchMode ssh 空探针当主路径。
 - 用户说不在电脑边/远程操作：禁止要求粘贴文件或拷进工作区；读不到则 failed 并在 thought 给出可复制命令。
 - 问询收尾禁过程元叙述与过薄盘点；材料不足则 failed/need_input。
-{path_ledger}- 默认尽最大努力；仅猜错代价高（不可逆写删/提交/外发/花钱/互斥路线）才 status=need_input；有选项须带 options≥2，勿改开放长答。
+{path_ledger}{effort_rule}{fast_rule}{step_tier_rule}- 仅猜错代价高（不可逆写删/提交/外发/花钱/互斥路线）才 status=need_input；有选项须带 options≥2，勿改开放长答。
 {delegate_rule}{coding_extra}{image_extra}{gui_rule}格式：
-{{"thought":"执行中≤40字；终稿写报告","title":"≤16字","step_label":"≤16字本步意图","step_kind":"act_serial","status":"continue|success|failed|need_input","done":false,"observe_kinds":["none"],"observe_args":{{"obs_screen":{{"screen_target":"frontmost"}}}},"doc_refs":[],"architecture_skip_reason":"","options":[{{"id":"a","label":"选项A"}}],"delegate":null,"actions":[{{"kind":"{kinds}","args":{{}},"needs_foreground":false,"write_resources":[],"expect":null}}]}}
+{{"thought":"执行中≤40字；终稿写报告","title":"≤16字","step_label":"≤16字本步意图","step_kind":"act_serial",{step_run_fmt}"status":"continue|success|failed|need_input","done":false,"observe_kinds":["none"],"observe_args":{{"obs_screen":{{"screen_target":"frontmost"}}}},"doc_refs":[],"architecture_skip_reason":"","options":[{{"id":"a","label":"选项A"}}],"delegate":null,"actions":[{{"kind":"{kinds}","args":{{}},"needs_foreground":false,"write_resources":[],"expect":null}}]}}
 - continue 时 done=false；success/failed 通常 done=true；need_input 时 done=false、actions 空。尚未命名则必须给 title。每步必须给 step_label（本步在办什么，≠ title）。"""
 
     return f"""你是操作分身的执行大脑。根据用户目标与当前观察，规划下一步控制动作，并点选**下一步**环境观察方式。
@@ -256,10 +296,17 @@ def _system_prompt(
 - hotkey：args.keys 为字符串列表，如 ["cmd","tab"]；禁止只写 {{"key":"cmd+tab"}}（虽兼容，但请用 keys 列表）。
 - fs_write/fs_replace/fs_patch：args.path + 相应字段；write_resources 必须列路径；replace/patch 的 old 必须与文件原文完全一致——只能从最近 fs_read/grep 命中行或失败回执「原文小窗」逐字复制，禁止按 goal 意图脑补闸门/文案（【补丁锚点未接地】）。
 - **本任务上下文**：远窗/compact 摘要没有的本任务事实 → `task_context_search` → `task_context_get`（msg_id/index 或 observe_path）；禁止把「曾经读过」当成不能再取证后 failed。工作区/笔记检索仍走 lore_search / fts / fs_*，不要混用。
-- **定位文件（条件）**：目标/历史已给明确 path → 定向 `fs_read`/`fs_patch`，**不必**先探仓。仅不知文件时：**优先** `fs_grep`（**pattern**）与 `fs_glob`（须收窄 `path`/`glob`）；`explore_search` 暂时降权，仅多关键词并行时用（默认只 grep，要符号加 `include_symbols=true`）。再 `code_symbols`。`fs_glob` 支持 `**` 与 `{{html,js}}`；仓外目录须传 `path=`。禁止整文件盲 `fs_read`。连续空结果再用 shell `ls`/`find`（macOS 勿用 `find -printf`）。
-- code_symbols / code_map：改代码前看结构。explore_search：默认只并行 grep；`include_symbols`/`symbols_query` 才走索引。fs_grep 参数名是 **pattern**。索引可疑时用 code_index_refresh。
+- **成功价值台账**：本步业务操作已确认成功 → `success_ledger_upsert`（acceptance/commands/config_refs/code_refs/targets/evidence 等）；可 `success_ledger_search`/`get`（**是否搜索由你自决**）。
+- **失败价值台账**：已确认错族/换道失败 → `failure_ledger_upsert`（symptom/cause/do_not_retry/commands_tried 等）；**禁止**每次工具 `ok=false` 都写。可 `failure_ledger_search`/`get`。
+- **台账晋升**：后台评完备/通用/效率，须达记忆配置阈值（默认 80%）才写 lore；失败卡过门为 **avoid**（勿当正例）。跨任务用 `lore_search(scopes=[lore])`；禁止只标 promoted；口令勿写入卡/lore。
+- **定位文件（条件）**：目标/历史已给明确 path → 定向 `fs_read`/`fs_patch`，**不必**先探仓。仅不知文件时：**先** `lore_search` scopes=`[work_name]`（或含项目名的窄 `fs_glob`）定子目录，再 `fs_grep(path=子目录, pattern=…)`；**禁止** `path=.` / 整 `work_root` / `/Users` 磁盘扫；**禁止**同意图 `lore_search`∥`fs_grep`。`explore_search` 暂时降权，仅多关键词且已收窄 path 时用。再 `code_symbols`。追问/续跑：先 `task_context_search` 找回旧 hits 目录，禁止再扩到整仓。仓外目录须传具体子目录 `path=`。禁止整文件盲 `fs_read`。连续空结果再用 shell `ls`/`find`（macOS 勿用 `find -printf`）。
+- code_symbols / code_map：改代码前看结构（含 html/css 的 id/class/selector/@media；须记忆配置 FAWAI_CODE_INDEX 开，默认开）。explore_search：默认只并行 grep；`include_symbols`/`symbols_query` 才走索引。fs_grep 参数名是 **pattern**。索引可疑时用 code_index_refresh。
+- **检索软偏好（不定死）**：有线索（path/目录/类名片段/path:line）后尽量 fs_grep 收窄，少同文件盲读；已确认相关处理（样式定义/函数体/明确选择器）后尽量精确 pattern 再小窗读或 patch；仍允许宽搜翻页、code_symbols、必要小窗读。
 - **脚本铲子生命周期**：造临时脚本/临时代码前先 `shovel_search`（可兼 `skill_search`）；命中则 `shell` 调已有铲 `invoke`；无命中再临时脚本。临时脚本须参数/env，禁止明文口令与未公开绝对路径；成功后自评三维分，通用性≥3 升 `fawai_shovels`（文首 meta+台账）或 `skill_write`，≤2 仅本案。
+- **成败与检索极性**：`skill_search` 分 `imitate`/`avoid`——avoid（lesson/failure）禁止当正例照抄 steps。`shovel_search` 的 `outcome.rate` 是运行成败维（≠ 文首设计三维分）；`poor`/近失败须对照当前 goal 换道或改参，禁止无视差评原样照抄。
 - **Python 扩展**：临时脚本/算数/装包用 `py_write`（path+content，相对会话根）→ 可选 `py_pip`（packages）→ `py_run`（script|code|module 三选一）；stdout/stderr 落盘 `runs/`；改产品源码仍 `fs_patch`，禁止用 py_* 改仓内业务文件；不做 pdb。
+- **交付物落点（软判断）**：需要输出文件且用户未指定项目/目录时，写到 `data/sessions/{{task_id}}/`（`py_run` 的 cwd / `FAWAI_PY_SESSION_ROOT`），**禁止**默认写到 work_root 或 monorepo 仓根；若上下文已感知具体目录/项目（用户话里的路径、本任务已定位子目录、目标在改已点名仓内子树）则写到该处。stdout 打 `OK: 路径`，生成类尽量传 `result_path`（相对会话根）便于附件卡预览/跨端下载。
+- **交付形态（软判断）**：用户要 PPT/演示文稿时，默认生成可预览的 `.pptx`（`py_run` + `python-pptx` 等，并填 `result_path`），**禁止**仅写大纲 `.md` 当完成；用户明确只要提纲/大纲除外。PDF/表格等同理（`.pdf` / `.xlsx`）。
 - fs_read：args.path 必填；按行定向读用 **offset**（1-based 起始行）+ **limit**；也兼容 start_line/end_line；文件头省略 offset 或写 1（勿依赖 0）。已有 path:line 时只准小窗核对，禁止整段重读。**故意**再次同窗读（如刚 fs_patch 后验收）须在该动作 args 设 `allow_repeat=true`（或本步 JSON 顶层同名字段），否则步骤重复守卫会按同构步裁决；无新意图勿滥标。
 - fs_grep / explore_search 命中只在工具结果观察里（默认全文回灌）；禁止臆造 `grep_result_*.txt` 再 fs_read_many。用适度 `head_limit`（默认宜 ≤40，硬顶 100）与 `context_before/after`（≤5）；达 head_limit 可自行加大或收窄后再搜翻页，无宽检索降质闸。
 - 多轮分片 `fs_read` 取证允许，证据够再改写，读不到目标材料则 failed/need_input。
@@ -267,24 +314,25 @@ def _system_prompt(
 - **动作段（少进模）**：不冲突的读和写**优先一次排出 4～8 个 actions**（含 fs_grep/fs_glob/fs_read/shovel_search，以及路径互不相交的 fs_patch/fs_write），`step_kind` 用 `act_parallel`，减少「一步一规划」。同一路径的读与写、同一路径的多写不要同批。前台、`shell` 不要与其它动作同批。带 expect 的动作单独串行。多步执行流**倾向**声明机读预期（非硬闸）：精确 `"expect":{{"contains":"…"}}`，模糊 `contains_any`（多个可接受标记）或 `not_contains`；纯探路与 **fs_patch/replace 默认可不带**；勿断言 `patch applied`（成功回执是 `· applied`）。不满足才停段反省。
 - **新建脚本的结果行**：`py_write` / 临时 shell / 新铲子尽最大努力在 stdout 打一行稳定标记（`OK` 或 `FAIL:原因`），业务失败用非零退出；随后 `py_run`/`shell` 用 expect 对齐该行。不要在脚本里再调模型。已有只读工具只靠 `ok` 即可，不必强行补 expect。
 - **step_kind（步骤分类）**：本段类型必填语义——`sense`（环境取证）/ `act_serial`（有序执行，expect 自衔接）/ `act_parallel`（不冲突的读和写并发，段末统一观察）/ `analyze`（小结/反省向）/ `finalize`（面向用户交稿）。缺省可由系统回填。`act_*`/`analyze`/`finalize` 时 **observe_kinds 优先 `["none"]`**，禁止无必要再刷工作区顶层浅列表；需要画面/控件树再点 `obs_screen`/`obs_ax`。路径不冲突的多个读或写用 `act_parallel`。
-- skill_write：args 含 id/title/when_to_use/steps（及可选 tags/source）；skill_search 用 args.query。
+- skill_write：args 含 id/title/when_to_use/steps（及可选 tags/source）；skill_search 用 args.query；命中分 imitate/avoid，avoid 勿照抄。
 - 个人知识库：先读【索引配置】search_menu（efficiency 5→1）；`lore_search` **应传 scopes**（如 tasks / work_name / lore）；先高效窄范围，空再扩；可一段并行多个不同 scopes；缺省全开混合勿当首选；回含 index_catalog；写入 lore_set / lore_note_upsert。
 {delegate_rule}{coding_extra}{image_extra}{gui_rule}{doc_screen_rule}- **观察选取**：本步 actions 只能依据「当前观察」与历史里的「执行结果（工具结果观察）」；不要假装看到未观察的 GUI。
-- 步首可能**无截屏图**，但观察摘要通常含「前台窗摘要」与「显示器清单」。目标依赖某 App 可见 UI 时，须先对照此前台态；需要画面证据再在 observe_kinds 点选 obs_screen，禁止无画面却断言屏幕上的具体内容。
-- observe_kinds：为**下一步**环境观察点选方式，必须从当前观察 meta.observe_candidates（或提示中的候选）里选；可选 obs_fs / obs_ax / obs_screen / none（以候选为准）。**纯执行段之后优先 none**；首轮 sense / 缺工作区轮廓才 obs_fs；GUI 优先 obs_ax，需要画面再 obs_screen；禁止无必要默选截屏——先看前台摘要。
-- **多屏 / 全屏 Space**：选 obs_screen 时填写 observe_args.obs_screen.screen_target（frontmost 默认 / main / index:N / all）；外接屏或未见目标时换屏或 app_focus（args.app），勿写死只截主屏；禁止一次扫完全部屏。
+- 步首可能**无截屏图**。方式为 `none` 时环境观察真跳过（无前台摘要、无画面）。真实取证（obs_fs / obs_screen / obs_ax）摘要可含「前台窗摘要」与「显示器清单」。目标依赖某 App 可见 UI 时：有前台态则先对照；需要画面证据再点选 obs_screen，禁止无画面却断言屏幕上的具体内容。
+- observe_kinds：为**下一步**环境观察点选方式，必须从当前观察 meta.observe_candidates（或提示中的候选）里选；可选 obs_fs / obs_ax / obs_screen / none（以候选为准）。**obs_* / none 禁止写入 actions[].kind**（取证不是工具）。**纯执行段之后优先 none**；首轮 sense / 缺工作区轮廓才 obs_fs；GUI 需要控件/画面再点 obs_ax / obs_screen；禁止无必要默选截屏。
+- **多屏 / 全屏 Space**：选 obs_screen 时填写 observe_args.obs_screen.screen_target（frontmost 默认 / main / index:N / all）；外接屏或未见目标时换屏或 app_focus（args.app），勿写死只截主屏；禁止一次扫完全部屏。**app_focus 以 frontmost 回证为准**：若工具 ok=false 写明「前台仍是 X」或观察 frontmost≠目标，须换道（再 focus / hotkey 切 Space / failed 交付），禁止只信 activated、禁止 open -g。
 - click：x/y 相对本张截图左上角（meta.origin_x/y）；须落在画面尺寸内；不要直接填虚拟桌面负坐标除非 coord_space=global。
 - 输入框已有待发文本：优先 press/hotkey 提交并截屏确认，避免反复点发送按钮坐标。
-- 工具输出由闭环自动做工具结果观察（含 fs_grep 的 path:line hits）；你根据摘要继续规划。已有命中行时按行号附近定向 fs_read / fs_patch，禁止无视 hits 去盲扫整文件。
+- 工具输出由闭环自动做工具结果观察（含 fs_grep 的 path:line hits）；你根据摘要继续规划。已有命中行时按行号附近定向 fs_read / fs_patch，禁止无视 hits 去盲扫整文件。已成功 fs_read 前端入口/样式或非空 grep 后，禁止 failed 写「找不到样式/源码/css」；须改写或分项说明真正阻塞。grep 0 且回执含 pattern_hint/字面 \\| 时先改正则再搜。
 - 执行结果会在下一轮以「执行结果（工具结果观察）」返回；成功时可能附带【观察反省】（进度/hints 软建议）；若上一轮失败，会先有【执行反省】裁决（retry/alternate/abort）。
 - 收到【执行反省】/【步骤重复】时必须遵守其 constraints；【观察反省】hints 仅供参考，与硬约束冲突时以执行反省/步骤重复为准。禁止无视裁决原样重试同一指纹动作；alternate 须换工具或换命令结构；无法换道则 status=failed。不得把「按 grep 行号附近定向 fs_read」当成盲目无效。
 - **面向用户的最终回答写在 success/failed 那一轮的 thought 里**（会话层会把该 thought 发给用户）；禁止把原始 stdout/top 全文当作结论；禁止在 thought 里写明文口令。
 - **问询/状态/查找/配置盘点收尾**：thought 须直接写出可验收事实（状态、数字、是否完成、边界、来源路径）；禁止只写「已获取/已汇总/已找到并结束」等过程元叙述。查硬件/配置时先一句结论，再用分项或表覆盖证据里已有的 GPU/CPU/内存/磁盘/系统/路径等维度，禁止只报一两项交差。材料不足则 failed 或 need_input，说明缺什么。
-- **查找账号/地址/配置落点**：先 `lore_search` scopes=`[lore]` 或 `[tasks]`（高效率）；不够再 `work_name`/`work_content`；仓内现扫才 `fs_grep`（效率1、收窄 path）；禁止指望旁路短 KV；禁止开场 `grep -r ~`；禁止 shell cat/cp 绕过 fs。远端可用 shell ssh / rsync 部署 shovel（凭据从已授权可读文件取进 env，勿把明文口令写进 thought）。
+- **查找账号/地址/配置落点**：先 `lore_search` scopes=`[lore]` 或 `[tasks]`（高效率）；不够再 `work_name`/`work_content`；仓内现扫才 `fs_grep`（效率1、**须**子目录 path）；禁止指望旁路短 KV；禁止开场 `grep -r ~`；禁止 shell cat/cp 绕过 fs。远端可用 shell ssh / rsync 部署 shovel（凭据从已授权可读文件取进 env，勿把明文口令写进 thought）。
+- **服务器/远端进展**（训练是否在跑、epoch、GPU）：主路径是凭据/已知 host → `ssh`/铲子查进程与日志；本地只允许定向读连接配置，**禁止**整仓 `fs_glob`/`fs_grep` 冒充进度。
 - **升级/部署到远端**：优先在 work_root 调用已有 `rsync-ssh-deploy.sh` / `ssh-run-with-pass.sh`，或临时 `fs_write` 脚本再 shell 执行；禁止只做 BatchMode 公钥探针就 abort。
-- **执行中澄清**：默认尽最大努力完成；可查可推断的不要问。用户表示远程/不在电脑边时，禁止 options 要求「粘贴配置/拷进工作区」。仅当继续猜会有明显坏结果（不可逆写/删、提交、外发、花钱、互斥执行路线必选一）时用 status=need_input；thought 为给用户的问句；done=false；actions 必须为空数组。若已有明确互斥选项，必须填 options（≥2 的 id+label），引导用户选一项，禁止改成开放式「请描述」。低风险缺省可合理假设并继续。
-{path_ledger}格式：
-{{"thought":"执行中短句；终稿按交稿体例写报告","title":"≤16字主题短名","step_label":"≤16字本步业务意图","step_kind":"act_serial","status":"continue|success|failed|need_input","done":false,"observe_kinds":["none"],"observe_args":{{"obs_screen":{{"screen_target":"frontmost"}}}},"doc_refs":["doc/功能/控制/说明.md"],"architecture_skip_reason":"","options":[{{"id":"a","label":"选项A"}}],"delegate":null,"actions":[{{"kind":"{kinds}","args":{{}},"needs_foreground":false,"write_resources":[],"expect":null}}]}}
+- **执行中澄清**：可查可推断的不要问。用户表示远程/不在电脑边时，禁止 options 要求「粘贴配置/拷进工作区」。仅当继续猜会有明显坏结果（不可逆写/删、提交、外发、花钱、互斥执行路线必选一）时用 status=need_input；thought 为给用户的问句；done=false；actions 必须为空数组。若已有明确互斥选项，必须填 options（≥2 的 id+label），引导用户选一项，禁止改成开放式「请描述」。低风险缺省可合理假设并继续。
+{path_ledger}{effort_rule}{fast_rule}{step_tier_rule}格式：
+{{"thought":"执行中短句；终稿按交稿体例写报告","title":"≤16字主题短名","step_label":"≤16字本步业务意图","step_kind":"act_serial",{step_run_fmt}"status":"continue|success|failed|need_input","done":false,"observe_kinds":["none"],"observe_args":{{"obs_screen":{{"screen_target":"frontmost"}}}},"doc_refs":["doc/功能/控制/说明.md"],"architecture_skip_reason":"","options":[{{"id":"a","label":"选项A"}}],"delegate":null,"actions":[{{"kind":"{kinds}","args":{{}},"needs_foreground":false,"write_resources":[],"expect":null}}]}}
 - status 为 success 或 failed 时通常 done 为 true；continue / need_input 时 done 为 false。
 - **title**：与目标主题强相关的短名（中文优先，≤16 字，不要任务 id、不要整句复述 goal）；若观察/历史提示「尚未命名」则本轮必须给出；已有正式标题时可省略。
 - **step_label**：本步业务意图短名（中文优先，≤16 字），写给会话步骤簇头看，如「查找转换脚本」「转 VOC XML」；禁止写 phase 名（规划中/观察反省）或工具名堆砌；每轮 continue/success/failed/need_input 都应给出；与 title（整条任务名）分开。
@@ -608,6 +656,25 @@ def _observation_user_message(
     return {"role": "user", "content": parts}
 
 
+def _screenshot_grounding_prompt_line() -> str:
+    """按当前截屏接地配置注入规划约束（vlm 无 ocr 表 / ocr 须表内 ref）。"""
+    try:
+        from fawai_avatar.observe.screen_grounding import get_screenshot_grounding
+
+        mode = get_screenshot_grounding()
+    except Exception:  # noqa: BLE001
+        mode = "vlm"
+    if mode == "ocr":
+        return (
+            "- 当前截屏接地=ocr：ui_click 的 ocrN 须来自观察摘要 OCR 表；"
+            "无表时先 observe_kinds 含 obs_screen 再建表，禁止臆造编号。\n"
+        )
+    return (
+        "- 当前截屏接地=vlm：截屏后无 ocrN 表，禁止编造 ocr ref；"
+        "用图估坐标 click，或 obs_ax+ui_click；画面态用下一步观察回证。\n"
+    )
+
+
 def _normalize_observe_kinds(raw: Any) -> list[str]:
     if raw is None:
         return []
@@ -627,11 +694,81 @@ def _normalize_observe_kinds(raw: Any) -> list[str]:
             m = "obs_screen"
         elif m in {"fs", "workspace", "files"}:
             m = "obs_fs"
+        elif m in {"ax", "accessibility", "ui_tree", "obs_a11y"}:
+            m = "obs_ax"
         elif m in {"skip", "no_observe"}:
             m = "none"
         if m not in out:
             out.append(m)
     return out
+
+
+# 模型偶发把取证方式写进 actions[].kind；须升格到 observe_kinds，禁止整任务 failed。
+_OBSERVE_AS_ACTION_KIND: dict[str, str] = {
+    "obs_screen": "obs_screen",
+    "screen": "obs_screen",
+    "screenshot": "obs_screen",
+    "ui_observe": "obs_screen",
+    "obs_ax": "obs_ax",
+    "ax": "obs_ax",
+    "accessibility": "obs_ax",
+    "ui_tree": "obs_ax",
+    "obs_a11y": "obs_ax",
+    "obs_fs": "obs_fs",
+    "fs": "obs_fs",
+    "workspace": "obs_fs",
+    "files": "obs_fs",
+    "none": "none",
+    "skip": "none",
+    "no_observe": "none",
+    "obs_shell": "obs_shell",
+}
+
+
+def _lift_observe_kinds_from_actions(
+    actions: list[Action],
+    observe_kinds: list[str],
+    observe_args: dict[str, Any],
+) -> tuple[list[Action], list[str], dict[str, Any], list[str]]:
+    """将误放入 actions 的 obs_* / screenshot 等升格为 observe_kinds。
+
+    返回 (保留的 actions, 合并后的 observe_kinds, observe_args, 升格掉的 kind 列表)。
+    """
+    if not actions:
+        return actions, observe_kinds, observe_args, []
+    kept: list[Action] = []
+    kinds = list(observe_kinds)
+    args_out = dict(observe_args or {})
+    lifted: list[str] = []
+    for action in actions:
+        raw_kind = (action.kind or "").strip().lower()
+        mapped = _OBSERVE_AS_ACTION_KIND.get(raw_kind)
+        if mapped is None:
+            kept.append(action)
+            continue
+        lifted.append(raw_kind)
+        if mapped not in kinds:
+            kinds.append(mapped)
+        # 错放动作上的 screen_target 并入 observe_args
+        if mapped == "obs_screen":
+            a = action.args if isinstance(action.args, dict) else {}
+            st = a.get("screen_target")
+            if st is not None:
+                screen = args_out.get("obs_screen")
+                if not isinstance(screen, dict):
+                    screen = {}
+                else:
+                    screen = dict(screen)
+                if screen.get("screen_target") is None:
+                    screen["screen_target"] = st
+                args_out["obs_screen"] = screen
+    if not lifted:
+        return actions, observe_kinds, observe_args, []
+    if "obs_screen" in kinds and "obs_screen" not in args_out:
+        args_out = _normalize_observe_args({**args_out, "obs_screen": {}})
+    else:
+        args_out = _normalize_observe_args(args_out)
+    return kept, kinds, args_out, lifted
 
 
 def _normalize_observe_args(raw: Any) -> dict[str, Any]:
@@ -665,6 +802,7 @@ def _plan_from_payload(data: dict[str, Any]) -> Plan:
         default_observe_kinds_for_step_kind,
         resolve_step_kind,
     )
+    from fawai_avatar.brain.step_run import resolve_step_run
     from fawai_avatar.task.title import (
         resolve_step_label,
         step_label_from_plan_payload,
@@ -691,6 +829,12 @@ def _plan_from_payload(data: dict[str, Any]) -> Plan:
     # 若点了截屏但未写 observe_args，仍带默认 frontmost，便于闭环传参
     if "obs_screen" in observe_kinds and "obs_screen" not in observe_args:
         observe_args = _normalize_observe_args({"obs_screen": {}})
+    actions, observe_kinds, observe_args, lifted_obs = _lift_observe_kinds_from_actions(
+        actions, observe_kinds, observe_args
+    )
+    raw_out = dict(data) if isinstance(data, dict) else {"_payload": data}
+    if lifted_obs:
+        raw_out["_lifted_observe_from_actions"] = list(lifted_obs)
     spec = parse_delegate(data.get("delegate"))
     # 委派段：本步由快模型执行，主脑 actions 应为空
     if spec is not None:
@@ -705,6 +849,11 @@ def _plan_from_payload(data: dict[str, Any]) -> Plan:
         actions=actions,
         observe_kinds=observe_kinds,
     )
+    step_run = resolve_step_run(
+        data.get("step_run")
+        or data.get("execution")
+        or data.get("run_mode")
+    )
     # act/analyze/finalize 未点选观察 → 下一步默认 none（治空壳 obs_fs）
     if not observe_kinds:
         default_obs = default_observe_kinds_for_step_kind(step_kind)
@@ -715,7 +864,7 @@ def _plan_from_payload(data: dict[str, Any]) -> Plan:
         actions=actions,
         done=done,
         status=status,
-        raw=data,
+        raw=raw_out,
         observe_kinds=observe_kinds,
         observe_args=observe_args,
         title=title_from_plan_payload(data),
@@ -725,6 +874,7 @@ def _plan_from_payload(data: dict[str, Any]) -> Plan:
             actions=actions,
         ),
         step_kind=step_kind,
+        step_run=step_run,
         delegate=spec.to_dict() if spec else None,
     )
 
@@ -767,6 +917,7 @@ def _soft_format_continue(plan: Plan) -> Plan:
         title=plan.title or "",
         step_label=plan.step_label or "规划格式重试",
         step_kind=plan.step_kind or "analyze",
+        step_run=plan.step_run or "",
         delegate=None,
     )
 
@@ -788,6 +939,7 @@ def _attach_llm_meta(
     result: dict[str, Any],
     elapsed_ms: int,
     prompt_profile: str | None = None,
+    attach_user_images: bool | None = None,
 ) -> Plan:
     """把本轮 LLM usage / 耗时 / 模型 / 思考写入 plan.raw，供时间线展示。"""
     raw = dict(plan.raw or {})
@@ -807,12 +959,16 @@ def _attach_llm_meta(
         raw["thinking_text"] = reasoning.strip()
     if prompt_profile:
         raw["prompt_profile"] = prompt_profile
+    if attach_user_images is not None:
+        raw["attach_user_images"] = bool(attach_user_images)
     if plan.observe_kinds:
         raw["observe_kinds"] = list(plan.observe_kinds)
     if plan.observe_args:
         raw["observe_args"] = dict(plan.observe_args)
     if plan.step_kind:
         raw["step_kind"] = plan.step_kind
+    if plan.step_run:
+        raw["step_run"] = plan.step_run
     if plan.delegate:
         raw["delegate"] = dict(plan.delegate)
     return Plan(
@@ -826,6 +982,7 @@ def _attach_llm_meta(
         title=plan.title or "",
         step_label=plan.step_label or "",
         step_kind=plan.step_kind or "",
+        step_run=plan.step_run or "",
         delegate=dict(plan.delegate) if plan.delegate else None,
     )
 
@@ -850,6 +1007,7 @@ class Brain:
         self._plan_allow_todos = bool(allow_todos) and planner_role != "fast"
         self._plan_step_todos = list(step_todos or [])
         self._history_compact_out = dict(history_compact or {})
+        # 由闭环在 plan 前写入 _plan_effort / _plan_fast（task.meta）
         if _mock_enabled():
             return mock_plan_for_goal(goal, history=history)
 
@@ -1063,6 +1221,9 @@ class Brain:
         history: list[dict[str, Any]] | None = None,
         prior_alternate_fps: set[str] | None = None,
         on_llm_delta: Any | None = None,
+        effort: bool = False,
+        fast: bool = False,
+        tool_obs_summary: str = "",
     ) -> Reflection:
         """动作失败后的执行反省：retry / alternate / abort。"""
         return run_reflect(
@@ -1075,6 +1236,9 @@ class Brain:
             prior_alternate_fps=prior_alternate_fps,
             llm=None if _mock_enabled() else self.llm,
             on_llm_delta=on_llm_delta,
+            effort=bool(effort),
+            fast=bool(fast),
+            tool_obs_summary=tool_obs_summary,
         )
 
     def obs_reflect(
@@ -1086,8 +1250,13 @@ class Brain:
         tool_feedback: str = "",
         data_dir: str | None = None,
         on_llm_delta: Any | None = None,
+        effort: bool = False,
+        brief: bool = False,
     ) -> ObsReflection:
-        """工具结果成功后的观察反省：进度小结 + 下一规划软建议。"""
+        """工具结果成功后的观察反省：进度小结 + 下一规划软建议。
+
+        brief=True 为短观察反省（规划 step_run=brief）。
+        """
         return run_obs_reflect(
             goal,
             actions,
@@ -1096,6 +1265,8 @@ class Brain:
             data_dir=data_dir,
             llm=None if _mock_enabled() else self.llm,
             on_llm_delta=on_llm_delta,
+            effort=bool(effort),
+            brief=bool(brief),
         )
 
     def stagnation(
@@ -1109,6 +1280,7 @@ class Brain:
         history: list[dict[str, Any]] | None = None,
         prior_judged: bool = False,
         locate_anchors: list[str] | None = None,
+        fast: bool = False,
     ) -> Reflection:
         """成功路径步骤重复：continue / alternate / abort（代码不硬止损）。"""
         return run_stagnation(
@@ -1121,6 +1293,7 @@ class Brain:
             prior_judged=prior_judged,
             locate_anchors=locate_anchors,
             llm=None if _mock_enabled() else self.llm,
+            fast=bool(fast),
         )
 
     def _plan_once(
@@ -1156,11 +1329,15 @@ class Brain:
             and not force_json
             and planner_role != "fast"
         )
+        plan_fast = bool(getattr(self, "_plan_fast", False))
         system = _system_prompt(
             coding=bool(profile.include_coding_context),
             goal=goal,
             profile=profile,
             planner_role=planner_role,
+            effort=bool(getattr(self, "_plan_effort", False)),
+            fast=plan_fast,
+            step_tier=bool(getattr(self, "_plan_step_tier", False)),
         )
         if mutate_prefer and verify_read:
             system = (
@@ -1203,18 +1380,26 @@ class Brain:
             else None
         )
         t0 = time.perf_counter()
-        # 主脑开思考（可预算）；快模型段关思考——见 llm/thinking.py
+        # 主脑开思考（可预算）；快模型段 / 任务 Fast 关思考——见 llm/thinking.py
         thinking_role = "fast" if planner_role == "fast" else "main"
+        chat_kw: dict[str, Any] = {
+            "model": model,
+            "route_role": "fast" if planner_role == "fast" else None,
+            "thinking_role": thinking_role,
+            "on_delta": on_llm_delta,
+        }
+        if plan_fast:
+            chat_kw["enable_thinking"] = False
         result = self.llm.chat(
             messages,
             tools=tools,
-            model=model,
-            route_role="fast" if planner_role == "fast" else None,
-            thinking_role=thinking_role,
-            on_delta=on_llm_delta,
+            **chat_kw,
         )
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
-        meta_kw = {"prompt_profile": profile.id}
+        meta_kw = {
+            "prompt_profile": profile.id,
+            "attach_user_images": bool(profile.attach_user_images),
+        }
         if not result.get("ok"):
             err = str(result.get("error") or "LLM 调用失败")
             return _attach_llm_meta(

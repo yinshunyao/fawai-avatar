@@ -1,5 +1,5 @@
 # term:会话通道  doc:doc/功能/会话通道/说明.md
-"""远端 API 阻塞等待时的心跳进度（只广播、不落业务结果）。"""
+"""阻塞等待时的心跳进度（远端 API 或本机长工具；只广播、不落业务结果）。"""
 from __future__ import annotations
 
 import threading
@@ -11,7 +11,7 @@ ProgressEmit = Callable[..., None]
 
 
 class ApiWaitProgress:
-    """阻塞调用期间按固定间隔刷新「已等待 Ns」，便于时间线看到 API 未卡死。"""
+    """阻塞调用期间按固定间隔刷新「已等待 Ns」，便于时间线看到未卡死。"""
 
     def __init__(
         self,
@@ -22,14 +22,16 @@ class ApiWaitProgress:
         waiting_text: str,
         interval_sec: float = 2.0,
         cancelled: Callable[[], bool] | None = None,
+        mark_api_wait: bool = True,
         **base_extra: Any,
     ) -> None:
         self._emit = emit
         self._phase = phase
         self._step = step
-        self._waiting_text = (waiting_text or "API 调用中…").strip()
+        self._waiting_text = (waiting_text or "等待中…").strip()
         self._interval = max(0.5, float(interval_sec))
         self._cancelled = cancelled
+        self._mark_api_wait = bool(mark_api_wait)
         self._base = dict(base_extra)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -64,10 +66,11 @@ class ApiWaitProgress:
         extra: dict[str, Any] = {
             **self._base,
             "live": True,
-            "api_wait": True,
             "wait_elapsed_sec": elapsed_s,
         }
+        if self._mark_api_wait:
+            extra["api_wait"] = True
         try:
             self._emit(text, phase=self._phase, step=self._step, **extra)
-        except Exception:  # noqa: BLE001 — 心跳失败不得打断 API
+        except Exception:  # noqa: BLE001 — 心跳失败不得打断主流程
             return

@@ -308,6 +308,13 @@ def name_index_enabled(*, default: bool = True) -> bool:
     return get_memory_store().name_index_enabled(default=default)
 
 
+def code_index_enabled(*, default: bool = True) -> bool:
+    """代码符号索引（code_symbols/code_map）。真源记忆配置 FAWAI_CODE_INDEX，默认开。"""
+    from fawai_avatar.memory_settings import get_memory_store
+
+    return get_memory_store().code_index_enabled(default=default)
+
+
 def name_index_dir() -> str:
     """文件名索引覆盖目录（原始配置，兼容）。"""
     from fawai_avatar.memory_settings import get_memory_store

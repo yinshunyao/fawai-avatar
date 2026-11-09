@@ -333,6 +333,7 @@ def main() -> None:
                 {
                     "id": "b",
                     "kind": "code_patch",
+                    "direction": "tool_code",
                     "title": "细化拒因",
                     "rationale": "报错误导",
                     "impact": "改工具本身契约文案",
@@ -341,8 +342,11 @@ def main() -> None:
                 },
             ]
         )
+        assert ordered[0]["direction"] == "tool_code", ordered
         assert ordered[0]["title"] == "细化拒因", ordered
+        assert ordered[0]["impact"].startswith("【工具代码】"), ordered
         assert ordered[0]["selected_default"] is True
+        assert ordered[1]["direction"] == "lesson", ordered
         assert ordered[0]["id"] == "1" and ordered[1]["id"] == "2"
         print("multi-turn-materials-ok")
 
@@ -363,10 +367,23 @@ def main() -> None:
         # 枢纽：放行分析 → 全部执行
         async def _hub_approve() -> None:
             hub = SessionHub(supervisor, auto_run_worker=False)
+            published: list[Message] = []
+
+            async def _cap(m: Message) -> None:
+                published.append(m)
+
+            hub.add_broadcaster(_cap)
             card = await hub.start_review([tid4, tid5], distill=True, ratchet=False)
             assert card.kind == "card", card
-            assert "【复盘指令】" in (card.text or ""), card.text
             assert (card.meta or {}).get("phase") == "awaiting_approval"
+            assert (card.meta or {}).get("actions"), card.meta
+            # 预置指令作首条用户气泡（与普通对话同序）；卡只承载放行钮
+            user_bubbles = [
+                m for m in published if m.role == "user" and m.kind == "text"
+            ]
+            assert user_bubbles and "【复盘指令】" in (user_bubbles[0].text or ""), (
+                user_bubbles[0].text if user_bubbles else None
+            )
             rid = card.task_id
             assert rid
             waiting = supervisor.get_task(rid)

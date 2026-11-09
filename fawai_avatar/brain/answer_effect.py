@@ -1,11 +1,12 @@
 # term:答复覆盖闸门  doc:doc/功能/完成任务/说明.md
-"""问询/状态/配置盘点类目标：success 的 thought 须直接回答用户，禁止过程元叙述与过薄终稿。"""
+"""问询/状态/配置盘点/交稿输出类：success 的 thought 须直接回答用户，禁止过程元叙述与交稿意图句。"""
 
 from __future__ import annotations
 
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 from fawai_avatar.brain.prompt_profile import looks_like_fs_web_goal, report_delivery_rule
 from fawai_avatar.brain.write_effect import (
@@ -15,6 +16,7 @@ from fawai_avatar.brain.write_effect import (
 
 ANSWER_COVERAGE_MARKER = "【答复覆盖】"
 UNREAD_DUMP_MARKER = "【压缩未读】"
+DELIVERY_INTENTION_MARKER = "【交稿意图】"
 
 # 过程元叙述：描述「做了什么」而非「答了什么」
 _META_PROCESS_PHRASES = (
@@ -110,6 +112,56 @@ _MUTATE_HINTS = (
     "优化样式",
 )
 
+# 用户要「输出到会话」：终稿须有载荷，禁止只写盘/只写意图（勿裸匹配「输出到文件」）
+_OUTPUT_DELIVERY = re.compile(
+    r"("
+    r"直接输出"
+    r"|输出(?:完整|全部|全文)(?:的)?(?:报告|脚本|内容|PPT|ppt)?"
+    r"|输出(?:报告|脚本|PPT|ppt|全文)"
+    r"|直接给(?:我)?(?:看|吧)?"
+    r"|发给我|贴出来|贴到对话|展示完整"
+    r"|交(?:一份)?报告"
+    r"|把.{0,24}(?:贴出来|发给我|贴到对话)"
+    r"|output (?:the )?(?:full |complete )?(?:report|ppt|script)"
+    r"|show (?:me )?(?:the )?(?:full |complete )?(?:report|ppt|script)"
+    r")",
+    re.I,
+)
+
+# 交稿意图句：下一步计划冒充终稿（含数字也不算载荷）
+_DELIVERY_INTENTION = re.compile(
+    r"("
+    r"然后向用户交付"
+    r"|向用户交付最终"
+    r"|交付最终报告"
+    r"|准备(?:向用户)?(?:输出|交付|交稿)"
+    r"|了解.{0,48}(?:结构|内容).{0,24}然后"
+    r"|读取.{0,80}然后(?:向用户)?(?:交付|输出|交稿)"
+    r"|下一步(?:再)?(?:输出|交付|交稿|整理)"
+    r"|即将(?:输出|交付|交稿)"
+    r"|准备输出最终"
+    r"|再向用户(?:交付|输出|交稿)"
+    r"|then (?:deliver|output|send) (?:the )?(?:final )?(?:report|answer)"
+    r"|will (?:deliver|output|send) (?:the )?(?:final )?(?:report|answer)"
+    r")",
+    re.I,
+)
+
+_DELIVERY_PATH = re.compile(
+    r"("
+    r"`[^`\n]{3,180}`"
+    r"|\b[\w./-]+\.(?:md|txt|pptx|docx|pdf|html)\b"
+    r"|shared/"
+    r"|data/sessions/"
+    r")",
+    re.I,
+)
+
+_DELIVERY_STRUCTURE = re.compile(
+    r"(Slide\s*\d|第\s*\d+\s*页|^#{1,3}\s|\n-\s|\n\d+\.\s)",
+    re.I | re.M,
+)
+
 # 盘点维度（通用锚点；不绑单一厂商/机型）
 _DIM_BUCKETS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("gpu", re.compile(r"rtx|gtx|gpu|显[存卡]|nvidia|cuda|4090|a100|h100", re.I)),
@@ -145,6 +197,8 @@ _REJECT_FAIL_MSG = {
     "placeholder": "最终回复为空或占位，拒绝假成功",
     "too_short": "最终回复过短，未覆盖目标问点，拒绝假成功",
     "meta_narration": "最终回复是过程元叙述，未直接回答目标问点，拒绝假成功",
+    "delivery_intention": "最终回复是交稿意图句（准备/然后交付），未给出可验收正文，拒绝假成功",
+    "delivery_thin": "最终回复缺少交稿载荷（正文或路径+摘要），拒绝假成功",
     "inventory_thin": "最终回复配置/状态盘点过薄，未覆盖证据维度，拒绝假成功",
     "lookup_no_path": "最终回复未写明账号/配置来源路径，拒绝假成功",
     "unread_dump": "压缩观察全文未读就收尾，拒绝假成功",
@@ -165,11 +219,61 @@ def goal_is_inventory_report(goal: str) -> bool:
     return bool(_INVENTORY.search((goal or "").strip()))
 
 
-def goal_needs_answer_coverage_gate(goal: str) -> bool:
-    """问询/状态/查找/配置盘点：收尾 thought 须含面向用户的可验收答复。"""
+def goal_asks_output_delivery(text: str) -> bool:
+    """用户要会话侧输出/贴出报告（非仅落盘）。"""
+    return bool(_OUTPUT_DELIVERY.search((text or "").strip()))
+
+
+def followup_texts(followups: list[Any] | None) -> list[str]:
+    """从 meta.followups 抽出非空正文（保序）。"""
+    out: list[str] = []
+    for item in followups or []:
+        if isinstance(item, dict):
+            text = str(item.get("text") or "").strip()
+        else:
+            text = str(item or "").strip()
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
+def compose_answer_goal(
+    goal: str, followups: list[Any] | None = None
+) -> str:
+    """首条 goal + 近期追问，供交稿/答复验收对照。"""
+    parts: list[str] = []
+    g = (goal or "").strip()
+    if g:
+        parts.append(g)
+    for text in followup_texts(followups)[-6:]:
+        parts.append(text)
+    return "\n".join(parts)
+
+
+def goal_needs_delivery_payload_gate(
+    goal: str, followups: list[Any] | None = None
+) -> bool:
+    """输出/交稿类（含追问）：空 actions success 须有会话载荷。常开，不依赖答复覆盖 env。"""
+    texts = [(goal or "").strip(), *followup_texts(followups)]
+    for text in texts:
+        if not text:
+            continue
+        if goal_needs_visible_effect_gate(text):
+            continue
+        if looks_like_fs_web_goal(text) and any(h in text for h in _MUTATE_HINTS):
+            continue
+        if goal_asks_output_delivery(text):
+            return True
+    return False
+
+
+def goal_needs_answer_coverage_gate(
+    goal: str, followups: list[Any] | None = None
+) -> bool:
+    """问询/状态/查找/配置盘点/输出交稿：收尾 thought 须含面向用户的可验收答复。"""
     if not answer_coverage_gate_enabled():
         return False
-    text = (goal or "").strip()
+    text = compose_answer_goal(goal, followups).strip()
     if not text:
         return False
     # 页面改动走可见副作用闸，不叠本闸
@@ -178,18 +282,69 @@ def goal_needs_answer_coverage_gate(goal: str) -> bool:
     if looks_like_fs_web_goal(text) and any(h in text for h in _MUTATE_HINTS):
         return False
     if any(h in text for h in _MUTATE_HINTS) and not _ASK.search(text):
-        return False
+        if not goal_asks_output_delivery(text):
+            return False
     if "?" in text or "？" in text:
         return True
     if goal_is_lookup(text) or goal_is_inventory_report(text):
         return True
+    if goal_asks_output_delivery(text):
+        return True
     return bool(_ASK.search(text))
+
+
+def thought_is_delivery_intention(thought: str) -> bool:
+    """终稿写成「准备读取/然后交付」等下一步计划，而非给用户看的正文。"""
+    t = (thought or "").strip()
+    if not t:
+        return False
+    return bool(_DELIVERY_INTENTION.search(t))
+
+
+def thought_has_delivery_payload(thought: str) -> bool:
+    """交稿类：须有可验收正文，或产物路径 + 短摘要。"""
+    t = (thought or "").strip()
+    if not t or thought_is_placeholder(t) or thought_is_delivery_intention(t):
+        return False
+    if thought_is_meta_process_narration(t):
+        return False
+    has_path = bool(_DELIVERY_PATH.search(t))
+    structured = bool(_DELIVERY_STRUCTURE.search(t)) or (
+        t.count("\n") >= 3 and len(t) >= 120
+    )
+    if has_path and len(t) >= 60:
+        return True
+    if structured and len(t) >= 80:
+        return True
+    if len(t) >= 200:
+        return True
+    return False
+
+
+def delivery_payload_reject_reason(
+    thought: str, *, goal: str = ""
+) -> str | None:
+    """交稿/输出类拒因；None 表示可通过。"""
+    del goal
+    t = (thought or "").strip()
+    if thought_is_placeholder(t):
+        return "placeholder"
+    if thought_is_delivery_intention(t):
+        return "delivery_intention"
+    if len(t) < 24:
+        return "too_short"
+    if not thought_has_delivery_payload(t):
+        return "delivery_thin"
+    return None
 
 
 def thought_is_meta_process_narration(thought: str) -> bool:
     """只陈述查询/汇总过程、无事实载荷时视为元叙述假收尾。"""
     t = (thought or "").strip()
     if not t:
+        return True
+    # 交稿意图句：即便含页数等数字，仍不是面向用户的载荷
+    if thought_is_delivery_intention(t):
         return True
     if _META_CLOSING.search(t):
         return True
@@ -254,11 +409,15 @@ def answer_coverage_reject_reason(thought: str, *, goal: str) -> str | None:
     t = (thought or "").strip()
     if thought_is_placeholder(t):
         return "placeholder"
+    if thought_is_delivery_intention(t):
+        return "delivery_intention"
     if thought_is_meta_process_narration(t):
         return "meta_narration"
     if len(t) < 8:
         return "too_short"
     g = (goal or "").strip()
+    if goal_asks_output_delivery(g) and not thought_has_delivery_payload(t):
+        return "delivery_thin"
     if goal_is_inventory_report(g) and not thought_covers_inventory(t, goal=g):
         return "inventory_thin"
     if goal_is_lookup(g) and not thought_covers_lookup_source(t):
@@ -268,7 +427,7 @@ def answer_coverage_reject_reason(thought: str, *, goal: str) -> str | None:
 
 
 def thought_ok_for_answer_coverage(thought: str, *, goal: str) -> bool:
-    """问询类 success 的 thought 是否足以交给用户。"""
+    """问询/交稿类 success 的 thought 是否足以交给用户。"""
     return answer_coverage_reject_reason(thought, goal=goal) is None
 
 
@@ -297,15 +456,62 @@ def format_unread_dump_prompt(*, paths: list[str]) -> str:
     )
 
 
+def format_delivery_payload_prompt(
+    *,
+    goal: str,
+    thought: str = "",
+    reason: str | None = None,
+    write_set: list[str] | None = None,
+) -> str:
+    """交稿意图句 / 输出类追问：强制把载荷写进 thought。"""
+    g = (goal or "").strip()[:200] or "(目标)"
+    why = (reason or "").strip() or delivery_payload_reject_reason(
+        thought, goal=goal
+    )
+    parts = [
+        f"{DELIVERY_INTENTION_MARKER}目标需要面向用户的交稿（{g}）。",
+    ]
+    if why == "delivery_intention":
+        parts.append(
+            "上一轮 thought 是交稿意图（准备读取/然后交付/下一步输出），不是给用户看的正文。"
+        )
+    elif why == "delivery_thin":
+        parts.append("上一轮缺少可验收交稿载荷（正文过薄，或未给产物路径+摘要）。")
+    elif why == "too_short" or why == "placeholder":
+        parts.append("上一轮终稿为空、占位或过短。")
+    paths = [str(p).strip() for p in (write_set or []) if str(p).strip()][:4]
+    if paths:
+        joined = "、".join(f"`{p}`" for p in paths)
+        parts.append(f"已有写入产物可引用：{joined}。")
+    parts.extend(
+        [
+            "本步必须直接写出面向用户的最终回复：完整报告正文，或「一句结论 + 产物相对路径 + 短摘要」；",
+            "禁止再写「读取…然后交付」「准备输出最终报告」等下一步计划；",
+            "写盘成功 ≠ 已向用户交稿。",
+            "本步必须 status=success、done=true、actions 为空数组；thought 即为给用户看的最终回复。",
+            report_delivery_rule(goal).strip(),
+            "若材料仍不足，改 status=failed 或 need_input，说明缺什么。",
+        ]
+    )
+    return "".join(parts)
+
+
 def format_answer_coverage_prompt(
     *,
     goal: str,
     thought: str = "",
     reason: str | None = None,
     unread_dumps: list[str] | None = None,
+    write_set: list[str] | None = None,
 ) -> str:
     g = (goal or "").strip()[:160] or "(目标)"
     why = (reason or "").strip() or answer_coverage_reject_reason(thought, goal=goal)
+    if why in {"delivery_intention", "delivery_thin"} or goal_asks_output_delivery(
+        goal
+    ):
+        return format_delivery_payload_prompt(
+            goal=goal, thought=thought, reason=why, write_set=write_set
+        )
     parts = [
         f"{ANSWER_COVERAGE_MARKER}目标偏问询/状态/查找或配置盘点（{g}）。",
     ]
@@ -323,7 +529,8 @@ def format_answer_coverage_prompt(
         [
             "请给出面向用户的最终自然语言回答：直接写清关键事实"
             "（状态、数字、是否完成、边界、来源路径），",
-            "禁止只写「已获取/已汇总/已找到并结束」这类过程元叙述。",
+            "禁止只写「已获取/已汇总/已找到并结束」这类过程元叙述；",
+            "禁止把「准备交付/然后向用户输出」等下一步计划写进终稿。",
             "禁止粘贴原始 stdout 全文；禁止在 thought 里写出明文口令/密码。",
         ]
     )

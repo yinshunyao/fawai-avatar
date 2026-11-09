@@ -36,6 +36,7 @@ REFLECT_DIGEST_RULE = (
     "禁止把摘录当作原文引用，禁止当作已读全文，"
     "禁止为补全摘录去读取落盘或重跑同一命令。"
     "原文在规划 history 的工具观察里；信息是否够用由规划决定。"
+    "大文件用头/尾/中间起行取证是正常手段；摘录已含头+尾时不得因未整文件 cat 判关键缺失。"
 )
 
 
@@ -201,16 +202,34 @@ def mock_obs_reflect(
     )
 
 
-def obs_reflect_system_prompt() -> str:
-    return """你是操作分身的观察反省模块。本步工具动作已成功，工具结果已回灌。
+def obs_reflect_system_prompt(*, effort: bool = False, brief: bool = False) -> str:
+    from fawai_avatar.brain.effort import obs_reflect_effort_rule
+
+    effort_line = obs_reflect_effort_rule(effort=effort)
+    if brief:
+        return f"""你是操作分身的**短观察反省**模块（step_run=brief）。本步工具已成功。
+只做轻量核对：有没有跑偏、能否继续。禁止长篇推理。
+只输出一个 JSON 对象，不要 markdown 或其它前后缀。
+字段：
+{{"thought":"≤40字","progress":"advanced|stalled|enough_to_answer","notes":["≤2条短要点"],"hints":["≤2条软建议"]}}
+含义：
+- advanced：对本步目标有推进
+- stalled：成功但对目标几乎无用
+- enough_to_answer：已够作答或收尾
+{effort_line}
+禁止 abort；禁止复述整段 stdout；禁止明文口令。
+超预算材料是压缩摘录不是原文；勿要求补读落盘还原。"""
+
+    return f"""你是操作分身的观察反省模块。本步工具动作已成功，工具结果已回灌。
 请消化结果，给出进度判断与给下一轮规划的软建议。
 只输出一个 JSON 对象，不要 markdown 或其它前后缀。
 字段：
-{"thought":"≤80字小结","progress":"advanced|stalled|enough_to_answer","notes":["已证实要点"],"hints":["给下一轮规划的软建议"]}
+{{"thought":"≤80字小结","progress":"advanced|stalled|enough_to_answer","notes":["已证实要点"],"hints":["给下一轮规划的软建议"]}}
 含义：
 - advanced：相对目标有实质进展
 - stalled：结果成功但对目标几乎无推进（空 hits、答非所问等）
 - enough_to_answer：证据已够面向用户作答或收尾验收
+{effort_line}
 禁止 abort/止损；禁止要求原样重复无新意图的同构步。
 hints 为软建议，不是失败路径的硬约束；失败时仍以【执行反省】为准。
 禁止在 thought/notes 写明文口令；不要粘贴整段 stdout。
@@ -219,6 +238,8 @@ hints 为软建议，不是失败路径的硬约束；失败时仍以【执行�
 - 摘录只用于分析处置策略：进展、是否够收尾、下一类动作。
 - 禁止把摘录当作原文引用，禁止当作已读全文。
 - 禁止因为摘录不全而要求补读落盘、或重跑同一命令来还原原文。原文在规划 history 的工具观察里；够不够由规划决定。
+- 大文件取证：查开头、查结尾、按中间起始行读窗是正常手段（head/tail/sed -n、fs_read offset/limit）。本步若已按窗口取到所需字段，不得因「未整文件 cat」判关键缺失或 stalled。
+- 压缩摘录若已含「头…行」与「尾…行」，尾部证据视为可见；勿只凭开头片段否定结尾已出现的路径/指标。
 - 摘录里已经能判断方向时，按已见证据给 advanced / stalled / enough_to_answer。"""
 
 
@@ -268,6 +289,7 @@ def format_obs_reflection_for_history(reflection: ObsReflection) -> str:
         lines.append(
             "preview: 反省看到的是压缩摘录（非原文），只用于分析处置策略，不能作为原文处理。"
             "禁止把摘录当作原文引用，禁止为补全摘录去读取落盘或重跑同一命令。"
+            "摘录已含头+尾时不得因未整文件 cat 判关键缺失；大文件用头/尾/中间起行取证属正常。"
             "原文在上一条工具观察；是否再取证由规划决定。"
         )
     lines.append(
@@ -333,8 +355,13 @@ def run_obs_reflect(
     data_dir: str | Path | None = None,
     llm: Any | None = None,
     on_llm_delta: Any | None = None,
+    effort: bool = False,
+    brief: bool = False,
 ) -> ObsReflection:
-    """观察反省入口（供 Brain.obs_reflect / 闭环调用）。"""
+    """观察反省入口（供 Brain.obs_reflect / 闭环调用）。
+
+    brief=True：短观察反省（step_run=brief），短提示且强制关深度思考。
+    """
     mock_on = os.environ.get("FAWAI_BRAIN_MOCK", "").strip().lower() in {
         "1",
         "true",
@@ -348,26 +375,39 @@ def run_obs_reflect(
         data_dir=data_dir,
     )
     if mock_on or llm is None:
-        return _attach_preview_meta(
-            mock_obs_reflect(
-                goal, actions, results, tool_feedback=tool_feedback
-            ),
-            preview_meta,
+        base = mock_obs_reflect(
+            goal, actions, results, tool_feedback=tool_feedback
         )
+        if brief:
+            base.thought = (base.thought or "")[:40]
+            base.notes = list(base.notes or [])[:2]
+            base.hints = list(base.hints or [])[:2]
+            raw = dict(base.raw or {})
+            raw["step_run"] = "brief"
+            base.raw = raw
+        return _attach_preview_meta(base, preview_meta)
 
     from fawai_avatar.llm.client import LlmClient
 
     client = llm if isinstance(llm, LlmClient) else LlmClient()
     messages = [
-        {"role": "system", "content": obs_reflect_system_prompt()},
+        {
+            "role": "system",
+            "content": obs_reflect_system_prompt(
+                effort=bool(effort), brief=bool(brief)
+            ),
+        },
         {"role": "user", "content": user_msg},
     ]
-    result = client.chat(
-        messages,
-        tools=None,
-        thinking_role="obs_reflect",
-        on_delta=on_llm_delta,
-    )
+    chat_kw: dict[str, Any] = {
+        "tools": None,
+        "thinking_role": "obs_reflect",
+        "on_delta": on_llm_delta,
+    }
+    if brief:
+        # 短观察反省：显式关思考，盖过档案
+        chat_kw["enable_thinking"] = False
+    result = client.chat(messages, **chat_kw)
     if not result.get("ok"):
         base = mock_obs_reflect(
             goal, actions, results, tool_feedback=tool_feedback
@@ -386,7 +426,13 @@ def run_obs_reflect(
         return _attach_preview_meta(base, preview_meta)
 
     reflection = obs_reflection_from_payload(payload)
+    if brief:
+        reflection.thought = (reflection.thought or "")[:40]
+        reflection.notes = list(reflection.notes or [])[:2]
+        reflection.hints = list(reflection.hints or [])[:2]
     raw = dict(reflection.raw or {})
+    if brief:
+        raw["step_run"] = "brief"
     usage = result.get("usage") if isinstance(result.get("usage"), dict) else None
     if usage:
         raw["usage"] = usage
@@ -399,7 +445,8 @@ def run_obs_reflect(
     if result.get("model"):
         raw["model"] = result.get("model")
     if (
-        usage
+        brief
+        or usage
         or (isinstance(thinking, dict) and thinking)
         or result.get("model")
         or raw.get("thinking_text")

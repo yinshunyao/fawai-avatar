@@ -371,7 +371,7 @@ def scope_enabled(policy: dict[str, Any], scope_id: str) -> bool:
 
 
 def normalize_scopes(raw: Any) -> list[str] | None:
-    """解析 scopes；None/空 = 未指定（兼容全开已启用）。"""
+    """解析 scopes；None = 未指定（由 resolve_search_scopes 扩成当前已开通道）。"""
     if raw is None:
         return None
     if isinstance(raw, str):
@@ -408,6 +408,47 @@ def normalize_scopes(raw: Any) -> list[str] | None:
         seen.add(sid)
         out.append(sid)
     return out
+
+
+def enabled_search_scopes(policy: dict[str, Any]) -> list[str]:
+    """记忆配置当前已开、且 lore_search 可执行的范围（不含 fs_grep 现扫）。"""
+    out: list[str] = []
+    for s in SEARCH_SCOPE_DEFS:
+        if s.get("external"):
+            continue
+        sid = str(s["id"])
+        if scope_enabled(policy, sid):
+            out.append(sid)
+    return out
+
+
+def resolve_search_scopes(
+    raw: Any,
+    policy: dict[str, Any],
+) -> tuple[list[str], list[str]]:
+    """
+    请求 scopes ∩ 记忆配置开关。
+
+    返回 (实际执行的 scopes, 因开关关闭而跳过的 scopes)。
+    raw 未指定（None）→ 只跑当前已开通道，不碰已关库里的残留索引。
+    """
+    requested = normalize_scopes(raw)
+    enabled = enabled_search_scopes(policy)
+    enabled_set = set(enabled)
+    if requested is None:
+        return list(enabled), []
+    run: list[str] = []
+    skipped: list[str] = []
+    seen: set[str] = set()
+    for sid in requested:
+        if sid in seen:
+            continue
+        seen.add(sid)
+        if sid in enabled_set:
+            run.append(sid)
+        else:
+            skipped.append(sid)
+    return run, skipped
 
 
 def search_menu_for_agent(policy: dict[str, Any]) -> list[dict[str, Any]]:

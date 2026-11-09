@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from fawai_avatar.memory_index.common import (
+    _resolve_data_dir,
+    _under_data_dir,
     is_text_path,
     parse_roots,
     root_too_broad,
@@ -42,22 +44,36 @@ def _union_watch_roots() -> list[Path]:
     merged = ":".join(p for p in raw_parts if p)
     roots = parse_roots(merged)
     out: list[Path] = []
+    seen: set[str] = set()
     for r in roots:
         if root_too_broad(r):
             continue
-        if r.is_dir():
-            out.append(r)
+        if not r.is_dir():
+            continue
+        key = str(r.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
     return out
 
 
 def _path_indexable(path: Path) -> bool:
+    """是否应触发文件名/正文增量索引。
+
+    与扫盘一致：跳过 ``FAWAI_DATA_DIR`` 整树（含 ``runtime/console.log``、
+    索引库本身），避免监视日志写盘再触发 watchfiles 的闭环。
+    """
     try:
-        parts = set(path.parts)
+        parts = path.parts
     except Exception:
         return False
-    if any(should_skip_dir_name(p) for p in path.parts):
+    if any(should_skip_dir_name(p) for p in parts):
         return False
     if path.name.startswith("._"):
+        return False
+    data_dir = _resolve_data_dir()
+    if _under_data_dir(path, data_dir):
         return False
     # 目录事件忽略；删除时 path 可能已不存在，仍交给 apply
     if path.exists() and path.is_dir():
@@ -85,7 +101,7 @@ def apply_fs_changes(paths: list[str]) -> dict[str, Any]:
     try:
         for raw in uniq:
             path = Path(raw)
-            if not _path_indexable(path) and path.exists():
+            if not _path_indexable(path):
                 continue
             exists = path.is_file()
             if name_idx is not None:
@@ -122,7 +138,12 @@ def _start_watch_thread(roots: list[Path], stop: threading.Event) -> threading.T
             cprint(f"[memory-index-watch] apply failed: {exc}")
 
     def _run_watchfiles() -> None:
+        import logging
+
         from watchfiles import watch
+
+        # 库默认 INFO 逐条「N change detected」，网关控制台噪音大
+        logging.getLogger("watchfiles").setLevel(logging.WARNING)
 
         def _watch_filter(change: object, path: str) -> bool:  # noqa: ARG001
             return _path_indexable(Path(path))
@@ -135,7 +156,7 @@ def _start_watch_thread(roots: list[Path], stop: threading.Event) -> threading.T
             step=250,
             raise_interrupt=False,
         ):
-            paths = [str(p) for _ch, p in changes if _path_indexable(Path(p)) or not Path(p).exists()]
+            paths = [str(p) for _ch, p in changes if _path_indexable(Path(p))]
             if paths:
                 _on_change(paths)
 
@@ -201,6 +222,8 @@ def start_memory_index_watch(*, force_restart: bool = False) -> dict[str, Any]:
 
     roots = _union_watch_roots()
     key = ":".join(str(r) for r in roots)
+    old_thread: threading.Thread | None = None
+    stop_ev: threading.Event | None = None
     with _lock:
         if (
             not force_restart
@@ -212,23 +235,37 @@ def start_memory_index_watch(*, force_restart: bool = False) -> dict[str, Any]:
             return {"ok": True, "watching": True, "roots": [str(r) for r in roots], "skipped": True}
         if _stop is not None:
             _stop.set()
-        _stop = threading.Event()
+        old_thread = _thread
         _thread = None
         _roots_key = key
         if not roots:
-            return {"ok": True, "watching": False, "reason": "no_roots"}
-        _thread = _start_watch_thread(roots, _stop)
+            _stop = None
+        else:
+            stop_ev = threading.Event()
+            _stop = stop_ev
+    if old_thread is not None and old_thread.is_alive():
+        old_thread.join(timeout=2.0)
+    if not roots or stop_ev is None:
+        return {"ok": True, "watching": False, "reason": "no_roots"}
+    with _lock:
+        if _roots_key != key or _stop is not stop_ev:
+            return {"ok": True, "watching": False, "reason": "superseded"}
+        _thread = _start_watch_thread(roots, stop_ev)
         return {"ok": True, "watching": True, "roots": [str(r) for r in roots]}
 
 
 def stop_memory_index_watch() -> None:
     global _stop, _thread, _roots_key
+    old_thread: threading.Thread | None = None
     with _lock:
         if _stop is not None:
             _stop.set()
+        old_thread = _thread
         _stop = None
         _thread = None
         _roots_key = ""
+    if old_thread is not None and old_thread.is_alive():
+        old_thread.join(timeout=2.0)
 
 
 def memory_index_watch_status() -> dict[str, Any]:

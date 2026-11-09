@@ -15,7 +15,11 @@ from fawai_avatar.brain.action_segment import (
     should_skip_obs_reflect_llm,
 )
 from fawai_avatar.brain.planner import Brain, _plan_from_payload
-from fawai_avatar.brain.reflect import action_fingerprint
+from fawai_avatar.brain.reflect import (
+    action_fingerprint,
+    format_failure_evidence_lines,
+    format_reflect_user_message,
+)
 from fawai_avatar.types import Action, ExecResult
 
 
@@ -40,6 +44,102 @@ def main() -> None:
         _ok("expect_fail", not check_action_expect(act, bad_r)[0])
         wrapped = apply_expect_to_result(act, bad_r)
         _ok("expect_wrap_fail", not wrapped.ok and wrapped.message.startswith("expect failed:"))
+
+        # GUI 工具已 ok：忽略臆造「获得焦点」类画面态 expect
+        gui_act = Action(
+            kind="click",
+            args={"x": 10, "y": 20},
+            expect={"contains": "搜索框获得焦点"},
+        )
+        gui_ok = ExecResult(ok=True, message="clicked (10,20)", data={})
+        gui_wrapped = apply_expect_to_result(gui_act, gui_ok)
+        _ok(
+            "expect_ignore_invented_ui_state",
+            gui_wrapped.ok
+            and bool((gui_wrapped.data or {}).get("expect_ignored"))
+            and "忽略臆造画面态 expect" in (gui_wrapped.message or ""),
+            gui_wrapped.message,
+        )
+
+        # 工具已失败但 stdout 已命中 expect → 不盖成 tool not ok，保留原文
+        shell_act = Action(
+            kind="shell",
+            args={"cmd": "probe"},
+            expect={"contains_any": ["Password length is 0", "nvidia-smi"]},
+        )
+        tool_fail = ExecResult(
+            ok=False,
+            message="DEBUG: Password length is 0\nFAIL: No password found",
+            data={
+                "stdout": "DEBUG: Password length is 0\nFAIL: No password found",
+                "stderr": "",
+                "returncode": 1,
+            },
+        )
+        kept = apply_expect_to_result(shell_act, tool_fail)
+        _ok(
+            "expect_keep_tool_fail_when_marker_hit",
+            (not kept.ok)
+            and "Password length is 0" in (kept.message or "")
+            and "expect failed" not in (kept.message or ""),
+            kept.message,
+        )
+        # 工具已失败且预期未命中 → 写明缺标记，并附工具原文
+        miss_act = Action(
+            kind="shell",
+            args={"cmd": "probe"},
+            expect={"contains": "OK: remote"},
+        )
+        miss_wrapped = apply_expect_to_result(miss_act, tool_fail)
+        _ok(
+            "expect_fail_keeps_tool_pre_message",
+            (not miss_wrapped.ok)
+            and "contains 'OK: remote' missing" in (miss_wrapped.message or "")
+            and "Password length is 0" in (miss_wrapped.message or "")
+            and str((miss_wrapped.data or {}).get("expect_pre_message") or "").startswith(
+                "DEBUG:"
+            ),
+            miss_wrapped.message,
+        )
+        # 失败反省主输入须吃齐 stdout / pre_message（即使 message 已被 expect 改写）
+        evidence_only = ExecResult(
+            ok=False,
+            message="expect failed: tool not ok",
+            data={
+                "expect_pre_message": "DEBUG: Password length is 0\nFAIL: No password found",
+                "stdout": "DEBUG: Password length is 0\nFAIL: No password found",
+                "returncode": 1,
+            },
+        )
+        ev_lines = format_failure_evidence_lines(evidence_only)
+        ev_blob = "\n".join(ev_lines)
+        _ok(
+            "reflect_evidence_from_data",
+            "Password length is 0" in ev_blob and "returncode: 1" in ev_blob,
+            ev_blob,
+        )
+        reflect_msg = format_reflect_user_message(
+            "查远端 nvidia-smi",
+            [miss_act],
+            [miss_wrapped],
+            fingerprint="shell:probe",
+            fail_count=1,
+            tool_obs_summary=(
+                "- shell cmd='probe' → FAIL: expect failed\n"
+                "  stdout（全文）:\nDEBUG: Password length is 0\nFAIL: No password found"
+            ),
+        )
+        _ok(
+            "reflect_user_message_has_failure_evidence",
+            ("Password length is 0" in reflect_msg)
+            and ("本步工具结果观察摘要" in reflect_msg),
+            reflect_msg[:500],
+        )
+        # 成功结果不堆证据（轻量）
+        _ok(
+            "reflect_evidence_skip_ok",
+            format_failure_evidence_lines(ok_r) == [],
+        )
 
         act_any = Action(
             kind="shell",

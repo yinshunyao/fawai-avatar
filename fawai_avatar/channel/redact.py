@@ -15,6 +15,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+# 「密码」后必须有分隔或引号值，禁止匹配「输入密码登录」这类中文词组
+# （否则会抠破 mermaid 节点，前端出现 Syntax error in text）。
 _REDACT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(sshpass\s+-p\s*)(['\"])([^'\"]*)\2", re.I), r"\1\2***\2"),
     (re.compile(r"(sshpass\s+-p\s+)(\S+)", re.I), r"\1***"),
@@ -22,7 +24,9 @@ _REDACT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(send\s+)(['\"])([^'\"]+)\2", re.I), r"\1\2***\2"),
     (re.compile(r"(--password[= ]+)(\S+)", re.I), r"\1***"),
     (re.compile(r"((?:FAWAI_|SSH)?PASS(?:WORD|CODE)?|SSHPASS)\s*=\s*\S+", re.I), r"\1=***"),
-    (re.compile(r"(密码\s*[:=：]?\s*)(\S+)"), r"\1***"),
+    (re.compile(r"(密码\s*[:=：]\s*)(\S+)"), r"\1***"),
+    (re.compile(r"(密码\s+)(`[^`]+`|'[^']+'|\"[^\"]+\")"), r"\1***"),
+    (re.compile(r"(密码\s+)([A-Za-z0-9][A-Za-z0-9@#$%^&*_\-+=./!]{4,})"), r"\1***"),
     (re.compile(r"(password\s*[:=]\s*)(\S+)", re.I), r"\1***"),
     (re.compile(r"(passwd\s+)(\S+)", re.I), r"\1***"),
 )

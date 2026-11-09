@@ -11,6 +11,7 @@ from fawai_avatar.config import RuntimeConfig
 from fawai_avatar.control import input_mac
 from fawai_avatar.control.background import BACKGROUND_KINDS, BackgroundTools
 from fawai_avatar.control.browser import BROWSER_KINDS, BrowserTools
+from fawai_avatar.mcp.tools import McpTools
 from fawai_avatar.types import Action, ExecResult
 
 HoldingForegroundFn = Callable[[str | None], bool]
@@ -53,10 +54,21 @@ class Controller:
         self._allows_writes = allows_writes or _resolve_fn(supervisor, "allows_writes")
         self._background = background or BackgroundTools()
         self._browser = BrowserTools()
+        self._mcp = McpTools()
         self.system_log = system_log
 
     def execute(self, action: Action, *, task_id: str | None = None) -> ExecResult:
         kind = (action.kind or "").strip().lower()
+
+        # MCP 外挂：stdio 子进程；不受 GUI dry_run
+        if kind.startswith("mcp__"):
+            gate = self._check_gates(action, task_id)
+            if gate is not None:
+                self._log_system(action, gate, task_id=task_id)
+                return gate
+            result = self._mcp.execute(action)
+            self._log_system(action, result, task_id=task_id)
+            return result
 
         # 后台文件/版本：默认补 write_resources，再过闸门；不受 GUI dry_run 影响
         if kind in BACKGROUND_KINDS:
@@ -308,13 +320,32 @@ class Controller:
             if looks_invented
             else "该编号不在 AX/OCR 缓存中。"
         )
+        try:
+            from fawai_avatar.observe.screen_grounding import get_screenshot_grounding
+
+            grounding = get_screenshot_grounding()
+        except Exception:  # noqa: BLE001
+            grounding = "vlm"
+        if grounding == "ocr":
+            how = "请先 observe_kinds 含 obs_ax，或 obs_screen（OCR 接地）建表后再 ui_click。"
+        else:
+            how = (
+                f"当前截屏接地={grounding}（无 ocr 表）："
+                "请先 observe_kinds 含 obs_ax 再用数字 ref，"
+                "或改用坐标 click；勿臆造 ocrN。"
+            )
         return None, ExecResult(
             ok=False,
             message=(
-                f"未知 ref={ref!r}；{tip} 请先 obs_ax 或配置 OCR 后 obs_screen。"
+                f"未知 ref={ref!r}；{tip} {how}"
                 f"{avail} {ocr_avail}"
             ),
-            data={"ref": ref, "available_hint": avail, "ocr_hint": ocr_avail},
+            data={
+                "ref": ref,
+                "available_hint": avail,
+                "ocr_hint": ocr_avail,
+                "screenshot_grounding": grounding,
+            },
         )
 
     def _exec_ui_click(self, action: Action) -> ExecResult:
@@ -438,6 +469,7 @@ class Controller:
         args = action.args or {}
         name = (
             args.get("app")
+            or args.get("app_name")
             or args.get("name")
             or args.get("bundle")
             or args.get("application")
@@ -507,8 +539,19 @@ class Controller:
             text=True,
         )
         ok = proc.returncode == 0
-        out = (proc.stdout or "").strip()
-        err = (proc.stderr or "").strip()
+        from fawai_avatar.observe.tool_digest import clip_head_tail, shell_max_stdout_chars
+
+        stdout_limit = shell_max_stdout_chars()
+        stdout_raw = proc.stdout or ""
+        stderr_raw = proc.stderr or ""
+        stdout_clipped, stdout_was_clipped = clip_head_tail(
+            stdout_raw, max_chars=stdout_limit
+        )
+        stderr_clipped, stderr_was_clipped = clip_head_tail(
+            stderr_raw, max_chars=stdout_limit
+        )
+        out = stdout_clipped.strip()
+        err = stderr_clipped.strip()
         if ok:
             message = out or f"exit {proc.returncode}"
         else:
@@ -542,15 +585,40 @@ class Controller:
                     f"{message}（提示：osascript 激活 GUI 易超时；"
                     "优先 hotkey/click，或确认目标 App 已响应后再试）"
                 )
+        data: dict[str, Any] = {
+            "returncode": proc.returncode,
+            "stdout": stdout_clipped,
+            "stderr": stderr_clipped,
+            "cmd": cmd_text,
+        }
+        if stdout_was_clipped or stderr_was_clipped:
+            data["stdout_clipped"] = bool(stdout_was_clipped)
+            data["stderr_clipped"] = bool(stderr_was_clipped)
+            data["stdout_raw_chars"] = len(stdout_raw)
+            data["stderr_raw_chars"] = len(stderr_raw)
+            tip = (
+                "（输出已头尾截断；大文件请用 head/tail/sed -n 起止行"
+                "或 fs_read offset/limit，勿整文件 cat）"
+            )
+            if tip not in message:
+                message = f"{message.rstrip()}\n{tip}" if message else tip
+        try:
+            from fawai_avatar.workspace.shovel_outcome import maybe_record_shell_outcome
+
+            recorded = maybe_record_shell_outcome(
+                data_dir=cfg.data_dir,
+                cmd=cmd_text,
+                ok=ok,
+                message=message,
+            )
+            if recorded:
+                data["shovel_outcomes"] = recorded
+        except Exception:  # noqa: BLE001 — 记账失败不影响 shell 结果
+            pass
         return ExecResult(
             ok=ok,
             message=message,
-            data={
-                "returncode": proc.returncode,
-                "stdout": proc.stdout,
-                "stderr": proc.stderr,
-                "cmd": cmd_text,
-            },
+            data=data,
         )
 
     def _exec_wait(self, action: Action) -> ExecResult:

@@ -40,6 +40,12 @@ _CODING_TOOL_KINDS = frozenset(
         "shovel_search",
         "task_context_search",
         "task_context_get",
+        "success_ledger_upsert",
+        "success_ledger_search",
+        "success_ledger_get",
+        "failure_ledger_upsert",
+        "failure_ledger_search",
+        "failure_ledger_get",
         "version_snapshot",
         "version_list",
         "version_rollback",
@@ -59,7 +65,14 @@ _TOOL_PARAMETER_SCHEMAS: dict[str, dict[str, Any]] = {
             },
             "path": {
                 "type": "string",
-                "description": "检索根路径；已知文件时填单文件 path",
+                "description": (
+                    "检索根：须为子目录或单文件；禁止 . / 整 work_root / /Users。"
+                    "先 lore_search(work_name) 或窄 fs_glob 定目录后再填"
+                ),
+            },
+            "allow_broad_root": {
+                "type": "boolean",
+                "description": "显式允许宽根磁盘扫（默认禁止；罕用）",
             },
             "glob": {"type": "string", "description": "文件名过滤，如 **/*.py"},
             "context_before": {
@@ -156,11 +169,15 @@ _TOOL_PARAMETER_SCHEMAS: dict[str, dict[str, Any]] = {
             "path": {
                 "type": "string",
                 "description": (
-                    "搜索根：默认 .（work_root）；可为 FAWAI_READ_ROOTS 下绝对路径。"
-                    "传入后从该目录扫，不会静默忽略改扫 work_root"
+                    "搜索根：须尽量为子目录；整 work_root 仅允许含明确文件名片段的 pattern。"
+                    "禁止 **/*.{yaml,yml,json} 一类扩扩展名扫整仓"
                 ),
             },
             "head_limit": {"type": "integer"},
+            "allow_broad_root": {
+                "type": "boolean",
+                "description": "显式允许宽根（默认禁止）",
+            },
         },
         "additionalProperties": True,
     },
@@ -283,7 +300,10 @@ _TOOL_PARAMETER_SCHEMAS: dict[str, dict[str, Any]] = {
             "timeout_sec": {"type": "number", "description": "默认 60"},
             "result_path": {
                 "type": "string",
-                "description": "脚本写出的结果文件（相对会话根），存在则回传",
+                "description": (
+                    "脚本写出的结果文件（相对会话根），存在则回传并推会话附件卡；"
+                    "生成 PPT/PDF 等交付物时优先填写"
+                ),
             },
         },
         "additionalProperties": True,
@@ -293,7 +313,10 @@ _TOOL_PARAMETER_SCHEMAS: dict[str, dict[str, Any]] = {
         "properties": {
             "query": {
                 "type": "string",
-                "description": "检索词（id/title/when_to_use/tags）；造临时脚本前先搜",
+                "description": (
+                    "检索词（id/title/when_to_use/tags）；造临时脚本前先搜；"
+                    "命中含 outcome.rate 运行成败维，差评须对照当前 goal"
+                ),
             },
             "limit": {"type": "integer", "description": "命中上限，默认 20"},
         },
@@ -336,6 +359,155 @@ _TOOL_PARAMETER_SCHEMAS: dict[str, dict[str, Any]] = {
                 "description": "回灌字符硬顶，默认约 6000",
             },
         },
+        "additionalProperties": True,
+    },
+    "success_ledger_upsert": {
+        "type": "object",
+        "properties": {
+            "acceptance": {
+                "type": "string",
+                "description": "本步业务验收短句（给人读，≤40字；禁止 true/false；会作知识库标题）",
+            },
+            "goal_slice": {
+                "type": "string",
+                "description": "可选；同 acceptance 的可读短摘（禁止布尔字面量）",
+            },
+            "commands": {
+                "type": "array",
+                "items": {},
+                "description": "真正成功的 invoke/命令与关键参数",
+            },
+            "config_refs": {
+                "type": "array",
+                "items": {},
+                "description": "配置落点：path + 键/节 + 可选短摘非密值",
+            },
+            "code_refs": {
+                "type": "array",
+                "items": {},
+                "description": "代码/脚本 path、符号或铲 id",
+            },
+            "targets": {
+                "type": "array",
+                "items": {},
+                "description": "作用对象：host/cwd/本地 path/环境名",
+            },
+            "evidence": {"type": "string", "description": "成功判据（关键一行证据）"},
+            "side_effects": {
+                "type": "array",
+                "items": {},
+                "description": "副作用：write_set、远端是否改状态",
+            },
+            "source_refs": {
+                "type": "array",
+                "items": {},
+                "description": "材料来源路径+键（勿写口令明文）",
+            },
+            "tool_id": {"type": "string", "description": "shovel_id / skill / kind"},
+            "avoid": {"type": "string", "description": "成功前换掉的错族（短）"},
+            "constraints": {
+                "type": "array",
+                "items": {},
+                "description": "用户否决/禁止项",
+            },
+            "artifacts": {
+                "type": "array",
+                "items": {},
+                "description": "产物指针：报告/权重/diff 路径",
+            },
+            "id": {"type": "string", "description": "更新已有卡时传 id"},
+            "step": {"type": "integer", "description": "可选闭环步号"},
+            "evaluate": {
+                "type": "boolean",
+                "description": "是否排队三维门控（默认 true；过门实写 lore）",
+            },
+        },
+        "additionalProperties": True,
+    },
+    "success_ledger_search": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "搜本任务成功价值台账；是否调用由你自决",
+            },
+            "limit": {"type": "integer", "description": "命中上限，默认 8"},
+        },
+        "required": ["query"],
+        "additionalProperties": True,
+    },
+    "success_ledger_get": {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "description": "台账条目 id"},
+        },
+        "required": ["id"],
+        "additionalProperties": True,
+    },
+    "failure_ledger_upsert": {
+        "type": "object",
+        "properties": {
+            "symptom": {
+                "type": "string",
+                "description": "失败现象短句（给人读，≤40字；禁止 true/false；会作知识库标题）",
+            },
+            "cause": {"type": "string", "description": "已确认或高置信错因（可读短句）"},
+            "do_not_retry": {
+                "type": "string",
+                "description": "勿再试：同参/同路径禁止再来",
+            },
+            "goal_slice": {
+                "type": "string",
+                "description": "当时意图短摘（禁止布尔字面量）",
+            },
+            "intent": {"type": "string", "description": "可选；同 goal_slice"},
+            "commands_tried": {
+                "type": "array",
+                "items": {},
+                "description": "导致失败的 invoke/命令",
+            },
+            "config_refs": {"type": "array", "items": {}},
+            "code_refs": {"type": "array", "items": {}},
+            "targets": {"type": "array", "items": {}},
+            "evidence": {"type": "string", "description": "一行失败证据"},
+            "recovery": {
+                "type": "string",
+                "description": "后来如何换道成功；可链 success 卡 id",
+            },
+            "tool_id": {"type": "string"},
+            "constraints": {"type": "array", "items": {}},
+            "severity": {
+                "type": "string",
+                "description": "blocker / wasted_loop / near_miss",
+            },
+            "success_ledger_id": {
+                "type": "string",
+                "description": "对应成功卡 id（可选）",
+            },
+            "id": {"type": "string"},
+            "step": {"type": "integer"},
+            "evaluate": {
+                "type": "boolean",
+                "description": "是否排队三维门控（默认 true；过门写 avoid lore）",
+            },
+        },
+        "additionalProperties": True,
+    },
+    "failure_ledger_search": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "搜本任务失败价值台账"},
+            "limit": {"type": "integer"},
+        },
+        "required": ["query"],
+        "additionalProperties": True,
+    },
+    "failure_ledger_get": {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "description": "失败台账条目 id"},
+        },
+        "required": ["id"],
         "additionalProperties": True,
     },
 }
@@ -510,17 +682,20 @@ def plan_from_tool_calls(
     if not actions:
         return None
     done = len(actions) == 1 and actions[0].kind == "done"
-    thought = (content or "native tool_calls").strip() or "native tool_calls"
     from fawai_avatar.task.title import resolve_step_label
 
     plan_actions = [] if done else actions
+    # 空 content 时禁止用 "native tool_calls" 当 thought/step_label（会话簇头会变成内部通道名）
+    raw_content = (content or "").strip()
+    step_label = resolve_step_label(thought=raw_content, actions=plan_actions)
+    thought = raw_content or step_label or "执行工具"
     plan = Plan(
         thought=thought,
         actions=plan_actions,
         done=done,
         status="success" if done else "continue",
         raw={"tool_calls": tool_calls, "native": True},
-        step_label=resolve_step_label(thought=thought, actions=plan_actions),
+        step_label=step_label or resolve_step_label(actions=plan_actions) or "执行工具",
     )
     # 原生通道无 JSON 顶层字段：提升 args 声明，否则按分层路径自动绑定默认 doc_refs
     return ensure_architecture_decls(plan, auto_default=True)

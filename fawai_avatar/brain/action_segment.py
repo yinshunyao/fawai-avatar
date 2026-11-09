@@ -31,6 +31,12 @@ MECHANICAL_READ_KINDS = frozenset(
         "diff_list",
         "platform_info",
         "shovel_search",
+        "task_context_search",
+        "task_context_get",
+        "success_ledger_search",
+        "success_ledger_get",
+        "failure_ledger_search",
+        "failure_ledger_get",
     }
 )
 
@@ -107,6 +113,35 @@ _INVENTED_SUCCESS_NEEDLES = frozenset(
     }
 )
 
+# GUI 工具回执通常只有 clicked/typed；模型却用 expect 断言画面态 → 假 FAIL
+_GUI_KINDS_FOR_EXPECT = frozenset(
+    {
+        "click",
+        "double_click",
+        "right_click",
+        "type",
+        "press",
+        "hotkey",
+        "ui_click",
+        "ui_type",
+        "app_focus",
+    }
+)
+_INVENTED_UI_STATE_MARKERS = (
+    "获得焦点",
+    "已获得焦点",
+    "焦点",
+    "光标闪烁",
+    "键盘弹出",
+    "已打开",
+    "搜索框获得",
+    "输入框获得",
+    "got focus",
+    "has focus",
+    "focused",
+    "caret blink",
+)
+
 _WRITE_LANDED_HINT = (
     "【写入已落盘】文件已按补丁/替换改写（见 data.diff / hunks_applied），"
     "勿当未修改；下一轮须按当前原文取 old，勿复用写入前锚点"
@@ -146,6 +181,14 @@ def _needle_is_invented_success(needle: str) -> bool:
     return False
 
 
+def _needle_is_invented_ui_state(needle: str) -> bool:
+    """是否把画面/焦点态当成工具回执子串（GUI expect 常见臆造）。"""
+    text = str(needle or "").strip().lower()
+    if not text:
+        return False
+    return any(m.lower() in text for m in _INVENTED_UI_STATE_MARKERS)
+
+
 def _expect_miss_is_invented_success_only(action: Action, reason: str) -> bool:
     """失败原因是否仅为臆造的成功口令未出现在回执里。"""
     expect = action.expect if isinstance(action.expect, dict) else {}
@@ -157,6 +200,23 @@ def _expect_miss_is_invented_success_only(action: Action, reason: str) -> bool:
         if not isinstance(needles, (list, tuple)) or not needles:
             return False
         return all(_needle_is_invented_success(str(n)) for n in needles)
+    return False
+
+
+def _expect_miss_is_invented_ui_state_only(action: Action, reason: str) -> bool:
+    """GUI 动作：expect 是否只断言回执里不会出现的画面态口令。"""
+    kind = (action.kind or "").strip().lower()
+    if kind not in _GUI_KINDS_FOR_EXPECT:
+        return False
+    expect = action.expect if isinstance(action.expect, dict) else {}
+    reason_l = (reason or "").lower()
+    if reason_l.startswith("contains ") and "missing" in reason_l:
+        return _needle_is_invented_ui_state(str(expect.get("contains") or ""))
+    if reason_l.startswith("contains_any"):
+        needles = expect.get("contains_any")
+        if not isinstance(needles, (list, tuple)) or not needles:
+            return False
+        return all(_needle_is_invented_ui_state(str(n)) for n in needles)
     return False
 
 
@@ -173,12 +233,14 @@ def check_action_expect(
     action: Action,
     result: ExecResult,
 ) -> tuple[bool, str]:
-    """校验 Action.expect；无 expect 则通过。返回 (ok, reason)。"""
+    """校验 Action.expect；无 expect 则通过。返回 (ok, reason)。
+
+    工具本身已失败时仍核对文本预期：已命中则通过（保留原失败 message，
+    不盖成 ``tool not ok``）；未命中则写明缺哪个标记。
+    """
     expect = action.expect
     if not isinstance(expect, dict) or not expect:
         return True, ""
-    if not result.ok:
-        return False, "tool not ok"
     hay = _result_haystack(result)
     hay_l = hay.lower()
 
@@ -201,12 +263,25 @@ def check_action_expect(
     return True, ""
 
 
+_EXPECT_PRE_MSG_CHARS = 1200
+
+
+def _clip_expect_pre_message(text: str, *, limit: int = _EXPECT_PRE_MSG_CHARS) -> str:
+    raw = (text or "").strip()
+    if not raw or len(raw) <= limit:
+        return raw
+    return raw[: max(0, limit - 1)] + "…"
+
+
 def apply_expect_to_result(action: Action, result: ExecResult) -> ExecResult:
     """工具已返回后套 expect；失败则改写为 ok=false。
 
     特例：mutate 已落盘，但 expect 只断言臆造成功口令（如 ``patch applied``）→
     **保持 ok**，避免「表面失败、磁盘已改」级联。真实内容 expect 仍可失败，
     但文案须标明【写入已落盘】。
+
+    工具本身已失败且 expect 文本已满足 → **不改写**，保留原 message/data，
+    供失败反省吃齐证据（成功预期路径仍轻量：本函数早退）。
     """
     ok, reason = check_action_expect(action, result)
     if ok:
@@ -227,7 +302,22 @@ def apply_expect_to_result(action: Action, result: ExecResult) -> ExecResult:
             msg = f"{msg}{note}" if msg else note.strip("（）")
         return ExecResult(ok=True, message=msg, data=data)
 
+    # 工具已 ok：忽略 GUI 臆造画面态 expect（焦点等须下一步观察回证）
+    if result.ok and _expect_miss_is_invented_ui_state_only(action, reason):
+        data["expect_ignored"] = True
+        data["expect_ignore_reason"] = reason
+        note = "（忽略臆造画面态 expect；请下一步 obs_screen/obs_ax 回证）"
+        msg = str(result.message or "").rstrip()
+        if "忽略臆造画面态 expect" not in msg:
+            msg = f"{msg}{note}" if msg else note.strip("（）")
+        return ExecResult(ok=True, message=msg, data=data)
+
     message = f"expect failed: {reason}"
+    # 工具已失败时仍缺预期标记：标签之外带上工具原文，避免反省只见笼统句
+    if not result.ok:
+        pre = _clip_expect_pre_message(str(result.message or ""))
+        if pre and pre not in message:
+            message = f"{message}\n工具原文：\n{pre}"
     if landed:
         data["write_landed_despite_expect"] = True
         message = f"{message}；{_WRITE_LANDED_HINT}"

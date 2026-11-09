@@ -18,6 +18,49 @@ English: [README.md](README.md).
 
 单任务闭环：`观察 → 大脑 → 控制 → 再观察`。多任务由总管接需求、仲裁资源；各工作任务自有轨迹与检查点，进程重启可续跑，PWA 也可从指定步骤恢复。
 
+## 为何选 fawai（相对常见 AI 工具）
+
+详细对照与版本边界真源：[`doc/分析/相对常见AI工具为何选fawai.md`](doc/分析/相对常见AI工具为何选fawai.md)（改结论时**同回合**改本文与该文）。评测档位见 [`doc/版本/`](doc/版本/【总表】版本评测一览.md)（当前主看 **v0.1.4：81.3 / A**）。
+
+多数「竞品」不在同一货架；用户往往同时需要其中几类。fawai 抢的是 **本机托管干活** 这一类，不是应用工厂、也不是 IDE 本体。
+
+| 工具 | 它是什么 | 和 fawai 的关系 |
+|:---|:---|:---|
+| **LangChain / Deep Agents** | 开发者 Agent harness / 库 | 用来**造** Agent；不是本机常驻分身成品 |
+| **Dify** | LLM 应用搭建（工作流 / RAG / 可发布 API） | 交的是应用；不替你在本机连跑多步操作 |
+| **Cursor** | IDE 内编码代理 | 改仓主场极强；仓外 GUI、整机租约、手机指挥本机不是主叙事 |
+| **Qoder** | 商业智能体工作台（含 Computer Use） | 能力面最近；封闭产品，模型与权限由厂商定 |
+| **WorkBuddy** | 腾讯系办公桌面 Agent | 办公出稿 / IM 入口强；不承诺开源自改与硬闸同一套 |
+| **豆包工作** | 字节封闭办公套装 | 电脑操作与多模态体感强；模型锁定、不可自托管改核 |
+
+```text
+要搭应用 / API          → Dify（或 LangChain 自研）
+要在 IDE 里改仓         → Cursor（或 Qoder 编码面）
+要办公出稿 / IM 生态    → WorkBuddy / 豆包
+要本机托管 + 自有模型 + 可改核 + 硬闸 → fawai
+```
+
+**仍选我们的楔子**
+
+1. **本机操作分身**：手机 / PWA 下目标 → 本机观察·规划·执行·回证；文件目标强制 `fs_*`。
+2. **硬闸门**：前台 lease、写限 work_root、禁 shell 绕过 fs、Web 出站脱敏。
+3. **主权**：OpenAI 兼容自选模型；可改产品树大部分路径（保活 / 闸门最少核禁改）；运行时版本可存档切版。
+4. **进化链**：任务复盘 → Skill / lesson / 改码；铲子先搜台账——助手当可演进运行时。
+5. **复杂任务调度**：计划图 + 失败节点重试（保留已完成）+ 前台串行 / 后台并行。
+6. **编码对齐 Cursor，入口不绑 IDE**：人不在电脑前也能下任务、看步骤流、从步骤恢复。
+
+**什么时候不该用我们顶替**
+
+| 目标 | 更合适 |
+|:---|:---|
+| 给团队 / 客户发布稳定 AI 应用或 API | Dify（或自研 + LangChain） |
+| 人盯着仓改代码、要 IDE 索引与 diff 人审 | Cursor |
+| 办公出稿、腾讯 / 字节 IM 生态一键通 | WorkBuddy / 豆包 |
+| 只调库拼 Agent、不要常驻进程 | LangChain / Deep Agents |
+| 任意桌面 App「点哪都准」已是刚需 | 商业 Computer Use；或等本仓 C3 扩面（0.1.x 仅窄场景） |
+
+一句话：别人解决「聊 / 搭应用 / IDE 改码 / 办公出稿」；fawai 解决「一台可自托管、可续跑、可改核的本机操作分身」。当前诚实卖点停在 **A 档主场景骨架**（后台文件 / 编码 / 执行模式与扩展面可用），不把安装包与 lore 写成任意 GUI 可托付。
+
 ## 智能助手能力（已支持）
 
 功能真源：[`doc/功能/【总表】功能一览.md`](doc/功能/【总表】功能一览.md)。下面按「用户能让它做什么」归纳。
@@ -35,7 +78,7 @@ English: [README.md](README.md).
 
 - **LLM 接入**：OpenAI 兼容；纯文本 / 多模态智能路由；远端 `/models` 列表；生成参数按模型档案；深度思考按角色 + 档案（主脑开 / 快模型与观察反省关）；Web「模型配置」；重启后路由以磁盘 `.env` 为准
 - **主脑委派快模型**：规划时可把子目标交给模型配置里的快模型路由（空则关闭）；段末摘要回灌主脑验收
-- **复杂任务计划模式**：编排脑自动判复杂度 → 出任务图并立即调度（无人审）；三层 = 编排脑 → 监管脑 → 执行脑；追加可真改 `reorder` / `lease_adjust`；失败默认**重试失败节点**（保留已完成）；仅显式口令 / 按钮才整图重规划；侧栏只见父计划，线程内节点卡 + 右上角有向图浮层；关：`FAWAI_PLAN_MODE=0`
+- **复杂任务计划模式**（**默认关**）：显式 `FAWAI_PLAN_MODE=auto` 后，编排脑判复杂度 → 出任务图并立即调度（无人审）；三层 = 编排脑 → 监管脑 → 执行脑；追加可真改 `reorder` / `lease_adjust`；失败默认**重试失败节点**；侧栏只见父计划。默认同聊单 Worker（Cursor 式）
 - **能力清单选型**：只从登记能力出招；文件类目标强制 `fs_*`，禁止用 GUI 假装写文件
 - **规划提示档**：按本轮目的裁剪 system / 是否附图（vision / fs / gui / full）
 - **执行中澄清**：尽最大努力默认；高代价歧义才 `need_input`（可出选择题）后续跑
@@ -74,7 +117,7 @@ English: [README.md](README.md).
 
 ### 记忆、进化与运维
 
-- **个人知识库**（`fawai_lore`）：KV + 笔记 + 旁路缓冲；PWA 记忆页三 Tab（待确认 / 已入库 / 最近）；已入库可启用 / 停用 / 删除
+- **个人知识库**（`fawai_lore`）：KV + 笔记 + 旁路缓冲；PWA 记忆页主 Tab（配置 / 已入库 / 工具测试）；已入库可弹窗查看编辑 / 启用 / 停用 / 删除
 - **Skill 库**：可检索注入规划；质量门入库；失败可沉淀为 `lesson`
 - **任务复盘与失败分析**：放行后按机制视角全维深析（规划/观察/动作/反省/结果判定）→ 优化清单（Skill / lesson / 代码 / 规则 / 提示）→ 勾选后备份再改；PWA 单条复盘（联合 API 保留）；成功与失败均可复盘
 - **自我进化写盘**：可改产品树大部分路径；**禁改**回退 / 保活 / 闸门最少核（Cursor / 人工改盘不受限）
@@ -165,7 +208,7 @@ English: [README.md](README.md).
 |:---|:---|
 | `doc/功能/` | 已放行 / 已支持功能与验收 |
 | `doc/议题/` | 讨论与原则（≠ 自动放行） |
-| `doc/分析/` | 机制对照与改进备忘（非放行） |
+| `doc/分析/` | 机制对照与改进备忘（非放行）；选型长文见 [相对常见AI工具为何选fawai](doc/分析/相对常见AI工具为何选fawai.md) |
 | `doc/测试/` | 冒烟 / 系统 / 端到端任务说明 |
 | `doc/版本/` | 各版加权评测总分 |
 | `doc/术语与称呼索引.md` | 规范名与工具 id 真源 |
@@ -184,7 +227,7 @@ pip install -e .                 # 无界面 / 编码·文件·shell / 网关；
 cp .env.example .env   # 系统项；LLM 在 Web「模型配置」写库；.env 已 gitignore
 # 默认路由：纯文本 qwen3.7-plus；多模态 qwen3-vl-plus
 # LLM / 快模型路由请在 Web「模型配置」设置（写入 llm_settings.sqlite）
-# 可选：FAWAI_PLAN_MODE=0               # 关闭复杂任务计划模式（默认 auto）
+# 可选：FAWAI_PLAN_MODE=auto            # 开启复杂任务计划模式（默认关）
 export FAWAI_DRY_RUN=1
 .venv/bin/python -m fawai_avatar.llm.client        # 试跑文本路由
 .venv/bin/python -m fawai_avatar.demo_thinking     # 深度思考按角色/档案
@@ -237,7 +280,7 @@ python3 packaging/build_release.py --target auto   # 本机构建当前平台
 # 或：bash packaging/publish_github_release.sh
 ```
 
-说明与中/英启动器文案见 [`packaging/README.md`](packaging/README.md)。用户解压后运行 Start；本机默认打开 `http://127.0.0.1:7980/`，手机自行打开局域网地址。
+说明与中/英启动器文案见 [`packaging/README.md`](packaging/README.md)。发版遵守全局 Release Notes + About，本仓细则见 [`.cursor/rules/rules-github-release.mdc`](.cursor/rules/rules-github-release.mdc)。用户解压后运行 Start；本机默认打开 `http://127.0.0.1:7980/`，手机自行打开局域网地址。
 
 ## 跨端会话（局域网 PWA）
 

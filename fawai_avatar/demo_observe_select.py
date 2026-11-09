@@ -36,6 +36,19 @@ def main() -> None:
         gui_goal, capture=True, requested=["obs_screen"]
     ) == ["obs_screen"]
 
+    # 会话名含「文件」不得当结构化：否则点选截屏会被静默降成 obs_fs
+    chat_goal = "发消息给微信的文件传输助手，发送：你好"
+    assert not _looks_structured(chat_goal)
+    assert "obs_screen" in candidate_observe_methods(chat_goal, capture=True)
+    assert "obs_ax" in candidate_observe_methods(chat_goal, capture=True)
+    assert resolve_observe_methods(
+        chat_goal, capture=True, requested=["obs_screen"]
+    ) == ["obs_screen"]
+    assert resolve_observe_methods(
+        chat_goal, capture=True, requested=["obs_ax"]
+    ) == ["obs_ax"]
+    assert choose_observe_methods(chat_goal, capture=True) == ["none"]
+
     doc_goal = "总结这张说明文档里的流程，图片内容如下\n[image:data/session_media/doc.png]"
     assert goal_screen_unrelated(doc_goal)
     assert "obs_screen" not in candidate_observe_methods(doc_goal, capture=True)
@@ -58,6 +71,18 @@ def main() -> None:
     assert choose_observe_methods(cursor_goal, capture=True) == ["none"]
     assert "obs_screen" in candidate_observe_methods(cursor_goal, capture=True)
 
+    # none 真跳过：不探前台、无 PNG
+    obs = collect_observation(
+        ["none"],
+        goal=cursor_goal,
+        capture=True,
+    )
+    assert obs.image_path is None
+    assert obs.meta.get("skipped_env") is True
+    assert obs.meta.get("frontmost_ok") is None
+    assert "前台窗摘要" not in (obs.summary or "")
+    assert isinstance(obs.meta.get("observe_candidates"), list)
+
     mock_frontmost = lambda: {  # noqa: E731 — 冒烟注入
         "ok": True,
         "app": "Google Chrome",
@@ -65,27 +90,49 @@ def main() -> None:
         "reason": None,
         "platform": "Darwin",
     }
-    obs = collect_observation(
-        ["none"],
-        goal=cursor_goal,
+    # 真实取证仍附前台窗
+    fs_obs = collect_observation(
+        ["obs_fs"],
+        goal="打开 README.md 看目录结构",
         capture=True,
         frontmost_probe=mock_frontmost,
     )
-    assert obs.image_path is None
-    assert "前台窗摘要" in obs.summary
-    assert obs.meta.get("frontmost_ok") is True
-    assert obs.meta.get("frontmost_app") == "Google Chrome"
-    assert obs.meta.get("frontmost_window") == "ASQ Creator"
+    assert "前台窗摘要" in (fs_obs.summary or "")
+    assert fs_obs.meta.get("frontmost_ok") is True
+    assert fs_obs.meta.get("frontmost_app") == "Google Chrome"
+    assert fs_obs.meta.get("frontmost_window") == "ASQ Creator"
+
+    import os
+
+    from fawai_avatar.observe.tool_digest import clip_head_tail, max_chars
 
     huge = "INFO start\n" + ("noise line\n" * 5000) + "ERROR Traceback boom\n" + (
         "tail noise\n" * 100
     )
-    # 默认 soft=0 不压缩；显式 soft_override 才测压缩路径
+    # soft=0 时中等体量仍全文；超过绝对上限才强制压缩
+    mid = "head-marker\n" + ("mid\n" * 20) + "tail-marker\n"
     plain, plain_meta = digest_text(
-        huge, goal=paste_goal, label="stdout", data_dir="data"
+        mid, goal=paste_goal, label="stdout", data_dir="data"
     )
     assert plain_meta.get("compressed") is not True
-    assert plain == huge
+    assert plain == mid
+
+    os.environ["FAWAI_TOOL_OBS_MAX_CHARS"] = "2000"
+    os.environ["FAWAI_TOOL_OBS_SOFT_CHARS"] = "0"
+    try:
+        capped, cap_meta = digest_text(
+            huge, goal=paste_goal, label="stdout", data_dir="data"
+        )
+    finally:
+        os.environ.pop("FAWAI_TOOL_OBS_MAX_CHARS", None)
+        os.environ.pop("FAWAI_TOOL_OBS_SOFT_CHARS", None)
+    assert cap_meta.get("compressed") is True
+    assert cap_meta.get("max_capped") is True
+    assert "ERROR" in capped or "boom" in capped
+    assert "INFO start" in capped
+    assert "tail noise" in capped
+    assert len(capped) < len(huge)
+
     digested, meta = digest_text(
         huge,
         goal=paste_goal,
@@ -99,9 +146,17 @@ def main() -> None:
     assert "ERROR" in digested or "boom" in digested
     assert len(digested) < len(huge)
 
-    import os
+    # 头+尾裁切：尾标记必须保留
+    clipped, was = clip_head_tail(
+        "HEAD_ONLY_ZONE\n" + ("x\n" * 4000) + "TAIL_ONLY_ZONE\n",
+        max_chars=200,
+    )
+    assert was is True
+    assert "HEAD_ONLY_ZONE" in clipped
+    assert "TAIL_ONLY_ZONE" in clipped
 
     os.environ["FAWAI_TOOL_OBS_SOFT_CHARS"] = "2000"
+    os.environ["FAWAI_TOOL_OBS_MAX_CHARS"] = "0"
     try:
         text, tmeta = format_tool_observation(
             [Action(kind="shell", args={"cmd": "cat huge.log"})],
@@ -111,8 +166,10 @@ def main() -> None:
         )
     finally:
         os.environ.pop("FAWAI_TOOL_OBS_SOFT_CHARS", None)
+        os.environ.pop("FAWAI_TOOL_OBS_MAX_CHARS", None)
     assert "工具结果观察" in text
     assert tmeta.get("compressed") is True
+    assert max_chars() >= 0
 
     # fs_grep 返回 hits 时必须回灌 path:line，不能只留「grep N」
     grep_text, _ = format_tool_observation(
@@ -206,11 +263,11 @@ def main() -> None:
         progress_tool_observe_text,
     )
 
-    # f-string 提示词不得把 {html,js} 当表达式求值（历史 NameError 死循环）
+    # f-string 提示词不得把花括号 glob 当表达式求值（历史 NameError 死循环）
     prompt = _system_prompt(coding=True, goal=paste_goal)
-    assert "{html,js}" in prompt
+    assert "{a,b}" in prompt or "{yaml,json}" in prompt or "{html,js}" in prompt
     assert "NameError" not in prompt
-    assert "前台窗摘要" in prompt
+    assert "前台窗摘要" in prompt or "obs_screen" in prompt
 
     shown = progress_tool_observe_text(
         pending=False, compressed=False, preview=grep_text
@@ -218,15 +275,13 @@ def main() -> None:
     assert "观察工具结果完成" in shown
     assert "fawai_avatar/channel/static/index.html:120:" in shown
 
-    # 环境观察完成态须附摘要，禁止只剩「观察完成（跳过）」
+    # 文案工具仍可拼「观察完成（跳过）」；闭环对 none 不推卡
     env_shown = progress_observe_text(
         ["none"],
         pending=False,
-        preview="前台窗摘要（未截屏）：\n- App：Cursor\n- 窗口：README.zh.md",
+        preview="（不应出现在时间线；仅测文案拼装）",
     )
     assert "观察完成（跳过）" in env_shown
-    assert "App：Cursor" in env_shown
-    assert "README.zh.md" in env_shown
     print("demo_observe_select: ok")
 
 

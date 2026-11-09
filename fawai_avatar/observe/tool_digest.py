@@ -28,12 +28,74 @@ def _env_int(name: str, default: int) -> int:
 
 
 def soft_chars() -> int:
-    """工具观察 soft 压缩阈值。默认 `0`=关闭（压缩会拖慢规划）；`>0` 才启用。"""
+    """工具观察 soft 压缩阈值。默认 `0`=关闭中等体量全文回灌；`>0` 才按 soft 压。
+
+    即使 soft=0，仍受 `max_chars()` 绝对上限约束（防千万字符灌进 history）。
+    """
     return _env_int("FAWAI_TOOL_OBS_SOFT_CHARS", 0)
+
+
+def max_chars() -> int:
+    """工具观察绝对上限（字符）。超过则强制头尾压缩+落盘。
+
+    默认 `48000`；`0`=不设绝对上限（不推荐）。与 soft 独立：soft 管「中等也压」，
+    max 管「再大也必须封顶」。大文件取证应靠 head/tail/中间起行，而非整份回灌。
+    """
+    return _env_int("FAWAI_TOOL_OBS_MAX_CHARS", 48000)
 
 
 def hard_chars() -> int:
     return _env_int("FAWAI_TOOL_OBS_HARD_CHARS", 6000)
+
+
+def shell_max_stdout_chars() -> int:
+    """`shell` 源端 stdout/stderr 字符上限（头+尾保留）。默认 `120000`；`0`=不截。"""
+    return _env_int("FAWAI_SHELL_MAX_STDOUT_CHARS", 120000)
+
+
+def clip_head_tail(
+    text: str,
+    *,
+    max_chars: int,
+    head_ratio: float = 0.55,
+    marker: str | None = None,
+) -> tuple[str, bool]:
+    """超长文本保留头+尾；返回 (裁切后文本, 是否裁切)。
+
+    大文件取证常态是查开头/结尾/中间起行——裁切必须留尾，禁止只留前缀。
+    """
+    raw = text if isinstance(text, str) else str(text)
+    limit = max(0, int(max_chars))
+    if limit <= 0 or len(raw) <= limit:
+        return raw, False
+    note = marker or (
+        f"\n…[已截断：原 {len(raw)} 字符；保留头+尾。"
+        "大文件请用 head/tail/sed -n 起止行或 fs_read offset/limit，勿整文件 cat]…\n"
+    )
+    budget = limit - len(note)
+    if budget < 64:
+        # 上限过紧时仍尽量留头尾各一小段
+        note = "…[截断]…"
+        budget = max(0, limit - len(note))
+    ratio = min(0.9, max(0.1, float(head_ratio)))
+    head_n = max(1, int(budget * ratio))
+    tail_n = max(1, budget - head_n)
+    if head_n + tail_n > budget:
+        tail_n = max(1, budget - head_n)
+    return raw[:head_n] + note + raw[-tail_n:], True
+
+
+def effective_compress_threshold(soft_override: int | None = None) -> int:
+    """实际启用的压缩阈值：显式 soft_override > soft > max 绝对上限。
+
+    返回 `0` 表示不压缩。
+    """
+    if soft_override is not None:
+        return max(0, int(soft_override))
+    soft = soft_chars()
+    if soft > 0:
+        return soft
+    return max_chars()
 
 
 def hits_soft_chars() -> int:
@@ -110,7 +172,7 @@ def digest_text(
 ) -> tuple[str, dict[str, Any]]:
     """压缩大段工具文本；返回 (展示串, meta)。
 
-    soft_override：检索 hits 等可传入更高阈值，避免误用 stdout 紧门。
+    soft_override：检索 hits 等可传入更高/更低阈值；传入时不再套用绝对 max。
     lead：替换默认导语。默认导语要求读落盘全文；反省入模传入自己的非原文规则，避免再下令补读。
     """
     raw = text if isinstance(text, str) else str(text)
@@ -122,13 +184,16 @@ def digest_text(
         "lines": raw.count("\n") + (1 if raw else 0),
         "compressed": False,
     }
-    soft = soft_chars() if soft_override is None else max(0, int(soft_override))
-    # soft<=0：关闭压缩，全文回灌
-    if soft <= 0 or len(raw) <= soft:
+    threshold = effective_compress_threshold(soft_override)
+    # threshold<=0：不压缩；未超阈值全文回灌
+    if threshold <= 0 or len(raw) <= threshold:
         return raw, meta
 
-    hard = max(soft, hard_chars())
+    soft_n = soft_chars() if soft_override is None else max(0, int(soft_override))
+    hard = max(threshold, hard_chars())
     meta["compressed"] = True
+    if soft_override is None and soft_n <= 0:
+        meta["max_capped"] = True
     dump_path = _dump_full(raw, kind=label, data_dir=data_dir)
     meta["dump_path"] = dump_path
 
@@ -171,7 +236,8 @@ def digest_text(
         opening = (
             f"（已压缩：原 {meta['chars']} 字符 / {meta['lines']} 行；"
             f"全文落盘 {dump_path}{rel_hint}；"
-            "请用 fs_read 读该文件后再总结，禁止 shell cat 代替；"
+            "大文件取证用头/尾/中间起行（head/tail/sed -n、fs_read offset/limit）；"
+            "本地落盘可用 fs_read，禁止 shell cat 整文件；"
             "禁止臆造 grep_result_*.txt）"
         )
     else:
@@ -197,8 +263,9 @@ def digest_text(
 
     body = "\n".join(parts)
     if len(body) > hard:
-        body = body[: hard - 1] + "…"
-        meta["hard_clipped"] = True
+        body, clipped = clip_head_tail(body, max_chars=hard)
+        if clipped:
+            meta["hard_clipped"] = True
     return body, meta
 
 
@@ -236,6 +303,37 @@ def _render_hits(hits: list[Any], *, max_hits: int | None = None) -> str:
         line_no = hit.get("line")
         before = hit.get("before") if isinstance(hit.get("before"), list) else []
         after = hit.get("after") if isinstance(hit.get("after"), list) else []
+        outcome = hit.get("outcome") if isinstance(hit.get("outcome"), dict) else None
+        # shovel 台账：有 outcome / when_to_use，无 grep 行号
+        # invoke 必须进观察正文（调用侧契约；禁止只留 path/标题让模型猜 CLI）
+        if outcome is not None or (
+            hit.get("when_to_use") and line_no is None and not before and not after
+        ):
+            sid = str(hit.get("id") or msg_id or "?").strip() or "?"
+            title = str(hit.get("title") or "").strip()
+            when = str(hit.get("when_to_use") or "").strip()
+            invoke = str(hit.get("invoke") or "").strip()
+            rate = str((outcome or {}).get("rate") or "unknown")
+            fail = str((outcome or {}).get("last_fail_one_liner") or "").strip()
+            design = ",".join(
+                str(hit.get(k) or "")
+                for k in ("completeness", "generality", "efficiency")
+                if hit.get(k) not in (None, "")
+            )
+            line = f"{sid}: {title} — {when}" if when else f"{sid}: {title}"
+            line += f" | outcome={rate}"
+            if fail:
+                line += f" last_fail={fail[:120]}"
+            if design:
+                line += f" | design={design}"
+            if path:
+                line += f" | path={path}"
+            if invoke:
+                line += f" | invoke={invoke}"
+            else:
+                line += " | invoke=(missing)"
+            rendered.append(line)
+            continue
         # lore / task_context：无 path:line:text 时用摘要行，禁止渲染成 ?:?:
         if not path and line_no is None and not before and not after:
             label = msg_id or "?"
@@ -325,9 +423,13 @@ def format_tool_observation(
             tag = "已压缩" if part_meta.get("compressed") else "全文"
             lines.append(f"  {label}（{tag}）:\n{digested}")
 
-        # message 本体很长且未走 stdout 字段时，同样可 soft 压缩（soft<=0 则跳过）
-        soft_n = soft_chars()
-        if soft_n > 0 and len(msg) > soft_n and "stdout" not in digested_keys:
+        # message 本体很长且未走 stdout 字段时，同样走 soft / 绝对上限压缩
+        threshold = effective_compress_threshold()
+        if (
+            threshold > 0
+            and len(msg) > threshold
+            and "stdout" not in digested_keys
+        ):
             digested, part_meta = digest_text(
                 msg, goal=goal, label="stdout", data_dir=data_dir
             )
@@ -365,15 +467,36 @@ def format_tool_observation(
                 path_block += f"\n  …共 {len(preview)} 条"
             lines.append(f"  paths ({len(preview)}):\n{path_block}")
 
-        # fs_grep / explore hits：默认全文回灌（不压缩、不二次截断条数）；
-        # 体量靠工具 head_limit/context；模型自行决定是否加大 limit 翻页。
+        # skill_search 极性分栏
+        imitate = data.get("imitate")
+        avoid = data.get("avoid")
+        if isinstance(imitate, list) or isinstance(avoid, list):
+            im_rows = imitate if isinstance(imitate, list) else []
+            av_rows = avoid if isinstance(avoid, list) else []
+            lines.append(
+                f"  polarity: imitate={len(im_rows)} avoid={len(av_rows)}"
+                "（avoid=勿当正例照抄）"
+            )
+            for label, rows in (("imitate", im_rows[:8]), ("avoid", av_rows[:8])):
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    sid = row.get("id") or "?"
+                    title = row.get("title") or ""
+                    outcome = row.get("outcome") or row.get("polarity") or ""
+                    src = str(row.get("source") or "").strip()
+                    extra = f" source={src}" if src else ""
+                    lines.append(f"  [{label}] {sid}: {title} ({outcome}){extra}")
+
+        # fs_grep / explore / shovel hits：中等全文；超 soft 或绝对上限则头+尾压缩。
+        # 体量优先靠工具 head_limit/context；模型自行决定是否加大 limit 翻页。
         hit_rows = data.get("hits")
         if hit_rows is None:
             hit_rows = data.get("matches")
         hits_soft = hits_soft_chars()
         if isinstance(hit_rows, list) and hit_rows:
             hit_text = _render_hits(hit_rows)
-            if hits_soft > 0 and len(hit_text) > hits_soft:
+            if hits_soft > 0:
                 digested, part_meta = digest_text(
                     hit_text,
                     goal=goal,
@@ -381,7 +504,15 @@ def format_tool_observation(
                     data_dir=data_dir,
                     soft_override=hits_soft,
                 )
-                meta["parts"].append(part_meta)
+            else:
+                digested, part_meta = digest_text(
+                    hit_text,
+                    goal=goal,
+                    label="hits",
+                    data_dir=data_dir,
+                )
+            meta["parts"].append(part_meta)
+            if part_meta.get("compressed"):
                 lines.append(f"  hits（摘要，共 {len(hit_rows)}）:\n{digested}")
             else:
                 lines.append(f"  hits（共 {len(hit_rows)}）:\n{hit_text}")
@@ -396,7 +527,7 @@ def format_tool_observation(
                 )
         elif hit_rows is not None and not isinstance(hit_rows, list):
             preview = str(hit_rows)
-            if hits_soft > 0 and len(preview) > hits_soft:
+            if hits_soft > 0:
                 digested, part_meta = digest_text(
                     preview,
                     goal=goal,
@@ -404,7 +535,15 @@ def format_tool_observation(
                     data_dir=data_dir,
                     soft_override=hits_soft,
                 )
-                meta["parts"].append(part_meta)
+            else:
+                digested, part_meta = digest_text(
+                    preview,
+                    goal=goal,
+                    label="hits",
+                    data_dir=data_dir,
+                )
+            meta["parts"].append(part_meta)
+            if part_meta.get("compressed"):
                 lines.append(f"  hits（摘要）:\n{digested}")
             else:
                 lines.append(f"  hits: {preview}")

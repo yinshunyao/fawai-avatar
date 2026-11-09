@@ -41,17 +41,146 @@ SKIP_DIR_NAMES_OUTSIDE: frozenset[str] = frozenset(
 )
 
 
+def _pattern_literal_len(pattern: str) -> int:
+    lit = re.sub(r"[*?{}\[\]]", "", (pattern or "").replace("**", ""))
+    return len(lit.strip("/."))
+
+
+def _is_shallow_search_root(resolved: Path) -> bool:
+    """整盘、用户目录层、家目录等浅根——禁止当检索根。"""
+    try:
+        if resolved == Path("/"):
+            return True
+        if resolved in {Path("/Users"), Path("/home"), Path("/Volumes")}:
+            return True
+        home = Path.home().resolve()
+        if resolved == home:
+            return True
+    except OSError:
+        return False
+    return False
+
+
+def pattern_has_escaped_alternation(pattern: str) -> bool:
+    """pattern 是否含字面 ``\\|``（模型常把正则「或」写成转义竖线）。"""
+    return "\\|" in (pattern or "")
+
+
+def grep_empty_escaped_pipe_hint(pattern: str, *, hit_count: int) -> str | None:
+    """0 命中且 pattern 含 ``\\|`` 时返回旁注，避免假归因「文件无匹配」。"""
+    if int(hit_count or 0) > 0:
+        return None
+    if not pattern_has_escaped_alternation(pattern):
+        return None
+    return (
+        "hint: pattern 含字面 \\| ；在正则里 | 表示「或」，写成 \\| 会变成匹配竖线本身。"
+        "若本意多选一，请用 send|stop 或 button\\.send，勿用 send\\|stop。"
+    )
+
+
+def grep_pattern_tokens(pattern: str, *, max_tokens: int = 6) -> list[str]:
+    """从 grep pattern 抽出可用于定目录的字面量片段。"""
+    raw = (pattern or "").strip()
+    if not raw:
+        return []
+    parts = re.split(r"[|/\s\\]+", raw)
+    out: list[str] = []
+    for part in parts:
+        tok = re.sub(r"[^0-9A-Za-z_\u4e00-\u9fff-]+", "", part)
+        if len(tok) < 3:
+            continue
+        if tok.lower() in {"the", "and", "for", "with", "from", "path", "file"}:
+            continue
+        if tok not in out:
+            out.append(tok)
+        if len(out) >= max_tokens:
+            break
+    return out
+
+
+def allow_broad_search(*, args: dict[str, Any] | None = None) -> bool:
+    """显式放行宽根：args.allow_broad_root 或 FAWAI_ALLOW_BROAD_SEARCH=1。"""
+    if args:
+        raw = args.get("allow_broad_root")
+        if isinstance(raw, str):
+            if raw.strip().lower() in {"1", "true", "yes", "on"}:
+                return True
+        elif raw:
+            return True
+    return (os.environ.get("FAWAI_ALLOW_BROAD_SEARCH") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def search_root_too_broad(
+    base: Path,
+    *,
+    work_root: Path,
+    kind: str,
+    pattern: str = "",
+    allow_broad: bool = False,
+) -> str | None:
+    """检索根过宽则返回拒因；单文件 path 不拒。
+
+    - 浅根（``/``、``/Users``、家目录等）：grep/glob 均拒
+    - 整棵 ``work_root``：``fs_grep`` 拒磁盘现扫；``fs_glob`` 在 pattern 字面量过短
+      或仅扩展名花括号时拒
+    """
+    if allow_broad:
+        return None
+    try:
+        resolved = base.resolve()
+        root = work_root.resolve()
+    except OSError:
+        return None
+    if resolved.is_file():
+        return None
+    kind_l = (kind or "").strip().lower()
+    guide = (
+        "索引未命中时禁止整仓磁盘扫：先 lore_search(work_name)/定目录，"
+        "再对子目录分批 fs_grep；禁止 shell grep -r 顶替。"
+        "确需宽扫时传 allow_broad_root=true。"
+    )
+    if _is_shallow_search_root(resolved):
+        return (
+            f"【检索根过宽】{kind_l or 'search'} path={resolved} 过浅，拒绝磁盘扫。"
+            f"{guide}"
+        )
+    if resolved == root:
+        if kind_l in {"grep", "fs_grep", "explore_search"}:
+            return (
+                "【检索根过宽】禁止对整棵工作区做磁盘正文扫（path=. 或 work_root）。"
+                f"{guide}"
+            )
+        # glob：整根仅允许带足够字面量的定目录模式
+        lit = _pattern_literal_len(pattern)
+        ext_only = bool(
+            re.fullmatch(
+                r"(\*\*/)?\*\.(\{[^}]+\}|[a-zA-Z0-9]+)",
+                (pattern or "").strip() or "*",
+            )
+        )
+        if lit < 3 or ext_only or (pattern or "").strip() in {"*", "**", "**/*"}:
+            return (
+                "【检索根过宽】整工作区 fs_glob 须含明确文件名片段（≥3 字面字符），"
+                "禁止 **/*.{yaml,yml,json} 一类扩扩展名扫整仓。"
+                f"{guide}"
+            )
+    return None
+
+
 def _glob_root_too_broad(base: Path, pattern: str) -> str | None:
-    """path=/ 且 pattern 几乎无字面量时拒扫，避免整盘空转。"""
+    """兼容旧调用：仅 path=/ 且字面量过短。新逻辑见 search_root_too_broad。"""
     try:
         resolved = base.resolve()
     except OSError:
         return None
     if resolved != Path("/"):
         return None
-    lit = re.sub(r"[*?{}\[\]]", "", (pattern or "").replace("**", ""))
-    lit = lit.strip("/.")
-    if len(lit) < 2:
+    if _pattern_literal_len(pattern) < 2:
         return (
             "fs_glob path=/ 时 pattern 过宽；请把 path 收到具体目录，"
             "或让 pattern 含明确文件名片段（≥2 字面字符）"
@@ -398,20 +527,32 @@ class WorkspaceFs:
         *,
         path: str = ".",
         head_limit: int = 100,
+        allow_broad: bool = False,
     ) -> list[str]:
         """按 glob 列路径。
 
         - 默认 ``path=.``：只扫 work_root（与历史行为一致）。
         - 传入 ``path``：经 ``resolve_for_read``（可在 FAWAI_READ_ROOTS 下）后从该目录扫；
           **禁止**静默忽略 path 仍只扫 work_root。
+        - 整 work_root / 浅根：过宽则拒绝（见 ``search_root_too_broad``）。
         - 命中：work_root 内返回相对路径，否则返回绝对路径。
         """
         pattern = (pattern or "*").strip() or "*"
         limit = max(1, int(head_limit))
         base = resolve_for_read(self._root, path or ".", read_roots=self._read_roots)
-        broad = _glob_root_too_broad(base, pattern)
+        broad = search_root_too_broad(
+            base,
+            work_root=self._root,
+            kind="glob",
+            pattern=pattern,
+            allow_broad=allow_broad,
+        )
         if broad:
             raise ValueError(broad)
+        # 兼容旧 path=/ 字面量过短闸（search_root 已覆盖浅根；保留双保险）
+        legacy = _glob_root_too_broad(base, pattern)
+        if legacy:
+            raise ValueError(legacy)
         if base.is_file():
             shown = display_path(base, self._root)
             rel_to_base = base.name
@@ -562,8 +703,18 @@ class WorkspaceFs:
         head_limit: int = 50,
         context_before: int = 0,
         context_after: int = 0,
+        allow_broad: bool = False,
     ) -> list[dict[str, Any]]:
         base = resolve_for_read(self._root, path, read_roots=self._read_roots)
+        broad = search_root_too_broad(
+            base,
+            work_root=self._root,
+            kind="grep",
+            pattern=pattern,
+            allow_broad=allow_broad,
+        )
+        if broad:
+            raise ValueError(broad)
         before = max(0, int(context_before))
         after = max(0, int(context_after))
         if shutil.which("rg"):
