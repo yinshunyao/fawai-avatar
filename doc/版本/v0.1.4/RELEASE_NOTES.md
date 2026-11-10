@@ -89,4 +89,5 @@ bash packaging/publish_github_release.sh   # needs gh auth
 
 - Tag / commit: `v0.1.4` (`main`)
 - Release: https://github.com/yinshunyao/fawai-avatar/releases/tag/v0.1.4
-- Actions `release-packages` uploads linux / windows / darwin matrix when finished
+- Uploaded: `fawai-avatar-0.1.4-darwin-arm64.tar.gz` / `darwin-x64.tar.gz` (+ sha256)
+- Actions `release-packages` fills linux / windows (and any remaining darwin) when the matrix finishes

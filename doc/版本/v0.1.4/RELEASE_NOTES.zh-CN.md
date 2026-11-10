@@ -89,4 +89,5 @@ bash packaging/publish_github_release.sh   # 需 gh auth
 
 - 标签 / 提交：`v0.1.4`（`main`）
 - Release：https://github.com/yinshunyao/fawai-avatar/releases/tag/v0.1.4
-- Actions `release-packages` 跑完后上传 linux / windows / darwin 矩阵包
+- 已上传：`fawai-avatar-0.1.4-darwin-arm64.tar.gz` / `darwin-x64.tar.gz`（+ sha256）
+- Actions `release-packages` 将补齐 linux / windows（及尚未上传的 darwin，跑完后自动上传）
