@@ -1,4 +1,4 @@
-/* term:界面多语言  doc:doc/功能/界面多语言/说明.md
+/* term:界面多语言  doc:doc/功能/01-接入与呈现/06-界面多语言/说明.md
  * Conventional UI i18n: locale catalogs + t(key) + data-i18n DOM apply.
  */
 (function (global) {
@@ -99,7 +99,14 @@
       else el.textContent = t(key);
     }
     var ph = el.getAttribute("data-i18n-placeholder");
-    if (ph) el.setAttribute("placeholder", t(ph));
+    if (ph) {
+      var phText = t(ph);
+      el.setAttribute("placeholder", phText);
+      // contenteditable 用 data-placeholder + CSS :before
+      if (el.getAttribute("contenteditable") === "true" || el.classList.contains("composer-input")) {
+        el.setAttribute("data-placeholder", phText);
+      }
+    }
     var titleKey = el.getAttribute("data-i18n-title");
     if (titleKey) el.setAttribute("title", t(titleKey));
     var ariaKey = el.getAttribute("data-i18n-aria");

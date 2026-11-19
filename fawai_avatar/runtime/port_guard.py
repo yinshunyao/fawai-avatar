@@ -1,4 +1,4 @@
-# term:服务保活  doc:doc/功能/服务保活/说明.md
+# term:服务保活  doc:doc/功能/08-运行与分发/01-服务保活/说明.md
 """网关端口占用检查与野进程回收（供保活外层在拉起子进程前调用）。"""
 from __future__ import annotations
 

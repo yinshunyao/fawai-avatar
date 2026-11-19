@@ -1,4 +1,4 @@
-# term:成功价值台账  term:失败价值台账  doc:doc/功能/成功价值台账/说明.md
+# term:成功价值台账  term:失败价值台账  doc:doc/功能/07-知识线/05-成功价值台账/说明.md
 """价值台账三维门控：阈值（记忆配置）+ 分数归一 + 旁路通知。"""
 
 from __future__ import annotations
@@ -8,7 +8,9 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 DEFAULT_THRESHOLD_PCT = 80.0
-DIMS = ("completeness", "generality", "efficiency")
+# 完备性 / 重要性 / 效率（原 generality 已废止；解析时仍兼容旧键）
+DIMS = ("completeness", "importance", "efficiency")
+_LEGACY_DIM_ALIASES = {"generality": "importance"}
 
 GateProgressFn = Callable[[str, dict[str, Any]], None]
 GateUsageFn = Callable[[dict[str, Any] | None, int], None]
@@ -73,6 +75,15 @@ def score_to_pct(raw: Any) -> float | None:
     return None
 
 
+def _dim_raw(parsed: dict[str, Any], dim: str) -> Any:
+    if dim in parsed and parsed.get(dim) not in (None, ""):
+        return parsed.get(dim)
+    for legacy, modern in _LEGACY_DIM_ALIASES.items():
+        if modern == dim and legacy in parsed and parsed.get(legacy) not in (None, ""):
+            return parsed.get(legacy)
+    return parsed.get(dim)
+
+
 def decide_gate_from_scores(
     parsed: dict[str, Any],
     *,
@@ -81,6 +92,7 @@ def decide_gate_from_scores(
     """
     三维均 ≥ 阈值才过门；缺分则不过。
     模型显式 ``pass: false`` 时即使分够也拒绝（保守）。
+    兼容旧字段 ``generality`` → ``importance``。
     """
     thr = float(
         DEFAULT_THRESHOLD_PCT if threshold_pct is None else threshold_pct
@@ -89,8 +101,9 @@ def decide_gate_from_scores(
     scores_pct: dict[str, float | None] = {}
     scores_raw: dict[str, Any] = {}
     for dim in DIMS:
-        scores_raw[dim] = parsed.get(dim)
-        scores_pct[dim] = score_to_pct(parsed.get(dim))
+        raw = _dim_raw(parsed, dim)
+        scores_raw[dim] = raw
+        scores_pct[dim] = score_to_pct(raw)
     missing = [d for d in DIMS if scores_pct[d] is None]
     all_ok = not missing and all(
         float(scores_pct[d] or 0) >= thr for d in DIMS
@@ -120,7 +133,7 @@ def decide_gate_from_scores(
         "pass": passed,
         "status": "passed" if passed else "rejected",
         "completeness": scores_raw["completeness"],
-        "generality": scores_raw["generality"],
+        "importance": scores_raw["importance"],
         "efficiency": scores_raw["efficiency"],
         "scores_pct": {d: scores_pct[d] for d in DIMS},
         "threshold_pct": thr,
@@ -159,26 +172,32 @@ def gate_prompt_suffix(*, threshold_pct: float, polarity: str) -> str:
     thr = max(0.0, min(100.0, float(threshold_pct)))
     # 1～5 分制对照：80% ≈ 4 分
     min_star = thr / 20.0
+    style = (
+        "短卡写法：只留「怎么做 / 怎么避」的要点；"
+        "可写本机具体落点（如 SSH 用哪种连法、某服账号与口令在哪个文件哪一键）；"
+        "禁止堆长轨迹；口令/Token **明文**不得进卡（写「见某文件」即可）。\n"
+    )
     if polarity == "avoid":
         head = (
             "你是失败步骤价值台账的晋升评审。评估是否适合写入跨任务知识库 lore（avoid 极性，勿当正例）。\n"
             "三维须给 1～5 的数字分（也可 0～100）：\n"
-            "1. completeness：错因、勿再试、证据、作用对象是否够避坑复用\n"
-            "2. generality：换掉本案专名后是否仍应避免\n"
-            "3. efficiency：短卡+指针是否够用，有无巨日志噪声\n"
+            "1. completeness 完备性：有没有说清「别怎么做 / 该换哪条」的要点（不必细节堆砌）\n"
+            "2. importance 重要性：若不知道这条，会不会很难很快避坑、容易再踩\n"
+            "3. efficiency 效率：是否够短、只留指导动作与落点指针\n"
         )
     else:
         head = (
             "你是成功步骤价值台账的晋升评审。评估是否适合写入跨任务知识库 lore。\n"
             "三维须给 1～5 的数字分（也可 0～100）：\n"
-            "1. completeness 完备性：验收点、命令、落点、证据、材料来源等是否够复用\n"
-            "2. generality 通用性：换掉本案专名（主机号、单文件名）后是否仍成立\n"
-            "3. efficiency 效率：短卡+指针是否够用，有无巨日志噪声\n"
+            "1. completeness 完备性：有没有说清「怎么做」的要点（落点/一步法即可，不必细节堆砌）\n"
+            "2. importance 重要性：若不知道这条，会不会很难很快正确完成（或容易走弯路）\n"
+            "3. efficiency 效率：是否够短、只留指导动作与落点指针\n"
         )
     return (
         head
+        + style
         + f"晋升门槛：三维折算百分比后均须 ≥ {thr:.0f}%（约 1～5 分制 ≥ {min_star:.1f}）。\n"
         "规则：口令/Token 明文不得晋升；仅 ok/fail 无证据则不通过。\n"
-        "只输出一个 JSON 对象，字段：completeness, generality, efficiency, "
+        "只输出一个 JSON 对象，字段：completeness, importance, efficiency, "
         "pass(boolean), rationale(string)。\n"
     )

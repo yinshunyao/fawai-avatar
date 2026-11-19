@@ -1,4 +1,4 @@
-# term:任务图  doc:doc/功能/复杂任务计划模式/说明.md
+# term:任务图  doc:doc/功能/02-任务线/03-复杂任务计划模式/说明.md
 """出图时标出的多节点共用事实：只生产一次，原文注入消费节点。"""
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-# term:步骤分类与执行流  doc:doc/功能/步骤分类与执行流/说明.md
+# term:步骤分类与执行流  doc:doc/功能/03-大脑/13-步骤分类与执行流/说明.md
 """步型：跳过浅观察、启发式回填、并行准入。"""
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-# term:成功价值台账  doc:doc/功能/成功价值台账/说明.md
+# term:成功价值台账  doc:doc/功能/07-知识线/05-成功价值台账/说明.md
 """Smoke: success_ledger upsert / search / get + gate→lore。"""
 
 from __future__ import annotations
@@ -103,14 +103,20 @@ def main() -> None:
         )
         # 阈值：4/5=80% 过门；3/5=60% 拒绝
         low = decide_gate_from_scores(
-            {"completeness": 3, "generality": 4, "efficiency": 5, "pass": True},
+            {"completeness": 3, "importance": 4, "efficiency": 5, "pass": True},
             threshold_pct=80,
         )
         assert not low["pass"], low
         high = decide_gate_from_scores(
+            {"completeness": 4, "importance": 4, "efficiency": 4, "pass": True},
+            threshold_pct=80,
+        )
+        # 兼容旧键 generality → importance
+        legacy = decide_gate_from_scores(
             {"completeness": 4, "generality": 4, "efficiency": 4, "pass": True},
             threshold_pct=80,
         )
+        assert legacy["pass"] and "importance" in legacy["scores_pct"], legacy
         assert high["pass"], high
         from fawai_lore import open_lore
         from fawai_avatar.config import resolve_lore_dir
@@ -138,7 +144,7 @@ def main() -> None:
                 "status": "passed",
                 "pass": True,
                 "completeness": 4,
-                "generality": 4,
+                "importance": 4,
                 "efficiency": 5,
                 "rationale": "demo inject pass",
                 "elapsed_ms": 120,

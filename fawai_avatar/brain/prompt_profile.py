@@ -1,4 +1,4 @@
-# term:规划提示档  tool:prompt_profile  doc:doc/功能/规划提示档/说明.md
+# term:规划提示档  tool:prompt_profile  doc:doc/功能/03-大脑/03-规划提示档/说明.md
 """按本轮目的裁剪规划提示：是否附图、能力清单子集、长短规则。"""
 
 from __future__ import annotations
@@ -348,6 +348,70 @@ def goal_has_user_image(goal: str) -> bool:
     return bool(refs)
 
 
+def normalize_image_ref(ref: str) -> str:
+    """附件比对键：文件名小写（同一张图路径写法可不同）。"""
+    from pathlib import Path
+
+    raw = (ref or "").strip()
+    if not raw:
+        return ""
+    name = Path(raw).name.strip()
+    return (name or raw).lower()
+
+
+def _message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    return ""
+
+
+def _is_tool_result_content(content: str) -> bool:
+    return any(m in content for m in _TOOL_HISTORY_MARKERS)
+
+
+def trailing_new_image_refs(
+    history: list[dict[str, Any]] | None,
+) -> list[str]:
+    """尚未被后续工具结果「消费」的用户附图。
+
+    tools_done 卸图只针对已见过的附件。澄清/追问/追加写入的新
+    `[image:…]`：以其首次出现下标为准，若之后还没有工具结果，须再给
+    一轮 vision+附图。仅用工具结果作消费信号（不用 assistant），避免
+    prior 垫入的「此前结论」等 assistant 行把新图误判成已看过。
+    """
+    if not history:
+        return []
+
+    from fawai_avatar.channel.message import extract_image_marks
+
+    first_at: dict[str, int] = {}
+    first_ref: dict[str, str] = {}
+    last_tool = -1
+    for i, msg in enumerate(history):
+        if not isinstance(msg, dict):
+            continue
+        text = _message_text(msg.get("content"))
+        role = str(msg.get("role") or "")
+        if role == "user" and _is_tool_result_content(text):
+            last_tool = i
+            continue
+        if role != "user" or not text or _is_tool_result_content(text):
+            continue
+        _, refs = extract_image_marks(text)
+        for ref in refs:
+            key = normalize_image_ref(ref)
+            if not key or key in first_at:
+                continue
+            first_at[key] = i
+            first_ref[key] = ref
+
+    pending: list[str] = []
+    for key, idx in sorted(first_at.items(), key=lambda kv: kv[1]):
+        if idx > last_tool:
+            pending.append(first_ref[key])
+    return pending
+
+
 def looks_like_fs_web_goal(goal: str) -> bool:
     text = (goal or "").lower()
     if not text:
@@ -426,8 +490,9 @@ def infer_prompt_profile(
 ) -> PromptProfile:
     """规则推断本轮提示档（不加额外 LLM）。
 
-    有图 ≠ 全程 VLM：首轮可 vision 附图；一旦已有工具回合且本轮非 GUI/截屏，
-    强制卸图走 fs（即使 goal 未命中 file hint），避免每轮重塞用户图绑死 VLM。
+    有图 ≠ 全程 VLM：某附件首轮可 vision 附图；该附件对应的工具/assistant
+    回合之后卸图走 fs。新附件（澄清/追问刚写入 history 的 `[image:…]`）
+    再给一轮 vision+附图，不因旧附件的 tools_done 被误卸。
     """
     coding = looks_like_coding_goal(goal)
     file_like = (
@@ -439,6 +504,7 @@ def infer_prompt_profile(
     gui_like = looks_like_gui_goal(goal)
     has_img = goal_has_user_image(goal)
     tools_done = history_has_tool_rounds(history)
+    pending_imgs = trailing_new_image_refs(history)
 
     # 网页内操作优先于桌面点浏览器；不进 fs（避免剔除 browser_*）
     if browser_like and not gui_like:
@@ -448,7 +514,11 @@ def infer_prompt_profile(
     if gui_like:
         return profile_gui()
 
-    # 已进入工具闭环：文件/前端，或附图后继续探索——卸图走 fs
+    # 新附件尚未被后续 assistant/工具回合挡住 → 再给一轮 vision+附图
+    if pending_imgs:
+        return profile_vision()
+
+    # 已进入工具闭环：文件/前端，或旧附图继续探索——卸图走 fs
     if tools_done and (file_like or has_img):
         if observation_has_screen:
             return profile_gui()

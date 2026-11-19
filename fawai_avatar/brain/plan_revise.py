@@ -1,4 +1,4 @@
-# term:编排脑  doc:doc/功能/复杂任务计划模式/说明.md
+# term:编排脑  doc:doc/功能/02-任务线/03-复杂任务计划模式/说明.md
 """计划修订：reorder / lease_adjust 出修订图（保留已完成，淘汰未决并重建）。"""
 from __future__ import annotations
 

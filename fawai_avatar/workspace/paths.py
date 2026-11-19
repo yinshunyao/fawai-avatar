@@ -1,5 +1,5 @@
-# term:工作区文件  tool:fs_*  doc:doc/功能/工作区文件/说明.md
-# term:自我进化  doc:doc/功能/自我进化/说明.md
+# term:工作区文件  tool:fs_*  doc:doc/功能/06-工作区与编码/01-工作区文件/说明.md
+# term:自我进化  doc:doc/功能/07-知识线/02-自我进化/说明.md
 from __future__ import annotations
 
 import re

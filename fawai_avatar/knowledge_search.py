@@ -1,4 +1,4 @@
-# term:个人知识库  doc:doc/功能/个人知识库/说明.md
+# term:个人知识库  doc:doc/功能/07-知识线/01-个人知识库/说明.md
 """知识检索：工作区文件名/正文 FTS + 笔记 FTS/向量；不再以抽 KV key 当主搜。"""
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-# term:个人知识库  doc:doc/功能/个人知识库/说明.md
+# term:个人知识库  doc:doc/功能/07-知识线/01-个人知识库/说明.md
 """记忆配置：工作区/可读区/数据区索引策略。本机 SQLite，热更新，不写 .env。"""
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ KEY_NAME_INDEX_DIR = "FAWAI_NAME_INDEX_DIR"
 KEY_VECTOR = "FAWAI_LORE_VECTOR"
 KEY_VECTOR_DIR = "FAWAI_LORE_VECTOR_DIR"
 KEY_INDEX_POLICY = "FAWAI_INDEX_POLICY"
-# 成功/失败价值台账晋升 lore：三维（完备/通用/效率）百分比门槛
+# 成功/失败价值台账晋升 lore：三维（完备/重要/效率）百分比门槛
 KEY_LEDGER_GATE_THRESHOLD = "FAWAI_LEDGER_GATE_THRESHOLD"
 # 终态条件短卡蒸馏（E1）：多法成功 / 明确失败 → 台账 → lore
 KEY_TASK_DISTILL = "FAWAI_TASK_DISTILL"

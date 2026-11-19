@@ -1,4 +1,4 @@
-# term:模型配置  doc:doc/功能/LLM接入/说明.md
+# term:模型配置  doc:doc/功能/01-接入与呈现/01-LLM接入/说明.md
 """按模型挂载生成参数：落盘 ``{data_dir}/llm_models/{model}.json``，不写 .env。"""
 from __future__ import annotations
 

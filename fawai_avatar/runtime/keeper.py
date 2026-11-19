@@ -1,4 +1,4 @@
-# term:服务保活  doc:doc/功能/服务保活/说明.md
+# term:服务保活  doc:doc/功能/08-运行与分发/01-服务保活/说明.md
 """外层保活：崩溃自动拉起；响应 Web 下发的重启 / 激活存档；可选代码变更自动重启。"""
 from __future__ import annotations
 

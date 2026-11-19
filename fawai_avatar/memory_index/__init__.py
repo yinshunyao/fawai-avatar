@@ -1,4 +1,4 @@
-# term:全文索引 term:文件名索引  doc:doc/功能/个人知识库/说明.md
+# term:全文索引 term:文件名索引  doc:doc/功能/07-知识线/01-个人知识库/说明.md
 """Filesystem filename index + content FTS5 over configured memory roots."""
 
 from __future__ import annotations

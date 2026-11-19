@@ -1,4 +1,4 @@
-# term:会话网关  doc:doc/功能/会话网关/说明.md
+# term:会话网关  doc:doc/功能/01-接入与呈现/03-会话网关/说明.md
 """本机 frpc：把局域网网关 TCP 穿透到云端 frps remote_port。"""
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-# term:任务内上下文查询  tool:task_context_search/task_context_get  doc:doc/功能/任务内上下文查询/说明.md
+# term:任务内上下文查询  tool:task_context_search/task_context_get  doc:doc/功能/03-大脑/15-任务内上下文查询/说明.md
 """同任务历史词法检索与回灌（有损规划窗的 Recall）。"""
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-# term:控制 doc:doc/功能/控制/说明.md
+# term:控制 doc:doc/功能/05-控制/01-控制/说明.md
 """macOS 权限探测与主动弹窗引导（辅助功能 / 屏幕录制）。
 
 启动时调用 ``ensure_startup_permissions`` 一次性触发系统授权；

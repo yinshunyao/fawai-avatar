@@ -1,4 +1,4 @@
-# term:应用前台  doc:doc/功能/多屏与全屏观察/说明.md
+# term:应用前台  doc:doc/功能/04-观察/03-多屏与全屏观察/说明.md
 """app_focus：名称匹配、假成功回证、参数别名（不依赖真机切窗）。"""
 from __future__ import annotations
 

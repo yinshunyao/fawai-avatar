@@ -1,4 +1,4 @@
-# term:多屏观察  doc:doc/功能/多屏与全屏观察/说明.md
+# term:多屏观察  doc:doc/功能/04-观察/03-多屏与全屏观察/说明.md
 """显示器枚举与 screen_target 解析；不截屏。"""
 from __future__ import annotations
 

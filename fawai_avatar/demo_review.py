@@ -1,4 +1,4 @@
-# term:任务复盘  doc:doc/功能/任务复盘/说明.md
+# term:任务复盘  doc:doc/功能/07-知识线/08-任务复盘/说明.md
 """任务复盘验收：分析不落盘 → 勾选备份执行；终态可删；单/联合。"""
 
 from __future__ import annotations
@@ -183,8 +183,9 @@ def main() -> None:
         assert "lesson" in (skill.get("tags") or []) or str(skill.get("id", "")).startswith(
             "lesson_"
         )
-        stored = SkillStore(data / "skills").get(skill["id"])
+        stored = SkillStore(data / "skills").get(skill["id"], include_disabled=True)
         assert stored is not None
+        assert stored.get("enabled") is False
         assert "失败" in stored.get("steps", "") or "教训" in stored.get("title", "")
         print(
             "failure-lesson",

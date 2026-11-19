@@ -1,5 +1,5 @@
-# term:复杂任务计划模式  doc:doc/功能/复杂任务计划模式/说明.md
-# term:会话通道  doc:doc/功能/会话通道/说明.md
+# term:复杂任务计划模式  doc:doc/功能/02-任务线/03-复杂任务计划模式/说明.md
+# term:会话通道  doc:doc/功能/01-接入与呈现/02-会话通道/说明.md
 """取消编排中任务后须清 awaiting_plan，续跑不得再卡「仍在编排」。"""
 
 from __future__ import annotations

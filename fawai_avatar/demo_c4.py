@@ -1,4 +1,4 @@
-# term:自我进化  doc:doc/功能/自我进化/说明.md
+# term:自我进化  doc:doc/功能/07-知识线/02-自我进化/说明.md
 """C4 验收：E1 Skill 往返；E2 智能体禁改最少核/归档；可新建评测；默认 mock。"""
 
 from __future__ import annotations
@@ -61,13 +61,25 @@ def _case_e1_skill(work: Path, data: Path) -> None:
     assert out.get("ok"), out
 
     store = SkillStore(data / "skills")
-    skill = store.get("c4_hello")
+    skill = store.get("c4_hello", include_disabled=True)
     assert skill is not None, "skill c4_hello missing"
+    assert skill.get("enabled") is False, "skill_write 入库应默认停用"
+    hits_off = store.search("hello")
+    assert all(h.get("id") != "c4_hello" for h in hits_off), hits_off
+    block_off = skills_prompt_block(data / "skills")
+    assert "c4_hello" not in block_off
+    store.set_enabled("c4_hello", True)
     hits = store.search("hello")
     assert any(h.get("id") == "c4_hello" for h in hits), hits
     block = skills_prompt_block(data / "skills")
     assert "c4_hello" in block
-    print("E1 ok", json.dumps({"skill": skill.get("id"), "hits": len(hits)}, ensure_ascii=False))
+    print(
+        "E1 ok",
+        json.dumps(
+            {"skill": skill.get("id"), "hits": len(hits), "default_disabled": True},
+            ensure_ascii=False,
+        ),
+    )
 
 
 def _case_e2_forbid_and_allow(work: Path, data: Path) -> None:

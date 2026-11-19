@@ -1,5 +1,5 @@
-# term:执行反省  tool:brain_reflect  doc:doc/功能/执行反省/说明.md
-# term:步骤重复  tool:brain_stagnation  doc:doc/功能/步骤重复/说明.md
+# term:执行反省  tool:brain_reflect  doc:doc/功能/03-大脑/09-执行反省/说明.md
+# term:步骤重复  tool:brain_stagnation  doc:doc/功能/03-大脑/11-步骤重复/说明.md
 from __future__ import annotations
 
 import hashlib

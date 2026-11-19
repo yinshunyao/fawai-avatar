@@ -1,4 +1,4 @@
-# term:自我进化  doc:doc/功能/自我进化/说明.md
+# term:自我进化  doc:doc/功能/07-知识线/02-自我进化/说明.md
 """Smoke: 终态条件短卡蒸馏启发式 / 关闸 / 跳过已晋升 / 脱敏。"""
 
 from __future__ import annotations
@@ -310,7 +310,7 @@ def main() -> None:
                 "status": "passed",
                 "pass": True,
                 "completeness": 5,
-                "generality": 5,
+                "importance": 5,
                 "efficiency": 4,
                 "rationale": "可复用配置落点",
             }

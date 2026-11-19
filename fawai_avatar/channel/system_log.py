@@ -1,4 +1,4 @@
-# term:系统日志  doc:doc/功能/系统日志/说明.md
+# term:系统日志  doc:doc/功能/07-知识线/09-系统日志/说明.md
 from __future__ import annotations
 
 import json

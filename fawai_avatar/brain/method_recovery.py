@@ -1,5 +1,5 @@
-# term:执行反省  doc:doc/功能/执行反省/说明.md
-# term:完成任务  doc:doc/功能/完成任务/说明.md
+# term:执行反省  doc:doc/功能/03-大脑/09-执行反省/说明.md
+# term:完成任务  doc:doc/功能/03-大脑/04-完成任务/说明.md
 """方法族自我纠错：失败语义→换道约束；远端部署进度闸；远程不在场否决表。"""
 from __future__ import annotations
 

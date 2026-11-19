@@ -1,4 +1,4 @@
-# term:脚本铲子生命周期  doc:doc/功能/脚本铲子生命周期/说明.md
+# term:脚本铲子生命周期  doc:doc/功能/06-工作区与编码/06-脚本铲子生命周期/说明.md
 """脚本铲子生命周期冒烟：shovel_search + 软闸判定（无真实 LLM）。"""
 
 from __future__ import annotations

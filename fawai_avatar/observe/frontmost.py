@@ -1,5 +1,5 @@
-# term:观察  doc:doc/功能/观察/说明.md
-# term:应用前台  doc:doc/议题/多屏与全屏观察/结论.md
+# term:观察  doc:doc/功能/04-观察/01-观察/说明.md
+# term:应用前台  doc:doc/议题/04-观察/03-多屏与全屏观察/结论.md
 """廉价前台窗摘要：不截屏；失败可降级，不崩闭环。"""
 from __future__ import annotations
 

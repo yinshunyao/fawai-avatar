@@ -1,4 +1,4 @@
-# term:语音输入  tool:llm_transcribe  doc:doc/功能/语音输入/说明.md
+# term:语音输入  tool:llm_transcribe  doc:doc/功能/01-接入与呈现/05-语音输入/说明.md
 """语音转写：OpenAI 兼容 chat + input_audio（默认 qwen3-asr-flash）。"""
 from __future__ import annotations
 

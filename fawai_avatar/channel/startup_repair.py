@@ -1,4 +1,4 @@
-# term:服务保活  doc:doc/功能/服务保活/说明.md
+# term:服务保活  doc:doc/功能/08-运行与分发/01-服务保活/说明.md
 """启动失败 → 一键创建整改任务（目标/要求/边界）。"""
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ def build_startup_repair_goal(
 ## 要求
 1. 先读栈与相关源码定位根因；禁止凭印象大改。当前已知一类问题：旧 `system_logs.sqlite` 缺列时，`CREATE INDEX … analyze_task_id` 早于 `ALTER TABLE` 导致 `OperationalError`——若证据吻合，须保证**先迁移加列再建依赖索引**（或等价安全顺序），并自测旧库可起。
 2. 改后本地验证：初始化 SystemLogStore / 起网关不再因该错误退出；降级路径仍保留作兜底。
-3. 同步 `doc/功能/系统日志` 或 `服务保活`（若行为有变）与术语表实现映射。
+3. 同步 `doc/功能/07-知识线/09-系统日志` 或 `服务保活`（若行为有变）与术语表实现映射。
 4. 结束时在 success 的 thought 用中文说明：根因、改了哪些文件、如何防复发。
 
 ## 边界

@@ -1,4 +1,4 @@
-# term:会话 Diff  tool:diff_confirm  doc:doc/功能/编码闭环/说明.md
+# term:会话 Diff  tool:diff_confirm  doc:doc/功能/06-工作区与编码/04-编码闭环/说明.md
 """confirm 模式下的暂存补丁。"""
 
 from __future__ import annotations
@@ -7,7 +7,7 @@ import json
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any  # noqa: F401 — unify_diff_bundle return
 
 
 class PendingDiffStore:
@@ -73,7 +73,27 @@ class PendingDiffStore:
         return rec
 
 
-def unified_diff(path: str, old: str, new: str, *, max_lines: int = 200) -> str:
+def diff_line_stats(diff: str) -> dict[str, int]:
+    """统计 unified diff 的增删行（不含 ---/+++ 文件头）。"""
+    added = 0
+    deleted = 0
+    for line in (diff or "").splitlines():
+        if line.startswith("+++") or line.startswith("---"):
+            continue
+        if line.startswith("+"):
+            added += 1
+        elif line.startswith("-"):
+            deleted += 1
+    return {"added": added, "deleted": deleted}
+
+
+def unified_diff(
+    path: str,
+    old: str,
+    new: str,
+    *,
+    max_lines: int | None = 200,
+) -> str:
     import difflib
 
     old_lines = old.splitlines(keepends=True)
@@ -87,6 +107,31 @@ def unified_diff(path: str, old: str, new: str, *, max_lines: int = 200) -> str:
             n=3,
         )
     )
-    if len(lines) > max_lines:
+    if max_lines is not None and max_lines > 0 and len(lines) > max_lines:
         lines = lines[:max_lines] + ["…(diff truncated)\n"]
     return "".join(lines)
+
+
+def unify_diff_bundle(
+    path: str,
+    old: str,
+    new: str,
+    *,
+    preview_lines: int = 80,
+) -> dict[str, Any]:
+    """完整 diff + 预览截断 + 增删统计。"""
+    full = unified_diff(path, old, new, max_lines=None)
+    stats = diff_line_stats(full)
+    preview = unified_diff(path, old, new, max_lines=preview_lines)
+    truncated = full != preview and "…(diff truncated)" in preview
+    if not truncated and len(full.splitlines()) > preview_lines:
+        # preview 与 full 在末尾标记外仍可能等长不足；以行数再判一次
+        truncated = len(full.splitlines()) > preview_lines
+    return {
+        "diff": preview,
+        "diff_full": full,
+        "truncated": truncated,
+        "added": stats["added"],
+        "deleted": stats["deleted"],
+        "path": path,
+    }

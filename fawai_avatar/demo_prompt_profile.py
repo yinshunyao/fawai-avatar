@@ -1,4 +1,4 @@
-# term:规划提示档  doc:doc/功能/规划提示档/说明.md
+# term:规划提示档  doc:doc/功能/03-大脑/03-规划提示档/说明.md
 """规划提示档：推断与体积冒烟（无真 LLM）。"""
 
 from __future__ import annotations
@@ -42,6 +42,37 @@ def main() -> None:
     p_ui1 = infer_prompt_profile(goal_ui, history=hist)
     assert p_ui1.id == "fs", p_ui1.id
     assert p_ui1.attach_user_images is False
+
+    # tools_done 只卸旧附件；澄清/追问末尾新图须再 vision+附图
+    hist_new_img = hist + [
+        {
+            "role": "user",
+            "content": (
+                "【用户澄清答复】针对「请贴图」：这个图。"
+                "\n[image:data/session_media/new_shot.png]"
+            ),
+        },
+    ]
+    p_new = infer_prompt_profile(goal_ui, history=hist_new_img)
+    assert p_new.id == "vision", p_new.id
+    assert p_new.attach_user_images is True
+    # 仅 assistant 不消费新图；须有工具结果之后才卸图
+    hist_assistant_only = hist_new_img + [
+        {"role": "assistant", "content": "【此前任务结论】已看过旧图"},
+    ]
+    p_asst = infer_prompt_profile(goal_ui, history=hist_assistant_only)
+    assert p_asst.id == "vision", p_asst.id
+    assert p_asst.attach_user_images is True
+    hist_new_consumed = hist_new_img + [
+        {"role": "assistant", "content": "已看过新图，继续改代码"},
+        {
+            "role": "user",
+            "content": "执行结果（工具结果观察）\n- fs_read → ok: 1",
+        },
+    ]
+    p_new_done = infer_prompt_profile(goal_ui, history=hist_new_consumed)
+    assert p_new_done.id == "fs", p_new_done.id
+    assert p_new_done.attach_user_images is False
 
     gui = infer_prompt_profile("用鼠标点击微信窗口发送你好", history=None)
     assert gui.id == "gui", gui.id

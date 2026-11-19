@@ -1,8 +1,8 @@
-# term:能力清单  doc:doc/功能/完成任务/说明.md
-# term:代码索引  doc:doc/功能/代码索引/说明.md
-# term:自我进化  doc:doc/功能/自我进化/说明.md
-# term:编码闭环  doc:doc/功能/编码闭环/说明.md
-# term:浏览器操作  doc:doc/功能/浏览器操作/说明.md
+# term:能力清单  doc:doc/功能/03-大脑/04-完成任务/说明.md
+# term:代码索引  doc:doc/功能/06-工作区与编码/03-代码索引/说明.md
+# term:自我进化  doc:doc/功能/07-知识线/02-自我进化/说明.md
+# term:编码闭环  doc:doc/功能/06-工作区与编码/04-编码闭环/说明.md
+# term:浏览器操作  doc:doc/功能/05-控制/02-浏览器操作/说明.md
 """机读能力清单：供大脑选型与规划后硬校验。"""
 
 from __future__ import annotations
@@ -936,8 +936,8 @@ def capabilities_prompt_block(
         "勿用 lore_search/fts_search 冒充任务上下文；"
         "本步已确认成功 → success_ledger_upsert 写价值卡（可搜；是否 search 自决）；"
         "已确认错族/换道失败 → failure_ledger_upsert 写避坑卡（勿每步 fail 都写）；"
-        "跨任务复用须台账三维过门（记忆配置阈值，默认 80%）后进 lore；"
-        "成功卡用 lore_search(scopes=[lore])；失败卡过门为 avoid，勿当正例；勿只标 promoted；"
+        "跨任务复用须台账三维过门（完备/重要/效率；记忆配置阈值，默认 80%）后进 lore；"
+        "短卡只留怎么做/怎么避；成功卡用 lore_search(scopes=[lore])；失败卡过门为 avoid，勿当正例；勿只标 promoted；"
         "个人知识库 → lore_search（**传 scopes**，读 search_menu 效率档）/ lore_get；"
         "lore_set / lore_note_upsert / lore_buffer_list / lore_vector_reindex / lore_fts_reindex；"
         "专用 name_index_search / fts_search；现扫 fs_grep（效率1）；重建 → memory_index_reindex；"

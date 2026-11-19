@@ -1,4 +1,4 @@
-# term:执行中澄清  doc:doc/功能/执行中澄清/说明.md
+# term:执行中澄清  doc:doc/功能/02-任务线/04-执行中澄清/说明.md
 """执行中澄清：need_input → waiting → 用户选择/短答 → 续跑。"""
 from __future__ import annotations
 

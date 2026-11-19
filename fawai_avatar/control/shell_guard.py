@@ -1,4 +1,4 @@
-# term:控制 tool:shell doc:doc/功能/控制/说明.md
+# term:控制 tool:shell doc:doc/功能/05-控制/01-控制/说明.md
 """shell 本地文件读硬闸：禁止用 cat/cp 等绕过 fs_* 读本机文件。"""
 from __future__ import annotations
 

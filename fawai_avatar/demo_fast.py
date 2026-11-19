@@ -1,4 +1,4 @@
-# term:Fast  doc:doc/功能/Fast/说明.md
+# term:Fast  doc:doc/功能/03-大脑/07-Fast/说明.md
 """Fast 极速：解析、思考覆盖、规划短规则自检。"""
 
 from __future__ import annotations

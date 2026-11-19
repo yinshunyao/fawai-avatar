@@ -1,4 +1,4 @@
-# term:动作段预期闸  doc:doc/功能/动作段预期闸/说明.md
+# term:动作段预期闸  doc:doc/功能/03-大脑/12-动作段预期闸/说明.md
 """多只读动作段：机读 expect + 机械成功跳过 LLM 观察反省。"""
 from __future__ import annotations
 

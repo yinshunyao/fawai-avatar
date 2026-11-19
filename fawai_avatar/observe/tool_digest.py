@@ -1,5 +1,5 @@
-# term:工具结果观察  doc:doc/议题/观察选取策略/结论.md
-# term:观察方式  doc:doc/功能/观察/说明.md
+# term:工具结果观察  doc:doc/议题/04-观察/01-观察选取策略/结论.md
+# term:观察方式  doc:doc/功能/04-观察/01-观察/说明.md
 """工具结果智能取证（obs_tool）：体量门禁、头尾窗、定向抽、落盘指针。"""
 from __future__ import annotations
 

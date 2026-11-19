@@ -1,4 +1,4 @@
-# term:运行时版本  doc:doc/功能/运行时版本/说明.md
+# term:运行时版本  doc:doc/功能/08-运行与分发/02-运行时版本/说明.md
 """产品代码存档：快照 / 列表 / 删除 / 激活（供保活进程切换后重启）。"""
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-# term:LLM 接入  doc:doc/功能/LLM接入/说明.md
+# term:LLM 接入  doc:doc/功能/01-接入与呈现/01-LLM接入/说明.md
 """LLM 供应商凭证 + 角色路由 + 模型档案：本机 SQLite，热更新，不写 .env。"""
 from __future__ import annotations
 

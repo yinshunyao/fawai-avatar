@@ -1,4 +1,4 @@
-# term:LLM 接入  tool:llm_chat  doc:doc/功能/LLM接入/说明.md
+# term:LLM 接入  tool:llm_chat  doc:doc/功能/01-接入与呈现/01-LLM接入/说明.md
 from __future__ import annotations
 
 import json
@@ -178,15 +178,52 @@ class LlmClient:
 
         try:
             stream = client.chat.completions.create(**stream_kwargs)
-        except Exception:
+        except Exception as first_exc:
             # 部分兼容口不认 stream_options：去掉再试
             stream_kwargs.pop("stream_options", None)
             try:
                 stream = client.chat.completions.create(**stream_kwargs)
             except Exception as exc:  # noqa: BLE001
+                # 本地/自建口常不支持 stream（如曾返回 400）；回退非流式，直播只有终稿
+                err = str(exc) or str(first_exc)
+                if _looks_like_stream_unsupported(err):
+                    try:
+                        non_stream = dict(kwargs)
+                        non_stream.pop("stream", None)
+                        non_stream.pop("stream_options", None)
+                        resp = client.chat.completions.create(**non_stream)
+                        msg = resp.choices[0].message
+                        content = msg.content or ""
+                        reasoning = _message_reasoning(msg)
+                        if content or reasoning:
+                            try:
+                                on_delta(
+                                    {
+                                        "thinking": reasoning or "",
+                                        "content": content or "",
+                                        "model": chosen,
+                                        "thinking_meta": thinking_meta_val,
+                                    }
+                                )
+                            except Exception:  # noqa: BLE001
+                                pass
+                        return {
+                            "ok": True,
+                            "content": content,
+                            "reasoning": reasoning,
+                            "tool_calls": _tool_calls_from_message(msg),
+                            "model": chosen,
+                            "route": route_kind,
+                            "provider": provider_id,
+                            "usage": _usage_dict(getattr(resp, "usage", None)),
+                            "thinking": thinking_meta_val,
+                            "stream_fallback": True,
+                        }
+                    except Exception as fallback_exc:  # noqa: BLE001
+                        err = str(fallback_exc)
                 return {
                     "ok": False,
-                    "error": str(exc),
+                    "error": err,
                     "content": "",
                     "tool_calls": [],
                     "model": chosen,
@@ -344,6 +381,16 @@ def embed_texts(
 ) -> dict[str, Any]:
     """OpenAI-compatible embeddings; used by lore vector index."""
     return LlmClient(config).embed(texts, model=model)
+
+
+def _looks_like_stream_unsupported(err: str) -> bool:
+    """自建 OpenAI 壳常见：stream / stream_options → 400。"""
+    low = (err or "").lower()
+    if "stream" in low and ("400" in low or "not support" in low or "unsupported" in low):
+        return True
+    if "error code: 400" in low:
+        return True
+    return False
 
 
 def _safe_json(text: str) -> dict[str, Any]:

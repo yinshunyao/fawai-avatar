@@ -1,5 +1,5 @@
-# term:任务与事件管理  doc:doc/功能/任务与事件管理/说明.md
-# term:步骤业务名  doc:doc/功能/会话通道/说明.md
+# term:任务与事件管理  doc:doc/功能/02-任务线/01-任务与事件管理/说明.md
+# term:步骤业务名  doc:doc/功能/01-接入与呈现/02-会话通道/说明.md
 """任务短标题 + 步骤业务名：启发式与规划字段解析冒烟。"""
 from __future__ import annotations
 

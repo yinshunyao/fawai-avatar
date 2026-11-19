@@ -1,4 +1,4 @@
-# term:会话通道  doc:doc/功能/会话通道/说明.md
+# term:会话通道  doc:doc/功能/01-接入与呈现/02-会话通道/说明.md
 """会话通道：消息信封、枢纽、局域网网关、云端中继骨架。"""
 
 from fawai_avatar.channel.hub import SessionHub

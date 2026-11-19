@@ -1,4 +1,4 @@
-# term:代码索引  tool:code_symbols/code_map/code_index_refresh  doc:doc/功能/代码索引/说明.md
+# term:代码索引  tool:code_symbols/code_map/code_index_refresh  doc:doc/功能/06-工作区与编码/03-代码索引/说明.md
 """工作区代码结构索引：多语言符号 + 落盘复用（Python ast；其余启发式）。"""
 
 from __future__ import annotations

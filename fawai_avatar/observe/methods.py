@@ -1,5 +1,5 @@
-# term:观察方式  doc:doc/议题/观察选取策略/结论.md
-# term:观察选取  doc:doc/功能/观察/说明.md
+# term:观察方式  doc:doc/议题/04-观察/01-观察选取策略/结论.md
+# term:观察选取  doc:doc/功能/04-观察/01-观察/说明.md
 """观察方式目录 + 硬闸门裁候选；LLM 经 Plan.observe_kinds 在候选内选取。"""
 from __future__ import annotations
 

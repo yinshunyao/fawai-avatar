@@ -1,4 +1,4 @@
-# term:Fast  tool:brain_fast  doc:doc/功能/Fast/说明.md
+# term:Fast  tool:brain_fast  doc:doc/功能/03-大脑/07-Fast/说明.md
 """任务极速开关：Fast 开/关（默认关）。
 
 开时：关深度思考、跳过观察反省、禁止进计划模式（单 Worker）。

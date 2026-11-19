@@ -1,4 +1,4 @@
-# term:截屏识别接地  tool:screenshot_grounding  doc:doc/功能/截屏识别接地/说明.md
+# term:截屏识别接地  tool:screenshot_grounding  doc:doc/功能/04-观察/02-截屏识别接地/说明.md
 """截屏后按配置做 VLM 附图或 OCR 出框表。"""
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-# term:假归因超出能力  doc:doc/分析/假归因超出能力与节点失败不接管.md
+# term:假归因超出能力  doc:doc/分析/02-任务线/06-假归因超出能力与节点失败不接管.md
 """failed 假归因「超出能力清单」回灌：文案/脚本属生成+fs_write，勿空口越界。"""
 
 from __future__ import annotations

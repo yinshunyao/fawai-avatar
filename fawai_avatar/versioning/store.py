@@ -1,4 +1,4 @@
-# term:版本管理  tool:version_*  doc:doc/功能/版本管理/说明.md
+# term:版本管理  tool:version_*  doc:doc/功能/06-工作区与编码/02-版本管理/说明.md
 from __future__ import annotations
 
 import json

@@ -1,5 +1,5 @@
-# term:任务线程  doc:doc/功能/会话通道/说明.md
-# term:追问  doc:doc/功能/会话通道/说明.md
+# term:任务线程  doc:doc/功能/01-接入与呈现/02-会话通道/说明.md
+# term:追问  doc:doc/功能/01-接入与呈现/02-会话通道/说明.md
 """线程内跟进路由：同一任务续跑 vs 新建任务；执行中追加分析（LLM；mock 可离线）。"""
 from __future__ import annotations
 

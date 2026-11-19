@@ -1,4 +1,4 @@
-# term:假归因找不到源码  doc:doc/分析/附图后全程VLM与选档缺口.md
+# term:假归因找不到源码  doc:doc/分析/03-大脑/11-附图后全程VLM与选档缺口.md
 """failed 假归因「找不到样式/源码」回灌：已有成功读/命中时禁止空口结案。"""
 
 from __future__ import annotations

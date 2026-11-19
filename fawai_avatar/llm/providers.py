@@ -1,4 +1,4 @@
-# term:LLM 接入  doc:doc/功能/LLM接入/说明.md
+# term:LLM 接入  doc:doc/功能/01-接入与呈现/01-LLM接入/说明.md
 """内置 LLM 供应商预设：选供应商 → 默认 base_url + 路由模型；密钥仍由用户填写。"""
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-# term:自主操控  doc:doc/功能/自主操控/说明.md
+# term:自主操控  doc:doc/功能/05-控制/03-自主操控/说明.md
 """C3 窄场景冒烟：提示档、能力、AX 降级、DRY_RUN 接地动作。
 
 真机 TextEdit（需辅助功能 + .[gui]）：

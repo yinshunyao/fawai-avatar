@@ -1,4 +1,4 @@
-# term:观察反省  tool:brain_obs_reflect  doc:doc/功能/观察反省/说明.md
+# term:观察反省  tool:brain_obs_reflect  doc:doc/功能/03-大脑/10-观察反省/说明.md
 """工具结果观察成功回灌后的轻量思考反省（软建议，非失败裁决）。"""
 from __future__ import annotations
 

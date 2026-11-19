@@ -1,4 +1,4 @@
-# term:规划历史窗  doc:doc/功能/编码闭环/说明.md
+# term:规划历史窗  doc:doc/功能/06-工作区与编码/04-编码闭环/说明.md
 """会反复注入的摘要和待办：去掉口令，并禁止把「读过」写成「禁读」。"""
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-# term:进程中断续跑  doc:doc/功能/进程中断续跑/说明.md
+# term:进程中断续跑  doc:doc/功能/02-任务线/02-进程中断续跑/说明.md
 """工作任务闭环检查点：进程重启后从断点继续，而非整任务重开。"""
 from __future__ import annotations
 

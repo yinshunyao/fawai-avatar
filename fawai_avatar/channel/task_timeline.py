@@ -1,4 +1,4 @@
-# term:会话通道  doc:doc/功能/会话通道/说明.md
+# term:会话通道  doc:doc/功能/01-接入与呈现/02-会话通道/说明.md
 """当会话历史裁掉 progress 时，从任务 meta.steps 回放执行时间线。"""
 from __future__ import annotations
 
@@ -131,8 +131,10 @@ def rebuild_timeline_from_task(task: TaskRecord) -> list[Message]:
             ok = bool(raw.get("ok"))
             # 回放不回灌原始 stdout（配置/口令文件常落在这里）；只留动作摘要 + 成败
             head = ""
+            tool_name = ""
             if j < len(actions) and isinstance(actions[j], dict):
                 head = _summarize_action_dict(actions[j])
+                tool_name = str((actions[j] or {}).get("kind") or "").strip()
             err = ""
             if not ok:
                 err = _clip(str(raw.get("message") or "").strip().splitlines()[0] if raw.get("message") else "", 80)
@@ -141,18 +143,21 @@ def rebuild_timeline_from_task(task: TaskRecord) -> list[Message]:
                 body = head or "ok"
             else:
                 body = f"{head}\n{err}" if head and err else (head or err or "failed")
+            acted_meta: dict[str, Any] = {
+                "phase": "acted",
+                "ok": ok,
+                "step": i,
+                "run_id": run_id,
+                "reconstructed": True,
+            }
+            if tool_name:
+                acted_meta["tool"] = tool_name
             out.append(
                 _progress(
                     prefix + body,
                     task_id=tid,
                     ts=step_ts + 0.002 + 0.0001 * j,
-                    meta={
-                        "phase": "acted",
-                        "ok": ok,
-                        "step": i,
-                        "run_id": run_id,
-                        "reconstructed": True,
-                    },
+                    meta=acted_meta,
                     mid=f"recon-{tid}-acted-{i}-{j}",
                 )
             )

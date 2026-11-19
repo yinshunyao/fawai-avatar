@@ -1,4 +1,4 @@
-# term:运行平台  doc:doc/功能/运行平台/说明.md
+# term:运行平台  doc:doc/功能/08-运行与分发/03-运行平台/说明.md
 """运行平台探测：OS / headless / GUI 可用性；供大脑提示与能力闸门共用。"""
 from __future__ import annotations
 

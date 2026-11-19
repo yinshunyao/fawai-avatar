@@ -1,4 +1,4 @@
-# term:观察反省  doc:doc/功能/观察反省/说明.md
+# term:观察反省  doc:doc/功能/03-大脑/10-观察反省/说明.md
 """观察反省冒烟：mock 产出、history 格式、关闸、闭环成功路径注入。"""
 from __future__ import annotations
 

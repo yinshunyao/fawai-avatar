@@ -1,5 +1,5 @@
-# term:观察  doc:doc/功能/观察/说明.md
-# term:界面回证  doc:doc/功能/自主操控/说明.md
+# term:观察  doc:doc/功能/04-观察/01-观察/说明.md
+# term:界面回证  doc:doc/功能/05-控制/03-自主操控/说明.md
 """窄场景回证：文件态 / 观察截图可用 / AX 界面态（不做 OCR/VLM 定位）。"""
 
 from __future__ import annotations

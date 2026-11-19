@@ -1,4 +1,4 @@
-# term:大脑  doc:doc/功能/大脑/说明.md
+# term:大脑  doc:doc/功能/03-大脑/01-大脑/说明.md
 """规划 JSON 半截修复 + 格式软降级冒烟。"""
 from __future__ import annotations
 

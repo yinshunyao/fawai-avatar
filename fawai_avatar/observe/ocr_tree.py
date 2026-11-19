@@ -1,4 +1,4 @@
-# term:截屏识别接地  tool:obs_ocr_table  doc:doc/功能/截屏识别接地/说明.md
+# term:截屏识别接地  tool:obs_ocr_table  doc:doc/功能/04-观察/02-截屏识别接地/说明.md
 """OCR 文字框元素表：编号 ref（ocr1…）+ 全局 bounds，供 ui_click 解析。"""
 from __future__ import annotations
 

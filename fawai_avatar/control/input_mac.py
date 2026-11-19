@@ -1,4 +1,4 @@
-# term:控制 tool:ui_act doc:doc/功能/控制/说明.md
+# term:控制 tool:ui_act doc:doc/功能/05-控制/01-控制/说明.md
 """GUI 键鼠输入（依赖可选 extras `[gui]` 的 pyautogui）。
 
 文件名沿用 input_mac；实现跨平台，无 GUI / 未装依赖时由调用方先做 headless 闸门。

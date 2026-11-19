@@ -1,4 +1,4 @@
-# term:个人知识库  doc:doc/功能/个人知识库/说明.md
+# term:个人知识库  doc:doc/功能/07-知识线/01-个人知识库/说明.md
 """记忆配置开关须在搜索时生效（不必重建索引）。"""
 
 from __future__ import annotations

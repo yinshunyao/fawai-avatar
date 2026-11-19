@@ -1,4 +1,4 @@
-# term:答复覆盖闸门  doc:doc/功能/完成任务/说明.md
+# term:答复覆盖闸门  doc:doc/功能/03-大脑/04-完成任务/说明.md
 """问询/状态/配置盘点/交稿输出类：success 的 thought 须直接回答用户，禁止过程元叙述与交稿意图句。"""
 
 from __future__ import annotations

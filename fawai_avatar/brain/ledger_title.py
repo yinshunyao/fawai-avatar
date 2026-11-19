@@ -1,4 +1,4 @@
-# term:成功价值台账|失败价值台账  doc:doc/功能/成功价值台账/说明.md
+# term:成功价值台账|失败价值台账  doc:doc/功能/07-知识线/05-成功价值台账/说明.md
 """Ledger → lore 笔记标题：用人话短句，拒绝 True/False 等无意义值。"""
 
 from __future__ import annotations

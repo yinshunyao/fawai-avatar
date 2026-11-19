@@ -1,4 +1,4 @@
-# term:任务统计  doc:doc/功能/任务统计/说明.md
+# term:任务统计  doc:doc/功能/01-接入与呈现/07-任务统计/说明.md
 """任务级用量汇总：token / 墙钟 / 轮次 / LLM 次数 / 工具分布。"""
 from __future__ import annotations
 

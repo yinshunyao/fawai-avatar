@@ -1,4 +1,4 @@
-# term:截屏识别接地  tool:llm_ocr  doc:doc/功能/截屏识别接地/说明.md
+# term:截屏识别接地  tool:llm_ocr  doc:doc/功能/04-观察/02-截屏识别接地/说明.md
 """截屏 OCR：百炼 Qwen-OCR 高精识别（文字+框），供观察层出 ref 表。"""
 from __future__ import annotations
 

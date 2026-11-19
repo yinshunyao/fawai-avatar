@@ -1,4 +1,4 @@
-# term:系统配置  term:模型配置  doc:doc/功能/会话网关/说明.md
+# term:系统配置  term:模型配置  doc:doc/功能/01-接入与呈现/03-会话网关/说明.md
 """Web 系统/模型配置：产品 FAWAI_* 读写仓库根 .env，并热更新进程环境。"""
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ FIELDS: tuple[SettingField, ...] = (
         "价值台账晋升阈值（%）",
         "int",
         default="80",
-        hint="成功/失败台账：完备·通用·效率三维均须≥该百分比才写入 lore；默认 80（约 1～5 分制的 4 分）",
+        hint="成功/失败台账：完备·重要·效率三维均须≥该百分比才写入 lore；默认 80（约 1～5 分制的 4 分）",
     ),
     SettingField(
         "FAWAI_TASK_DISTILL",
@@ -144,8 +144,8 @@ FIELDS: tuple[SettingField, ...] = (
         "会话口令",
         "str",
         secret=True,
-        needs_restart=True,
-        hint="留空保存不改；清空后下次启动随机",
+        needs_restart=False,
+        hint="请用系统配置页「修改会话口令」立即生效；清空后下次启动随机",
     ),
     SettingField("FAWAI_GATEWAY_CAPTURE", "gateway", "任务截屏观察", "bool", default="0"),
     SettingField(
@@ -172,6 +172,13 @@ FIELDS: tuple[SettingField, ...] = (
         "bool",
         default="1",
         needs_restart=True,
+    ),
+    SettingField(
+        "FAWAI_PUBLIC_BASE_URL",
+        "gateway",
+        "公网基址",
+        "str",
+        hint="如 https://host:port；远端 VLM / 跨端绝对 media 用；空则尝试 frp",
     ),
     SettingField(
         "FAWAI_FRP_SERVER_ADDR",

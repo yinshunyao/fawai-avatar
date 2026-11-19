@@ -1,4 +1,4 @@
-# term:数据目录  doc:doc/功能/任务与事件管理/说明.md
+# term:数据目录  doc:doc/功能/02-任务线/01-任务与事件管理/说明.md
 """Normalize ``data_dir`` for SQLite stores; reject store objects mistaken for paths."""
 from __future__ import annotations
 

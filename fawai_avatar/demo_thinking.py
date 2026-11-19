@@ -1,4 +1,4 @@
-# term:LLM 接入  tool:llm_chat  doc:doc/功能/LLM接入/说明.md
+# term:LLM 接入  tool:llm_chat  doc:doc/功能/01-接入与呈现/01-LLM接入/说明.md
 """本地自检：思考角色默认 + 档案覆盖 + extra_body。"""
 from __future__ import annotations
 
@@ -62,6 +62,31 @@ def main() -> None:
 
     skipped = thinking_extra_body(main_r, model="gpt-4o", base_url="https://api.openai.com/v1")
     _ok("skip_unknown_openai", skipped == {})
+
+    # DeepSeek 官方方言：thinking.type；关必须显式 disabled
+    ds_on = thinking_extra_body(
+        main_r, model="deepseek-v4-pro", base_url="https://api.deepseek.com"
+    )
+    _ok("deepseek_url_on", ds_on.get("thinking") == {"type": "enabled"})
+    _ok("deepseek_url_no_enable_thinking", "enable_thinking" not in ds_on)
+    ds_off = thinking_extra_body(
+        fast_r, model="deepseek-v4-pro", base_url="https://api.deepseek.com"
+    )
+    _ok("deepseek_url_off", ds_off.get("thinking") == {"type": "disabled"})
+    ds_by_model = thinking_extra_body(fast_r, model="deepseek-v4-pro")
+    _ok(
+        "deepseek_model_off",
+        ds_by_model.get("thinking") == {"type": "disabled"},
+    )
+    # 百炼上的 DeepSeek：仍走 enable_thinking
+    ds_dash = thinking_extra_body(
+        fast_r,
+        model="deepseek-v4-pro",
+        provider_id="dashscope",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    )
+    _ok("deepseek_dashscope_off", ds_dash.get("enable_thinking") is False)
+    _ok("deepseek_dashscope_no_thinking_obj", "thinking" not in ds_dash)
 
     meta = thinking_meta(main_r)
     _ok("meta_enabled", isinstance(meta, dict) and meta.get("enabled") is True)

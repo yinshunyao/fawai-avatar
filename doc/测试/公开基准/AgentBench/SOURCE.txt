@@ -1,0 +1,4 @@
+upstream: https://github.com/THUDM/AgentBench
+commit: d1e4a10db08c87075c78972e48ecc182be03e2d5
+license: Apache-2.0
+purpose: local sample mirror for reading only; NOT wired into fawai tests

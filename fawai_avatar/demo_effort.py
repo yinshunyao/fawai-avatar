@@ -1,4 +1,4 @@
-# term:Effort  doc:doc/功能/Effort/说明.md
+# term:Effort  doc:doc/功能/03-大脑/06-Effort/说明.md
 """Effort 开/关：解析、提示词门槛、约束清洗自检。"""
 
 from __future__ import annotations

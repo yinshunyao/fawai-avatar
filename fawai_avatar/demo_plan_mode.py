@@ -1,4 +1,4 @@
-# term:复杂任务计划模式  doc:doc/功能/复杂任务计划模式/说明.md
+# term:复杂任务计划模式  doc:doc/功能/02-任务线/03-复杂任务计划模式/说明.md
 """计划模式冒烟：判定、出图、调度、终态衔接、reorder/lease_adjust 真修订。"""
 from __future__ import annotations
 

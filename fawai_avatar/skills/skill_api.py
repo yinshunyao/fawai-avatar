@@ -1,4 +1,4 @@
-# term:Skill 管理  doc:doc/功能/Skill管理/说明.md
+# term:Skill 管理  doc:doc/功能/07-知识线/03-Skill管理/说明.md
 """HTTP helpers for Skill CRUD / upload (used by lan_gateway)."""
 
 from __future__ import annotations

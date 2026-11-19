@@ -1,4 +1,4 @@
-# term:会话通道  doc:doc/功能/会话通道/说明.md
+# term:会话通道  doc:doc/功能/01-接入与呈现/02-会话通道/说明.md
 """无网自检：LLM 直播节流 + 流式字段归一。"""
 from __future__ import annotations
 

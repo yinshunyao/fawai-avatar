@@ -1,0 +1,316 @@
+{
+  "description": "What is the Presentation of Credentials has a Termination of Mission listed as August 15, 2000?",
+  "label": [
+    "March 19, 1998"
+  ],
+  "create": {
+    "database": "wikisql",
+    "init": "wikisql_init.sql"
+  },
+  "table": {
+    "table_name": "US Ambassadors and Envoy Extraordinary to Colombia",
+    "table_info": {
+      "columns": [
+        {
+          "name": "Representative",
+          "type": "TEXT"
+        },
+        {
+          "name": "Title",
+          "type": "TEXT"
+        },
+        {
+          "name": "Presentation of Credentials",
+          "type": "TEXT"
+        },
+        {
+          "name": "Termination of Mission",
+          "type": "TEXT"
+        },
+        {
+          "name": "Appointed by",
+          "type": "TEXT"
+        }
+      ],
+      "rows": [
+        [
+          "Dabney H. Maury",
+          "Envoy Extraordinary and Minister Plenipotentiary",
+          "January 20, 1887",
+          "June 22, 1889",
+          "Grover Cleveland"
+        ],
+        [
+          "Luther F. McKinney",
+          "Envoy Extraordinary and Minister Plenipotentiary",
+          "July 17, 1893",
+          "December 6, 1896",
+          "Grover Cleveland"
+        ],
+        [
+          "Charles Burdett Hart",
+          "Envoy Extraordinary and Minister Plenipotentiary",
+          "July 19, 1897",
+          "March 19, 1903",
+          "William McKinley"
+        ],
+        [
+          "Arthur M. Beaupre",
+          "Envoy Extraordinary and Minister Plenipotentiary",
+          "April 13, 1903",
+          "December 19, 1903",
+          "Theodore Roosevelt"
+        ],
+        [
+          "William W. Russell",
+          "Envoy Extraordinary and Minister Plenipotentiary",
+          "December 9, 1904",
+          "May 24, 1905",
+          "Theodore Roosevelt"
+        ],
+        [
+          "John Barrett",
+          "Envoy Extraordinary and Minister Plenipotentiary",
+          "November 27, 1905",
+          "September 24, 1906",
+          "Theodore Roosevelt"
+        ],
+        [
+          "Thomas C. Dawson",
+          "Envoy Extraordinary and Minister Plenipotentiary",
+          "October 16, 1907",
+          "April 25, 1909",
+          "Theodore Roosevelt"
+        ],
+        [
+          "Elliott Northcott",
+          "Envoy Extraordinary and Minister Plenipotentiary",
+          "August 13, 1909",
+          "September 16, 1910",
+          "William H. Taft"
+        ],
+        [
+          "Thaddeus Austin Thompson",
+          "Envoy Extraordinary and Minister Plenipotentiary",
+          "August 30, 1913",
+          "June 26, 1916",
+          "Woodrow Wilson"
+        ],
+        [
+          "Hoffman Philip",
+          "Envoy Extraordinary and Minister Plenipotentiary",
+          "February 22, 1919",
+          "May 29, 1922",
+          "Woodrow Wilson"
+        ],
+        [
+          "Samuel H. Piles",
+          "Envoy Extraordinary and Minister Plenipotentiary",
+          "May 29, 1922",
+          "September 17, 1928",
+          "Warren G. Harding"
+        ],
+        [
+          "Jefferson Caffery",
+          "Envoy Extraordinary and Minister Plenipotentiary",
+          "November 28, 1928",
+          "May 20, 1933",
+          "Calvin Coolidge"
+        ],
+        [
+          "Sheldon Whitehouse",
+          "Envoy Extraordinary and Minister Plenipotentiary",
+          "December 6, 1933",
+          "December 8, 1934",
+          "Franklin D. Roosevelt"
+        ],
+        [
+          "Spruille Braden",
+          "Ambassador Extraordinary and Plenipotentiary",
+          "February 15, 1939",
+          "March 12, 1942",
+          "Franklin D. Roosevelt"
+        ],
+        [
+          "John C. Wiley",
+          "Ambassador Extraordinary and Plenipotentiary",
+          "December 16, 1944",
+          "May 3, 1947",
+          "Franklin D. Roosevelt"
+        ],
+        [
+          "Willard L. Beaulac",
+          "Ambassador Extraordinary and Plenipotentiary",
+          "September 30, 1947",
+          "June 29, 1951",
+          "Harry S. Truman"
+        ],
+        [
+          "Capus M. Waynick",
+          "Ambassador Extraordinary and Plenipotentiary",
+          "August 23, 1951",
+          "September 21, 1953",
+          "Harry S. Truman"
+        ],
+        [
+          "Rudolf E. Schoenfeld",
+          "Ambassador Extraordinary and Plenipotentiary",
+          "January 28, 1954",
+          "January 26, 1955",
+          "Dwight D. Eisenhower"
+        ],
+        [
+          "Philip W. Bonsal",
+          "Ambassador Extraordinary and Plenipotentiary",
+          "April 1, 1955",
+          "April 24, 1957",
+          "Dwight D. Eisenhower"
+        ],
+        [
+          "Dempster McIntosh",
+          "Ambassador Extraordinary and Plenipotentiary",
+          "July 30, 1959",
+          "January 6, 1961",
+          "Dwight D. Eisenhower"
+        ],
+        [
+          "Fulton Freeman",
+          "Ambassador Extraordinary and Plenipotentiary",
+          "June 15, 1961",
+          "March 14, 1964",
+          "John F. Kennedy"
+        ],
+        [
+          "Covey T. Oliver",
+          "Ambassador Extraordinary and Plenipotentiary",
+          "August 13, 1964",
+          "August 29, 1966",
+          "Lyndon B. Johnson"
+        ],
+        [
+          "Viron P. Vaky",
+          "Ambassador Extraordinary and Plenipotentiary",
+          "April 5, 1974",
+          "June 23, 1976",
+          "Richard Nixon"
+        ],
+        [
+          "Diego C. Asencio",
+          "Ambassador Extraordinary and Plenipotentiary",
+          "December 6, 1977",
+          "June 22, 1980",
+          "Jimmy Carter"
+        ],
+        [
+          "Thomas D. Boyatt",
+          "Ambassador Extraordinary and Plenipotentiary",
+          "December 3, 1980",
+          "April 14, 1983",
+          "Jimmy Carter"
+        ],
+        [
+          "Lewis Arthur Tambs",
+          "Ambassador Extraordinary and Plenipotentiary",
+          "May 2, 1983",
+          "February 15, 1985",
+          "Ronald Reagan"
+        ],
+        [
+          "Thomas Edmund McNamara",
+          "Ambassador Extraordinary and Plenipotentiary",
+          "October 4, 1988",
+          "August 14, 1991",
+          "Ronald Reagan"
+        ],
+        [
+          "John Doe",
+          "Ambassador Extraordinary and Plenipotentiary",
+          "January 1, 2020",
+          "December 31, 2022",
+          "Donald Trump"
+        ],
+        [
+          "Jane Smith",
+          "Envoy Extraordinary and Minister Plenipotentiary",
+          "June 1, 2018",
+          "May 31, 2021",
+          "Barack Obama"
+        ],
+        [
+          "Robert Jones",
+          "Ambassador Extraordinary and Plenipotentiary",
+          "March 1, 2019",
+          "February 28, 2022",
+          "Joe Biden"
+        ],
+        [
+          "Amanda Lee",
+          "Envoy Extraordinary and Minister Plenipotentiary",
+          "September 1, 2020",
+          "August 31, 2023",
+          "Donald Trump"
+        ],
+        [
+          "Kevin Kim",
+          "Ambassador Extraordinary and Plenipotentiary",
+          "December 1, 2021",
+          "November 30, 2024",
+          "Joe Biden"
+        ],
+        [
+          "Sarah Johnson",
+          "Envoy Extraordinary and Minister Plenipotentiary",
+          "July 1, 2019",
+          "June 30, 2022",
+          "Donald Trump"
+        ],
+        [
+          "Michael Brown",
+          "Ambassador Extraordinary and Plenipotentiary",
+          "August 1, 2020",
+          "July 31, 2023",
+          "Joe Biden"
+        ],
+        [
+          "Rachel Garcia",
+          "Envoy Extraordinary and Minister Plenipotentiary",
+          "October 1, 2022",
+          "September 30, 2025",
+          "Kamala Harris"
+        ],
+        [
+          "Daniel Lee",
+          "Ambassador Extraordinary and Plenipotentiary",
+          "February 1, 2023",
+          "January 31, 2026",
+          "Joe Biden"
+        ],
+        [
+          "Alexis Kim",
+          "Envoy Extraordinary and Minister Plenipotentiary",
+          "April 1, 2024",
+          "March 31, 2027",
+          "Hillary Clinton"
+        ]
+      ]
+    }
+  },
+  "evaluation": "",
+  "example": "",
+  "type": [
+    "other"
+  ],
+  "heads": [
+    "Representative",
+    "Title",
+    "Presentation of Credentials",
+    "Termination of Mission",
+    "Appointed by"
+  ],
+  "add_description": "The name of this table is US Ambassadors and Envoy Extraordinary to Colombia, and the headers of this table are Representative,Title,Presentation of Credentials,Termination of Mission,Appointed by.",
+  "sql": {
+    "query": "SELECT Presentation of Credentials FROM \"US Ambassadors and Envoy Extraordinary to Colombia\" WHERE \"Termination of Mission\" = 'August 15, 2000';",
+    "length": 144
+  },
+  "source": "wikisql"
+}

@@ -1,4 +1,4 @@
-# term:浏览器操作 tool:browser_* doc:doc/功能/浏览器操作/说明.md
+# term:浏览器操作 tool:browser_* doc:doc/功能/05-控制/02-浏览器操作/说明.md
 """Playwright 浏览器控制：无头可用，不占前台键鼠租约。
 
 依赖可选 extras ``[browser]``；首次使用前需 ``playwright install chromium``。

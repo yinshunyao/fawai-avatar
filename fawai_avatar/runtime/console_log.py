@@ -1,5 +1,5 @@
-# term:会话网关  doc:doc/功能/会话网关/说明.md
-# term:服务保活  doc:doc/功能/服务保活/说明.md
+# term:会话网关  doc:doc/功能/01-接入与呈现/03-会话网关/说明.md
+# term:服务保活  doc:doc/功能/08-运行与分发/01-服务保活/说明.md
 """控制台日志：统一时间戳（uvicorn + print + 应用 logging）+ 落盘供 Web 查看。"""
 from __future__ import annotations
 

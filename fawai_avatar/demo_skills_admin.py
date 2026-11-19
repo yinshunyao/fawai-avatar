@@ -1,4 +1,4 @@
-# term:Skill 管理  doc:doc/功能/Skill管理/说明.md
+# term:Skill 管理  doc:doc/功能/07-知识线/03-Skill管理/说明.md
 """Skill 管理冒烟：CRUD / 启停 / 上传 / 规划注入过滤。"""
 
 from __future__ import annotations
@@ -33,9 +33,8 @@ def main() -> None:
                 "source": "demo_skills_admin",
             }
         )
-        assert skill["enabled"] is True
-        assert store.get("demo_skill_admin") is not None
-        store.set_enabled("demo_skill_admin", False)
+        # 入库默认停用：未人工启用前不进检索 / 规划注入
+        assert skill["enabled"] is False
         assert store.get("demo_skill_admin") is None
         assert store.get("demo_skill_admin", include_disabled=True) is not None
         hits = store.search("demo", include_disabled=False)
@@ -43,6 +42,7 @@ def main() -> None:
         block = skills_prompt_block(root)
         assert "demo_skill_admin" not in block
         store.set_enabled("demo_skill_admin", True)
+        assert store.get("demo_skill_admin") is not None
         assert store.delete("demo_skill_admin") is True
         assert store.get("demo_skill_admin", include_disabled=True) is None
 

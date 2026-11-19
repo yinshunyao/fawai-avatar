@@ -1,5 +1,5 @@
-# term:脚本铲子生命周期  tool:shovel_search  doc:doc/功能/脚本铲子生命周期/说明.md
-# term:成败经验与检索极性  tool:shovel_search  doc:doc/功能/成败经验与检索极性/说明.md
+# term:脚本铲子生命周期  tool:shovel_search  doc:doc/功能/06-工作区与编码/06-脚本铲子生命周期/说明.md
+# term:成败经验与检索极性  tool:shovel_search  doc:doc/功能/07-知识线/07-成败经验与检索极性/说明.md
 """检索 fawai_shovels 文首 meta（复用 scaffold/catalog 解析）。"""
 
 from __future__ import annotations

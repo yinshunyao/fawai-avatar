@@ -1,4 +1,4 @@
-# term:LLM 接入  tool:llm_chat  doc:doc/功能/LLM接入/说明.md
+# term:LLM 接入  tool:llm_chat  doc:doc/功能/01-接入与呈现/01-LLM接入/说明.md
 """按调用角色 + 模型档案解析 enable_thinking / thinking_budget。"""
 from __future__ import annotations
 
@@ -74,20 +74,27 @@ def resolve_thinking(
     }
 
 
-def provider_supports_thinking_extra(
+def _thinking_context_blob(
+    *,
+    base_url: str | None = None,
+    model: str | None = None,
+    provider_id: str | None = None,
+) -> str:
+    return f"{base_url or ''} {model or ''} {provider_id or ''}".lower()
+
+
+def _is_dashscope_family(
     *,
     base_url: str | None = None,
     model: str | None = None,
     provider_id: str | None = None,
 ) -> bool:
-    """对已接线供应商写入 ``enable_thinking``，避免未知兼容口报参数错误。
-
-    已接线：DashScope / 千问系、内置小黄（``kklt`` / ``kklt.lol``）。
-    """
     pid = (provider_id or "").strip().lower()
-    if pid in {"dashscope", "kklt"}:
+    if pid == "dashscope":
         return True
-    blob = f"{base_url or ''} {model or ''}".lower()
+    blob = _thinking_context_blob(
+        base_url=base_url, model=model, provider_id=provider_id
+    )
     return any(
         x in blob
         for x in (
@@ -95,8 +102,57 @@ def provider_supports_thinking_extra(
             "aliyuncs.com",
             "qwen",
             "tongyi",
-            "kklt.lol",
         )
+    )
+
+
+def _is_kklt(
+    *,
+    base_url: str | None = None,
+    model: str | None = None,
+    provider_id: str | None = None,
+) -> bool:
+    pid = (provider_id or "").strip().lower()
+    if pid == "kklt":
+        return True
+    blob = _thinking_context_blob(
+        base_url=base_url, model=model, provider_id=provider_id
+    )
+    return "kklt.lol" in blob
+
+
+def _is_deepseek(
+    *,
+    base_url: str | None = None,
+    model: str | None = None,
+    provider_id: str | None = None,
+) -> bool:
+    """官方 DeepSeek、模型名含 deepseek、或自定义口挂 deepseek 模型。"""
+    pid = (provider_id or "").strip().lower()
+    if pid == "deepseek":
+        return True
+    blob = _thinking_context_blob(
+        base_url=base_url, model=model, provider_id=provider_id
+    )
+    return "deepseek" in blob
+
+
+def provider_supports_thinking_extra(
+    *,
+    base_url: str | None = None,
+    model: str | None = None,
+    provider_id: str | None = None,
+) -> bool:
+    """对已接线供应商写入思考开关，避免未知兼容口报参数错误。
+
+    已接线：DashScope / 千问系、内置小黄（``kklt``）、DeepSeek（模型名 / ``api.deepseek.com``）。
+    """
+    return (
+        _is_dashscope_family(
+            base_url=base_url, model=model, provider_id=provider_id
+        )
+        or _is_kklt(base_url=base_url, model=model, provider_id=provider_id)
+        or _is_deepseek(base_url=base_url, model=model, provider_id=provider_id)
     )
 
 
@@ -107,15 +163,34 @@ def thinking_extra_body(
     model: str | None = None,
     provider_id: str | None = None,
 ) -> dict[str, Any]:
-    """已接线供应商：``extra_body`` 的 ``enable_thinking`` / ``thinking_budget``。"""
+    """已接线供应商：按方言写入 ``extra_body`` 思考开关。
+
+    - DashScope / 千问 / 小黄 / 百炼上的 DeepSeek：``enable_thinking``（及可选 ``thinking_budget``）
+    - 官方 DeepSeek 与其它挂 deepseek 模型的兼容口：``thinking.type=enabled|disabled``
+      （官方默认开思考；关必须显式 ``disabled``。不把 ``thinking_budget`` 映射成 ``reasoning_effort``。）
+    """
     if not isinstance(resolved, dict):
         return {}
     if not provider_supports_thinking_extra(
         base_url=base_url, model=model, provider_id=provider_id
     ):
         return {}
-    out: dict[str, Any] = {}
+
     enabled = resolved.get("enable_thinking")
+    # DeepSeek 官方方言：非百炼族时用 thinking.type（百炼文档对 DeepSeek 仍用 enable_thinking）
+    use_deepseek_native = _is_deepseek(
+        base_url=base_url, model=model, provider_id=provider_id
+    ) and not _is_dashscope_family(
+        base_url=base_url, model=model, provider_id=provider_id
+    )
+    if use_deepseek_native:
+        if enabled is None:
+            return {}
+        return {
+            "thinking": {"type": "enabled" if bool(enabled) else "disabled"},
+        }
+
+    out: dict[str, Any] = {}
     if enabled is not None:
         out["enable_thinking"] = bool(enabled)
     budget = resolved.get("thinking_budget")

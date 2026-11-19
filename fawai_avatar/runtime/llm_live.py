@@ -1,4 +1,4 @@
-# term:会话通道  doc:doc/功能/会话通道/说明.md
+# term:会话通道  doc:doc/功能/01-接入与呈现/02-会话通道/说明.md
 """LLM 规划/反省等待时的节流直播进度（只广播、不落历史）。"""
 from __future__ import annotations
 

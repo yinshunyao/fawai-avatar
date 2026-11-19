@@ -1,4 +1,4 @@
-# term:规划历史窗  doc:doc/功能/编码闭环/说明.md
+# term:规划历史窗  doc:doc/功能/06-工作区与编码/04-编码闭环/说明.md
 """规划前压缩 history：近窗全文 + 远窗摘要，抑制重复只读回灌膨胀。"""
 
 from __future__ import annotations

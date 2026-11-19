@@ -180,6 +180,11 @@
                         startOnLoad: false,
                         securityLevel: 'strict',
                         theme: 'neutral',
+                        flowchart: { useMaxWidth: true },
+                        sequence: { useMaxWidth: false },
+                        gantt: { useMaxWidth: true },
+                        journey: { useMaxWidth: true },
+                        timeline: { useMaxWidth: true },
                     });
                 } catch (e) {
                     console.warn('Mermaid init:', e);
@@ -217,6 +222,8 @@
                 const wrap = document.createElement('div');
                 wrap.className = 'mermaid';
                 wrap.innerHTML = out.svg || '';
+                wrap.setAttribute('role', 'img');
+                wrap.setAttribute('aria-label', 'Diagram');
                 pre.replaceWith(wrap);
             } catch (e) {
                 console.warn('Mermaid render:', e);

@@ -1,4 +1,4 @@
-# term:服务保活  doc:doc/功能/服务保活/说明.md
+# term:服务保活  doc:doc/功能/08-运行与分发/01-服务保活/说明.md
 """冒烟：磁盘 .env 覆盖进程旧环境（重启不回退 Web 模型配置）。"""
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-# term:个人知识库  doc:doc/功能/个人知识库/说明.md
+# term:个人知识库  doc:doc/功能/07-知识线/01-个人知识库/说明.md
 """按区 / 数据业务划分的索引方式策略（多选）；对智能体可见，由 LLM 选通道。"""
 from __future__ import annotations
 

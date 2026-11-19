@@ -1,11 +1,11 @@
-# term:工作区文件  tool:fs_*  doc:doc/功能/工作区文件/说明.md
-# term:代码索引  tool:code_symbols/code_map/code_index_refresh  doc:doc/功能/代码索引/说明.md
-# term:自我进化  tool:skill_*  doc:doc/功能/自我进化/说明.md
-# term:编码闭环  tool:fs_patch/code_check/git_*/explore_*  doc:doc/功能/编码闭环/说明.md
-# term:Python 扩展  tool:py_write/py_pip/py_run  doc:doc/功能/Python扩展/说明.md
-# term:脚本铲子生命周期  tool:shovel_search  doc:doc/功能/脚本铲子生命周期/说明.md
-# term:成败经验与检索极性  tool:skill_search|shovel_search  doc:doc/功能/成败经验与检索极性/说明.md
-# term:任务内上下文查询  tool:task_context_search/task_context_get  doc:doc/功能/任务内上下文查询/说明.md
+# term:工作区文件  tool:fs_*  doc:doc/功能/06-工作区与编码/01-工作区文件/说明.md
+# term:代码索引  tool:code_symbols/code_map/code_index_refresh  doc:doc/功能/06-工作区与编码/03-代码索引/说明.md
+# term:自我进化  tool:skill_*  doc:doc/功能/07-知识线/02-自我进化/说明.md
+# term:编码闭环  tool:fs_patch/code_check/git_*/explore_*  doc:doc/功能/06-工作区与编码/04-编码闭环/说明.md
+# term:Python 扩展  tool:py_write/py_pip/py_run  doc:doc/功能/06-工作区与编码/05-Python扩展/说明.md
+# term:脚本铲子生命周期  tool:shovel_search  doc:doc/功能/06-工作区与编码/06-脚本铲子生命周期/说明.md
+# term:成败经验与检索极性  tool:skill_search|shovel_search  doc:doc/功能/07-知识线/07-成败经验与检索极性/说明.md
+# term:任务内上下文查询  tool:task_context_search/task_context_get  doc:doc/功能/03-大脑/15-任务内上下文查询/说明.md
 """后台动作：文件、代码索引、版本、Skill、编码闭环、Python 扩展、铲检索、任务内上下文（不经 GUI / 不受 FAWAI_DRY_RUN 影响）。"""
 
 from __future__ import annotations
@@ -38,7 +38,13 @@ from fawai_avatar.workspace.paths import (
     format_file_missing_message,
     resolve_for_read,
 )
-from fawai_avatar.workspace.pending_diff import PendingDiffStore, unified_diff
+from fawai_avatar.workspace.diff_store import DiffStore
+from fawai_avatar.workspace.pending_diff import (
+    PendingDiffStore,
+    diff_line_stats,
+    unify_diff_bundle,
+    unified_diff,
+)
 from fawai_avatar.workspace.py_session import (
     PySessionError,
     pip_install,
@@ -140,6 +146,7 @@ class BackgroundTools:
         self.versions = VersionStore(data / "versions", root)
         self.skills = SkillStore(data / "skills")
         self.pending = PendingDiffStore(data)
+        self.diff_store = DiffStore(data)
 
     def _ledger_notify(self, *, phase: str) -> Any | None:
         from fawai_avatar.brain.ledger_gate import GateNotify
@@ -734,7 +741,7 @@ class BackgroundTools:
             data = {k: v for k, v in dict(result).items() if k not in {"old_text", "new_text"}}
             if version_id:
                 data["version_id"] = version_id
-            data["diff"] = unified_diff(path, result.get("old_text", ""), result.get("new_text", ""))
+            # diff 由 _apply_or_pend 统一打包
             return data
 
         return self._apply_or_pend(
@@ -821,10 +828,25 @@ class BackgroundTools:
         if mode == "confirm":
             return self._pend(kind=kind, path=path, old_text=old_text, new_text=new_text, args=args)
         data = apply_fn()
-        diff = data.get("diff") or unified_diff(path, old_text, new_text)
-        data["diff"] = diff
+        bundle = unify_diff_bundle(path, old_text, new_text)
+        data["diff"] = bundle["diff"]
+        data["diff_full"] = bundle["diff_full"]
+        data["truncated"] = bundle["truncated"]
+        data["added"] = bundle["added"]
+        data["deleted"] = bundle["deleted"]
         data["diff_mode"] = "auto"
         data.setdefault("path", path)
+        task_id = str(args.get("task_id") or self.task_id or "") or None
+        stored = self.diff_store.put(
+            task_id=task_id,
+            path=path,
+            diff=str(bundle["diff_full"]),
+            pending=False,
+            added=int(bundle["added"]),
+            deleted=int(bundle["deleted"]),
+            kind=kind,
+        )
+        data["diff_id"] = stored["id"]
         # 弱写入标注：死 CSS 变量等无目标副作用（闭环 success 闸会拦）
         try:
             from fawai_avatar.brain.write_effect import assess_patch_effect
@@ -854,14 +876,24 @@ class BackgroundTools:
         args: dict[str, Any],
     ) -> ExecResult:
         task_id = str(args.get("task_id") or self.task_id or "") or None
-        diff = unified_diff(path, old_text, new_text)
+        bundle = unify_diff_bundle(path, old_text, new_text)
         rec = self.pending.put(
             task_id=task_id,
             path=path,
             old_text=old_text,
             new_text=new_text,
             kind=kind,
-            diff=diff,
+            diff=str(bundle["diff_full"]),
+        )
+        stored = self.diff_store.put(
+            task_id=task_id,
+            path=path,
+            diff=str(bundle["diff_full"]),
+            pending=True,
+            pending_id=str(rec["id"]),
+            added=int(bundle["added"]),
+            deleted=int(bundle["deleted"]),
+            kind=kind,
         )
         return ExecResult(
             ok=True,
@@ -870,7 +902,12 @@ class BackgroundTools:
                 "pending": True,
                 "pending_id": rec["id"],
                 "path": path,
-                "diff": diff,
+                "diff": bundle["diff"],
+                "diff_full": bundle["diff_full"],
+                "truncated": bundle["truncated"],
+                "added": bundle["added"],
+                "deleted": bundle["deleted"],
+                "diff_id": stored["id"],
                 "diff_mode": "confirm",
                 "kind": kind,
             },
@@ -898,7 +935,30 @@ class BackgroundTools:
         self.pending.mark(str(rec["id"]), "confirmed")
         data = dict(result)
         data["pending_id"] = rec["id"]
-        data["diff"] = rec.get("diff")
+        full = str(rec.get("diff") or "")
+        stats = diff_line_stats(full)
+        preview_lines = full.splitlines()
+        truncated = len(preview_lines) > 80
+        data["diff"] = (
+            "\n".join(preview_lines[:80]) + ("\n…(diff truncated)\n" if truncated else "\n")
+            if full
+            else ""
+        )
+        data["diff_full"] = full
+        data["truncated"] = truncated
+        data["added"] = stats["added"]
+        data["deleted"] = stats["deleted"]
+        stored = self.diff_store.put(
+            task_id=str(rec.get("task_id") or self.task_id or "") or None,
+            path=path,
+            diff=full,
+            pending=False,
+            pending_id=str(rec["id"]),
+            added=stats["added"],
+            deleted=stats["deleted"],
+            kind="diff_confirm",
+        )
+        data["diff_id"] = stored["id"]
         if version_id:
             data["version_id"] = version_id
         return ExecResult(ok=True, message=f"confirmed {path}", data=data)
@@ -1518,7 +1578,7 @@ class BackgroundTools:
         skill = self.skills.get(sid, include_disabled=True)
         if skill is None:
             return ExecResult(ok=False, message=f"skill not found: {sid}")
-        if not skill.get("enabled", True):
+        if not skill.get("enabled", False):
             return ExecResult(
                 ok=False,
                 message=f"skill disabled: {sid}",

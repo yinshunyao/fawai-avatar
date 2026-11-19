@@ -1,4 +1,4 @@
-# term:会话通道  doc:doc/功能/会话通道/说明.md
+# term:会话通道  doc:doc/功能/01-接入与呈现/02-会话通道/说明.md
 from __future__ import annotations
 
 import asyncio
@@ -266,6 +266,129 @@ def _check_rebuild_timeline_from_steps() -> None:
     assert not timeline_needs_rebuild(live2, task)
 
 
+def _check_cursor_session_progress_steps() -> None:
+    """假 Cursor 事件 → progress 拆解 + meta.steps 可回放。"""
+    from fawai_avatar.cursor_agent.session_progress import CursorSessionProgress
+
+    emitted: list[tuple[str, dict]] = []
+
+    def emit(text: str, *, task_id: str, meta: dict) -> None:
+        emitted.append((text, dict(meta or {})))
+
+    ui = CursorSessionProgress(emit, task_id="cursor-task-demo", base_meta={})
+    ui.handle({"type": "run_start", "run_id": "run-1", "agent_id": "agt-1"})
+    ui.handle({"type": "thinking_done", "text": "先查网关报错"})
+    ui.handle(
+        {
+            "type": "tool_start",
+            "call_id": "c1",
+            "name": "shell",
+            "display_name": "Shell",
+            "detail": "ls data/logs",
+            "commands": ["ls data/logs"],
+            "args": {"command": "ls data/logs"},
+        }
+    )
+    ui.handle(
+        {
+            "type": "tool_done",
+            "call_id": "c1",
+            "name": "shell",
+            "display_name": "Shell",
+            "detail": "ls data/logs",
+            "result_preview": "hub.log",
+            "status": "completed",
+            "ok": True,
+        }
+    )
+    ui.handle({"type": "assistant_segment", "text": "网关已定位。"})
+    tail = ui.finalize()
+    assert tail.get("run_id") == "run-1"
+    assert (tail.get("cursor_tools") or {}).get("Shell") == 1
+    steps = tail.get("steps") or []
+    assert len(steps) >= 2, steps
+    assert any(
+        (m.get("phase") == "planned") and m.get("run_id") == "run-1" for _, m in emitted
+    )
+    assert any(m.get("phase") == "act" and m.get("tool") == "Shell" for _, m in emitted)
+    assert any(m.get("phase") == "acted" and m.get("ok") is True for _, m in emitted)
+    assert any(m.get("live") and m.get("content_text") for _, m in emitted)
+
+    task = TaskRecord(
+        task_id="cursorrebuild001234567890abcdef01",
+        goal="查网关",
+        status="completed",
+        meta={
+            "ok": True,
+            "runtime": "cursor_agent",
+            "final_thought": "网关已定位。",
+            "steps": steps,
+        },
+        created_at=2000.0,
+        updated_at=2100.0,
+    )
+    live = [Message.text_user("查网关", task_id=task.task_id)]
+    assert timeline_needs_rebuild(live, task)
+    rebuilt = rebuild_timeline_from_task(task)
+    assert any(m.kind == "progress" and (m.meta or {}).get("phase") == "planned" for m in rebuilt)
+    assert any(m.kind == "progress" and (m.meta or {}).get("phase") == "act" for m in rebuilt)
+    assert any(m.kind == "progress" and (m.meta or {}).get("phase") == "acted" for m in rebuilt)
+
+
+def _check_cursor_thinking_coalesce() -> None:
+    """流式 thinking 一词一条时，须收成单步 planned，禁止 I/need/to 各一步。"""
+    from fawai_avatar.cursor_agent.runtime import (
+        _flush_thinking_done,
+        _push_thinking_delta,
+    )
+    from fawai_avatar.cursor_agent.session_progress import CursorSessionProgress
+
+    events: list[dict] = []
+
+    def emit_rt(ev: dict) -> None:
+        events.append(dict(ev))
+
+    acc: list[str] = []
+    for w in ["I", " need", " to", " SSH", " to", " the", " host"]:
+        _push_thinking_delta(acc, w, emit_rt, "agt")
+    assert all(e.get("type") == "thinking_delta" for e in events), events
+    assert not any(e.get("type") == "thinking_done" for e in events)
+    _flush_thinking_done(acc, emit_rt, "agt")
+    dones = [e for e in events if e.get("type") == "thinking_done"]
+    assert len(dones) == 1, dones
+    assert "SSH" in str(dones[0].get("text") or "")
+
+    emitted: list[tuple[str, dict]] = []
+
+    def emit_ui(text: str, *, task_id: str, meta: dict) -> None:
+        emitted.append((text, dict(meta or {})))
+
+    ui = CursorSessionProgress(emit_ui, task_id="coalesce-demo")
+    ui.handle({"type": "run_start", "run_id": "r2", "agent_id": "a2"})
+    for w in ["I", "need", "to", "SSH"]:
+        ui.handle({"type": "thinking_done", "text": w})
+    ui.handle(
+        {
+            "type": "tool_done",
+            "call_id": "x1",
+            "name": "shell",
+            "display_name": "Shell",
+            "detail": "ssh …",
+            "args": {"command": "ssh host"},
+            "result_preview": "ok",
+            "ok": True,
+        }
+    )
+    tail = ui.finalize()
+    planned = [m for _, m in emitted if m.get("phase") == "planned"]
+    assert len(planned) == 1, planned
+    assert "I" in str(planned[0].get("thinking_text") or "") or any(
+        "I" in t for t, m in emitted if m.get("phase") == "planned"
+    )
+    assert (tail.get("cursor_tools") or {}).get("Shell") == 1
+    assert len(tail.get("steps") or []) >= 2
+
+
 def _iter_phase_literals(py_root: Path) -> set[str]:
     """扫 Python 里 progress/meta 用到的 phase 字面量（不含测试噪声变量）。"""
     phases: set[str] = set()
@@ -330,6 +453,8 @@ def main() -> None:
     _check_history_keeps_multi_run_segments()
     _check_history_caps_fat_task_progress()
     _check_rebuild_timeline_from_steps()
+    _check_cursor_session_progress_steps()
+    _check_cursor_thinking_coalesce()
     root = Path(tempfile.mkdtemp(prefix="fawai_session_"))
     try:
         os.environ["FAWAI_BRAIN_MOCK"] = "1"

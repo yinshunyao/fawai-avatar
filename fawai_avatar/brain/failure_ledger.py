@@ -1,4 +1,4 @@
-# term:失败价值台账  tool:failure_ledger_upsert|failure_ledger_search|failure_ledger_get  doc:doc/功能/失败价值台账/说明.md
+# term:失败价值台账  tool:failure_ledger_upsert|failure_ledger_search|failure_ledger_get  doc:doc/功能/07-知识线/06-失败价值台账/说明.md
 """本任务失败步骤价值台账：落盘、检索；三维过门后实写 avoid lore。"""
 
 from __future__ import annotations

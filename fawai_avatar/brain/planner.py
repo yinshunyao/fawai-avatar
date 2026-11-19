@@ -1,13 +1,13 @@
-# term:大脑  tool:brain_plan  doc:doc/功能/大脑/说明.md
-# term:规划提示档  tool:prompt_profile  doc:doc/功能/规划提示档/说明.md
-# term:完成任务  doc:doc/功能/完成任务/说明.md
-# term:执行反省  tool:brain_reflect  doc:doc/功能/执行反省/说明.md
-# term:观察反省  tool:brain_obs_reflect  doc:doc/功能/观察反省/说明.md
-# term:步骤重复  tool:brain_stagnation  doc:doc/功能/步骤重复/说明.md
-# term:代码索引  doc:doc/功能/代码索引/说明.md
-# term:自我进化  doc:doc/功能/自我进化/说明.md
-# term:守规约束  doc:doc/功能/守规约束/说明.md
-# term:执行中澄清  doc:doc/功能/执行中澄清/说明.md
+# term:大脑  tool:brain_plan  doc:doc/功能/03-大脑/01-大脑/说明.md
+# term:规划提示档  tool:prompt_profile  doc:doc/功能/03-大脑/03-规划提示档/说明.md
+# term:完成任务  doc:doc/功能/03-大脑/04-完成任务/说明.md
+# term:执行反省  tool:brain_reflect  doc:doc/功能/03-大脑/09-执行反省/说明.md
+# term:观察反省  tool:brain_obs_reflect  doc:doc/功能/03-大脑/10-观察反省/说明.md
+# term:步骤重复  tool:brain_stagnation  doc:doc/功能/03-大脑/11-步骤重复/说明.md
+# term:代码索引  doc:doc/功能/06-工作区与编码/03-代码索引/说明.md
+# term:自我进化  doc:doc/功能/07-知识线/02-自我进化/说明.md
+# term:守规约束  doc:doc/功能/03-大脑/14-守规约束/说明.md
+# term:执行中澄清  doc:doc/功能/02-任务线/04-执行中澄清/说明.md
 from __future__ import annotations
 
 import json
@@ -62,8 +62,8 @@ from fawai_avatar.types import Action, ExecResult, Observation, Plan
 
 
 def _delegate_prompt_lines(*, planner_role: str) -> str:
-    """主脑可写 delegate；快模型禁止再委派。未配置快模型时不提示委派。"""
-    from fawai_avatar.brain.delegate import fast_model_from_env
+    """主脑可写 delegate；快模型禁止再委派。未配置委派面时不提示。"""
+    from fawai_avatar.brain.delegate import cursor_agent_ready, fast_model_from_env
 
     if planner_role == "fast":
         return (
@@ -71,16 +71,25 @@ def _delegate_prompt_lines(*, planner_role: str) -> str:
             "达成停条件或无法继续时 status=success/failed，thought 写清结果摘要给主脑。"
             "禁止 need_input（拿不准则 failed 并说明缺口）。\n"
         )
-    if not fast_model_from_env():
+    parts: list[str] = []
+    if fast_model_from_env():
+        parts.append(
+            "- **主脑委派（机械步优先）**：已配置快模型时，下列低风险子段**应优先**委派，勿逐步自跑烧主脑深度思考——"
+            "只读定位/多文件检索、已知路径再读、远程 ls/进程/supervisor/端口探查、同构只读链、简单改写；"
+            "可把多步探查收成一段 `goal`+`stop_when`。"
+            '写法：顶层 `"delegate":{"tier":"fast","goal":"子目标","stop_when":"停条件","max_steps":5}`，'
+            "此时 actions 必须为空、status=continue；段末摘要回灌后再由你验收、换道或终答。"
+        )
+    if cursor_agent_ready():
+        parts.append(
+            "- **Cursor Agent 委派**：较大编码实现段可用 "
+            '`"delegate":{"tier":"cursor","goal":"子目标","stop_when":"停条件"}` '
+            "（或原生 `delegate_to_cursor`）；由 Cursor local agent 执行后摘要回灌。"
+        )
+    if not parts:
         return ""
-    return (
-        "- **主脑委派（机械步优先）**：已配置快模型时，下列低风险子段**应优先**委派，勿逐步自跑烧主脑深度思考——"
-        "只读定位/多文件检索、已知路径再读、远程 ls/进程/supervisor/端口探查、同构只读链、简单改写；"
-        "可把多步探查收成一段 `goal`+`stop_when`。"
-        '写法：顶层 `"delegate":{"tier":"fast","goal":"子目标","stop_when":"停条件","max_steps":5}`，'
-        "此时 actions 必须为空、status=continue；段末摘要回灌后再由你验收、换道或终答。"
-        "高风险终答/互斥路线/架构决断/需向用户澄清 → 勿委派，主脑自理。\n"
-    )
+    parts.append("高风险终答/互斥路线/架构决断/需向用户澄清 → 勿委派，主脑自理。\n")
+    return "\n".join(parts)
 
 
 def _system_prompt(
@@ -298,7 +307,7 @@ def _system_prompt(
 - **本任务上下文**：远窗/compact 摘要没有的本任务事实 → `task_context_search` → `task_context_get`（msg_id/index 或 observe_path）；禁止把「曾经读过」当成不能再取证后 failed。工作区/笔记检索仍走 lore_search / fts / fs_*，不要混用。
 - **成功价值台账**：本步业务操作已确认成功 → `success_ledger_upsert`（acceptance/commands/config_refs/code_refs/targets/evidence 等）；可 `success_ledger_search`/`get`（**是否搜索由你自决**）。
 - **失败价值台账**：已确认错族/换道失败 → `failure_ledger_upsert`（symptom/cause/do_not_retry/commands_tried 等）；**禁止**每次工具 `ok=false` 都写。可 `failure_ledger_search`/`get`。
-- **台账晋升**：后台评完备/通用/效率，须达记忆配置阈值（默认 80%）才写 lore；失败卡过门为 **avoid**（勿当正例）。跨任务用 `lore_search(scopes=[lore])`；禁止只标 promoted；口令勿写入卡/lore。
+- **台账晋升**：后台评完备/重要/效率，须达记忆配置阈值（默认 80%）才写 lore；重要性=不知道这条是否很难很快做对或避坑；短卡只留怎么做/怎么避与落点指针。失败卡过门为 **avoid**（勿当正例）。跨任务用 `lore_search(scopes=[lore])`；禁止只标 promoted；口令明文勿写入卡/lore（可写见某文件）。
 - **定位文件（条件）**：目标/历史已给明确 path → 定向 `fs_read`/`fs_patch`，**不必**先探仓。仅不知文件时：**先** `lore_search` scopes=`[work_name]`（或含项目名的窄 `fs_glob`）定子目录，再 `fs_grep(path=子目录, pattern=…)`；**禁止** `path=.` / 整 `work_root` / `/Users` 磁盘扫；**禁止**同意图 `lore_search`∥`fs_grep`。`explore_search` 暂时降权，仅多关键词且已收窄 path 时用。再 `code_symbols`。追问/续跑：先 `task_context_search` 找回旧 hits 目录，禁止再扩到整仓。仓外目录须传具体子目录 `path=`。禁止整文件盲 `fs_read`。连续空结果再用 shell `ls`/`find`（macOS 勿用 `find -printf`）。
 - code_symbols / code_map：改代码前看结构（含 html/css 的 id/class/selector/@media；须记忆配置 FAWAI_CODE_INDEX 开，默认开）。explore_search：默认只并行 grep；`include_symbols`/`symbols_query` 才走索引。fs_grep 参数名是 **pattern**。索引可疑时用 code_index_refresh。
 - **检索软偏好（不定死）**：有线索（path/目录/类名片段/path:line）后尽量 fs_grep 收窄，少同文件盲读；已确认相关处理（样式定义/函数体/明确选择器）后尽量精确 pattern 再小窗读或 patch；仍允许宽搜翻页、code_symbols、必要小窗读。
@@ -314,7 +323,7 @@ def _system_prompt(
 - **动作段（少进模）**：不冲突的读和写**优先一次排出 4～8 个 actions**（含 fs_grep/fs_glob/fs_read/shovel_search，以及路径互不相交的 fs_patch/fs_write），`step_kind` 用 `act_parallel`，减少「一步一规划」。同一路径的读与写、同一路径的多写不要同批。前台、`shell` 不要与其它动作同批。带 expect 的动作单独串行。多步执行流**倾向**声明机读预期（非硬闸）：精确 `"expect":{{"contains":"…"}}`，模糊 `contains_any`（多个可接受标记）或 `not_contains`；纯探路与 **fs_patch/replace 默认可不带**；勿断言 `patch applied`（成功回执是 `· applied`）。不满足才停段反省。
 - **新建脚本的结果行**：`py_write` / 临时 shell / 新铲子尽最大努力在 stdout 打一行稳定标记（`OK` 或 `FAIL:原因`），业务失败用非零退出；随后 `py_run`/`shell` 用 expect 对齐该行。不要在脚本里再调模型。已有只读工具只靠 `ok` 即可，不必强行补 expect。
 - **step_kind（步骤分类）**：本段类型必填语义——`sense`（环境取证）/ `act_serial`（有序执行，expect 自衔接）/ `act_parallel`（不冲突的读和写并发，段末统一观察）/ `analyze`（小结/反省向）/ `finalize`（面向用户交稿）。缺省可由系统回填。`act_*`/`analyze`/`finalize` 时 **observe_kinds 优先 `["none"]`**，禁止无必要再刷工作区顶层浅列表；需要画面/控件树再点 `obs_screen`/`obs_ax`。路径不冲突的多个读或写用 `act_parallel`。
-- skill_write：args 含 id/title/when_to_use/steps（及可选 tags/source）；skill_search 用 args.query；命中分 imitate/avoid，avoid 勿照抄。
+- skill_write：args 含 id/title/when_to_use/steps（及可选 tags/source）；steps 尽量短，只指导怎么做/怎么避与落点；skill_search 用 args.query；命中分 imitate/avoid，avoid 勿照抄；入库默认停用须人工启用。
 - 个人知识库：先读【索引配置】search_menu（efficiency 5→1）；`lore_search` **应传 scopes**（如 tasks / work_name / lore）；先高效窄范围，空再扩；可一段并行多个不同 scopes；缺省全开混合勿当首选；回含 index_catalog；写入 lore_set / lore_note_upsert。
 {delegate_rule}{coding_extra}{image_extra}{gui_rule}{doc_screen_rule}- **观察选取**：本步 actions 只能依据「当前观察」与历史里的「执行结果（工具结果观察）」；不要假装看到未观察的 GUI。
 - 步首可能**无截屏图**。方式为 `none` 时环境观察真跳过（无前台摘要、无画面）。真实取证（obs_fs / obs_screen / obs_ax）摘要可含「前台窗摘要」与「显示器清单」。目标依赖某 App 可见 UI 时：有前台态则先对照；需要画面证据再点选 obs_screen，禁止无画面却断言屏幕上的具体内容。
@@ -332,7 +341,7 @@ def _system_prompt(
 - **升级/部署到远端**：优先在 work_root 调用已有 `rsync-ssh-deploy.sh` / `ssh-run-with-pass.sh`，或临时 `fs_write` 脚本再 shell 执行；禁止只做 BatchMode 公钥探针就 abort。
 - **执行中澄清**：可查可推断的不要问。用户表示远程/不在电脑边时，禁止 options 要求「粘贴配置/拷进工作区」。仅当继续猜会有明显坏结果（不可逆写/删、提交、外发、花钱、互斥执行路线必选一）时用 status=need_input；thought 为给用户的问句；done=false；actions 必须为空数组。若已有明确互斥选项，必须填 options（≥2 的 id+label），引导用户选一项，禁止改成开放式「请描述」。低风险缺省可合理假设并继续。
 {path_ledger}{effort_rule}{fast_rule}{step_tier_rule}格式：
-{{"thought":"执行中短句；终稿按交稿体例写报告","title":"≤16字主题短名","step_label":"≤16字本步业务意图","step_kind":"act_serial",{step_run_fmt}"status":"continue|success|failed|need_input","done":false,"observe_kinds":["none"],"observe_args":{{"obs_screen":{{"screen_target":"frontmost"}}}},"doc_refs":["doc/功能/控制/说明.md"],"architecture_skip_reason":"","options":[{{"id":"a","label":"选项A"}}],"delegate":null,"actions":[{{"kind":"{kinds}","args":{{}},"needs_foreground":false,"write_resources":[],"expect":null}}]}}
+{{"thought":"执行中短句；终稿按交稿体例写报告","title":"≤16字主题短名","step_label":"≤16字本步业务意图","step_kind":"act_serial",{step_run_fmt}"status":"continue|success|failed|need_input","done":false,"observe_kinds":["none"],"observe_args":{{"obs_screen":{{"screen_target":"frontmost"}}}},"doc_refs":["doc/功能/05-控制/01-控制/说明.md"],"architecture_skip_reason":"","options":[{{"id":"a","label":"选项A"}}],"delegate":null,"actions":[{{"kind":"{kinds}","args":{{}},"needs_foreground":false,"write_resources":[],"expect":null}}]}}
 - status 为 success 或 failed 时通常 done 为 true；continue / need_input 时 done 为 false。
 - **title**：与目标主题强相关的短名（中文优先，≤16 字，不要任务 id、不要整句复述 goal）；若观察/历史提示「尚未命名」则本轮必须给出；已有正式标题时可省略。
 - **step_label**：本步业务意图短名（中文优先，≤16 字），写给会话步骤簇头看，如「查找转换脚本」「转 VOC XML」；禁止写 phase 名（规划中/观察反省）或工具名堆砌；每轮 continue/success/failed/need_input 都应给出；与 title（整条任务名）分开。
@@ -573,16 +582,10 @@ def _observation_user_text(goal: str, observation: Observation) -> str:
 
 
 def _image_data_url(path: str) -> str | None:
-    import base64
-    from pathlib import Path
+    """兼容旧调用；新路径优先走 ``media_public.llm_image_url``（公网 media / data:）。"""
+    from fawai_avatar.channel.media_public import llm_image_url
 
-    p = Path(path)
-    if not p.is_file():
-        return None
-    raw = p.read_bytes()
-    mime = "image/png" if p.suffix.lower() == ".png" else "image/jpeg"
-    b64 = base64.b64encode(raw).decode("ascii")
-    return f"data:{mime};base64,{b64}"
+    return llm_image_url(path)
 
 
 def _resolve_goal_image_ref(ref: str) -> str | None:
@@ -615,23 +618,28 @@ def _observation_user_message(
     observation: Observation,
     *,
     attach_images: bool = True,
+    history: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """有用户附图或观察截图则走多模态 content，触发 VLM 路由；否则纯文本。
 
     attach_images=False（如 fs 档）时卸图，避免后续轮仍绑 VLM。
+    attach_images=True 时除 goal 内外，还附 history 末尾新写入的 `[image:…]`
+    （澄清/追问），与 `trailing_new_image_refs` 选档一致。
     """
     from fawai_avatar.channel.message import extract_image_marks
+    from fawai_avatar.brain.prompt_profile import trailing_new_image_refs
 
     clean_goal, goal_refs = extract_image_marks(goal)
+    pending_refs = trailing_new_image_refs(history) if attach_images else []
     text = _observation_user_text(clean_goal, observation)
-    if goal_refs and not attach_images:
+    if (goal_refs or pending_refs) and not attach_images:
         text += "\n（用户曾附图；本轮提示档已卸图，请依据目标文字与工具/观察历史继续。）"
     # OCR 接地成功：默认卸掉截屏图，走文本模型选 ref（用户附图仍可附）
     detach_screen = bool((observation.meta or {}).get("detach_image_for_plan"))
     screen_path = (observation.image_path or "").strip()
     image_paths: list[str] = []
     if attach_images:
-        for ref in goal_refs:
+        for ref in list(goal_refs) + list(pending_refs):
             resolved = _resolve_goal_image_ref(ref)
             if resolved and resolved not in image_paths:
                 image_paths.append(resolved)
@@ -1339,6 +1347,9 @@ class Brain:
             fast=plan_fast,
             step_tier=bool(getattr(self, "_plan_step_tier", False)),
         )
+        at_dirs_block = str(getattr(self, "_plan_at_dirs_block", "") or "").strip()
+        if at_dirs_block:
+            system = system + "\n" + at_dirs_block + "\n"
         if mutate_prefer and verify_read:
             system = (
                 system
@@ -1367,6 +1378,7 @@ class Brain:
                 goal,
                 observation,
                 attach_images=profile.attach_user_images,
+                history=history,
             )
         )
 

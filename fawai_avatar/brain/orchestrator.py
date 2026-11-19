@@ -1,4 +1,4 @@
-# term:编排脑  doc:doc/功能/复杂任务计划模式/说明.md
+# term:编排脑  doc:doc/功能/02-任务线/03-复杂任务计划模式/说明.md
 """计划模式编排脑：进模判定、出图、追加对话对图/租约的影响分析。"""
 from __future__ import annotations
 

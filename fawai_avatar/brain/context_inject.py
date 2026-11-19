@@ -1,4 +1,4 @@
-# term:编码上下文  doc:doc/功能/编码闭环/说明.md
+# term:编码上下文  doc:doc/功能/06-工作区与编码/04-编码闭环/说明.md
 """规划前注入 AGENTS.md / .cursor/rules 摘要。"""
 
 from __future__ import annotations

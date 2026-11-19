@@ -1,4 +1,4 @@
-# term:自我进化  doc:doc/功能/自我进化/说明.md
+# term:自我进化  doc:doc/功能/07-知识线/02-自我进化/说明.md
 """任务终态条件短卡蒸馏：多法成功 / 已明确失败 → 价值台账 → 过门 lore。"""
 
 from __future__ import annotations
@@ -263,7 +263,8 @@ def distill_system_prompt(*, kind: str) -> str:
     if kind == "failure":
         return (
             "你是任务终态短卡蒸馏器。从材料提炼**一张**失败避坑卡（不是整段轨迹）。\n"
-            "要求：换掉主机名/绝对路径专名后仍可复用；禁止口令/Token/带密 ssh 命令。\n"
+            "写法尽量简化：只指导「别怎么做 / 该换哪条」；可写本机具体落点"
+            "（如某服账号与口令在哪个文件）；禁止堆长轨迹与口令/Token **明文**。\n"
             "goal_slice / symptom / cause / do_not_retry 必须是给人读的短句（建议≤40字），"
             "禁止 true/false/null/空布尔；它们会直接用作知识库标题。\n"
             "只输出一个 JSON 对象，字段：\n"
@@ -273,8 +274,9 @@ def distill_system_prompt(*, kind: str) -> str:
         )
     return (
         "你是任务终态短卡蒸馏器。从材料提炼**一张**成功复用卡（不是整段轨迹）。\n"
-        "聚焦：多法试错后真正奏效的路径、配置落点、命令族、勿再踩的坑。\n"
-        "要求：换掉主机名/单文件专名后仍成立；禁止口令/Token/带密 ssh 命令。\n"
+        "写法尽量简化：只指导「怎么做」；可写本机具体落点"
+        "（如本机 SSH 用哪种连法、某服账号与口令在哪个文件哪一键）；"
+        "禁止堆长轨迹与口令/Token **明文**。\n"
         "acceptance / goal_slice 必须是给人读的验收短句（建议≤40字），"
         "禁止 true/false/null/空布尔；它们会直接用作知识库标题。\n"
         "只输出一个 JSON 对象，字段：\n"

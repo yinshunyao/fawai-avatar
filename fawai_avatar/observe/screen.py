@@ -1,5 +1,5 @@
-# term:观察 tool:ui_observe doc:doc/功能/观察/说明.md
-# term:多屏观察  doc:doc/功能/多屏与全屏观察/说明.md
+# term:观察 tool:ui_observe doc:doc/功能/04-观察/01-观察/说明.md
+# term:多屏观察  doc:doc/功能/04-观察/03-多屏与全屏观察/说明.md
 from __future__ import annotations
 
 import struct

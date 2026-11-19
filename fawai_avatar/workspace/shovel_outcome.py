@@ -1,4 +1,4 @@
-# term:成败经验与检索极性  doc:doc/功能/成败经验与检索极性/说明.md
+# term:成败经验与检索极性  doc:doc/功能/07-知识线/07-成败经验与检索极性/说明.md
 """铲子运行态成败账（与设计态三维分并列，禁止混用）。"""
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
-# term:自我进化  tool:skill_search|skill_write|skill_get  doc:doc/功能/自我进化/说明.md
-# term:Skill 管理  doc:doc/功能/Skill管理/说明.md
-# term:成败经验与检索极性  tool:skill_search  doc:doc/功能/成败经验与检索极性/说明.md
+# term:自我进化  tool:skill_search|skill_write|skill_get  doc:doc/功能/07-知识线/02-自我进化/说明.md
+# term:Skill 管理  doc:doc/功能/07-知识线/03-Skill管理/说明.md
+# term:成败经验与检索极性  tool:skill_search  doc:doc/功能/07-知识线/07-成败经验与检索极性/说明.md
 """Skill / 教训文件库（E1）：规则质量门 + 检索摘要 + 启停。"""
 
 from __future__ import annotations
@@ -121,7 +121,8 @@ def validate_skill_payload(raw: dict[str, Any]) -> dict[str, Any]:
     tag_list = [str(t).strip() for t in tags if str(t).strip()][:20]
     source = str(raw.get("source") or "").strip()[:200]
     created = str(raw.get("created_at") or "").strip() or _utc_now()
-    enabled = _as_bool(raw.get("enabled"), default=True)
+    # 入库默认停用，须人工启用后才进检索 / 规划注入
+    enabled = _as_bool(raw.get("enabled"), default=False)
     return {
         "id": skill_id,
         "title": title,
@@ -159,12 +160,12 @@ def ensure_builtin_skills(skills_dir: str | Path) -> list[str]:
 
 
 def _normalize_loaded(data: dict[str, Any]) -> dict[str, Any]:
-    """读盘后补默认 enabled；不强制重跑完整校验（容忍历史文件）。"""
+    """读盘后补默认 enabled；不强制重跑完整校验（容忍历史文件）。缺字段按停用。"""
     out = dict(data)
     if "enabled" not in out:
-        out["enabled"] = True
+        out["enabled"] = False
     else:
-        out["enabled"] = _as_bool(out.get("enabled"), default=True)
+        out["enabled"] = _as_bool(out.get("enabled"), default=False)
     return out
 
 
@@ -184,10 +185,10 @@ class SkillStore:
     def write(self, payload: dict[str, Any]) -> dict[str, Any]:
         had_enabled = isinstance(payload, dict) and "enabled" in payload
         skill = validate_skill_payload(payload)
-        # 覆盖写时若未显式带 enabled，保留原值
+        # 覆盖写时若未显式带 enabled，保留原值；新建默认停用
         existing = self.get(skill["id"], include_disabled=True)
         if existing is not None and not had_enabled:
-            skill["enabled"] = _as_bool(existing.get("enabled"), default=True)
+            skill["enabled"] = _as_bool(existing.get("enabled"), default=False)
         path = self._path_for(skill["id"])
         path.write_text(
             json.dumps(skill, ensure_ascii=False, indent=2) + "\n",
@@ -211,7 +212,7 @@ class SkillStore:
         if not isinstance(data, dict):
             return None
         skill = _normalize_loaded(data)
-        if not include_disabled and not skill.get("enabled", True):
+        if not include_disabled and not skill.get("enabled", False):
             return None
         return skill
 
@@ -224,7 +225,7 @@ class SkillStore:
                 continue
             if isinstance(data, dict) and data.get("id"):
                 skill = _normalize_loaded(data)
-                if include_disabled or skill.get("enabled", True):
+                if include_disabled or skill.get("enabled", False):
                     out.append(skill)
         return out
 

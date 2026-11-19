@@ -1,5 +1,5 @@
-# term:脚本铲子生命周期  tool:shovel_search  doc:doc/功能/脚本铲子生命周期/说明.md
-# term:成败经验与检索极性  doc:doc/功能/成败经验与检索极性/说明.md
+# term:脚本铲子生命周期  tool:shovel_search  doc:doc/功能/06-工作区与编码/06-脚本铲子生命周期/说明.md
+# term:成败经验与检索极性  doc:doc/功能/07-知识线/07-成败经验与检索极性/说明.md
 """写前搜铲软闸 + 写后提炼软提示 + 差评铲对照软闸（默认不开硬失败）。"""
 
 from __future__ import annotations

@@ -5,7 +5,7 @@ alwaysApply: true
 
 # 跨平台与运行系统支持（强制）
 
-适用于本仓一切议题讨论、功能说明、代码与配置变更。真源探测见 `fawai_avatar/platform_info.py`；能力说明见 `doc/功能/运行平台/说明.md`。
+适用于本仓一切议题讨论、功能说明、代码与配置变更。真源探测见 `fawai_avatar/platform_info.py`；能力说明见 `doc/功能/08-运行与分发/03-运行平台/说明.md`。
 
 ## 强制
 

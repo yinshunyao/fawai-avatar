@@ -1,4 +1,4 @@
-# term:步骤分类与执行流  doc:doc/功能/步骤分类与执行流/说明.md
+# term:步骤分类与执行流  doc:doc/功能/03-大脑/13-步骤分类与执行流/说明.md
 """Worker 步型：取证 / 串行执行 / 并行 / 分析 / 收尾。"""
 from __future__ import annotations
 

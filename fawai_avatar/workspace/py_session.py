@@ -1,4 +1,4 @@
-# term:Python 扩展  tool:py_write/py_pip/py_run  doc:doc/功能/Python扩展/说明.md
+# term:Python 扩展  tool:py_write/py_pip/py_run  doc:doc/功能/06-工作区与编码/05-Python扩展/说明.md
 """任务会话目录：写码、主程序 venv 装包、跑测并落盘结果。"""
 
 from __future__ import annotations

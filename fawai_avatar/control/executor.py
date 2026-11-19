@@ -1,5 +1,5 @@
-# term:控制 tool:ui_act doc:doc/功能/控制/说明.md
-# term:浏览器操作 tool:browser_* doc:doc/功能/浏览器操作/说明.md
+# term:控制 tool:ui_act doc:doc/功能/05-控制/01-控制/说明.md
+# term:浏览器操作 tool:browser_* doc:doc/功能/05-控制/02-浏览器操作/说明.md
 from __future__ import annotations
 
 import subprocess

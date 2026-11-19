@@ -1,5 +1,5 @@
-# term:会话通道  doc:doc/功能/会话通道/说明.md
-# term:进程中断续跑  doc:doc/功能/进程中断续跑/说明.md
+# term:会话通道  doc:doc/功能/01-接入与呈现/02-会话通道/说明.md
+# term:进程中断续跑  doc:doc/功能/02-任务线/02-进程中断续跑/说明.md
 from __future__ import annotations
 
 import asyncio
@@ -91,6 +91,49 @@ def _effort_fast_meta_from_inbound(inbound: Message) -> dict[str, Any]:
     inbound_meta = getattr(inbound, "meta", None)
     inbound_meta = inbound_meta if isinstance(inbound_meta, dict) else {}
     return inbound_prefs_patch(inbound_meta)
+
+
+def _at_dirs_meta_from_inbound(
+    inbound: Message,
+    *,
+    existing_meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """入站显式带 at_dirs 时合并进任务 meta；未带则空 dict。"""
+    from fawai_avatar.brain.at_dirs import at_dirs_from_inbound_meta, merge_at_dirs
+    from fawai_avatar.config import RuntimeConfig
+
+    inbound_meta = getattr(inbound, "meta", None)
+    inbound_meta = inbound_meta if isinstance(inbound_meta, dict) else {}
+    try:
+        work_root = RuntimeConfig.from_env().work_root
+    except Exception:  # noqa: BLE001
+        work_root = None
+    incoming = at_dirs_from_inbound_meta(inbound_meta, work_root=work_root)
+    if incoming is None:
+        return {}
+    prev = (existing_meta or {}).get("at_dirs") if isinstance(existing_meta, dict) else None
+    merged = merge_at_dirs(prev, incoming, work_root=work_root)
+    return {"at_dirs": merged}
+
+
+def _cursor_agent_requested(inbound: Message) -> bool:
+    """入站显式要求走 Cursor Agent 直连对话。"""
+    meta = getattr(inbound, "meta", None)
+    if not isinstance(meta, dict):
+        return False
+    if meta.get("runtime") == "cursor_agent":
+        return True
+    flag = meta.get("cursor_agent")
+    if flag is True or str(flag).strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    return False
+
+
+def _is_cursor_agent_task(task: Any) -> bool:
+    meta = getattr(task, "meta", None) or {}
+    if not isinstance(meta, dict):
+        return False
+    return str(meta.get("runtime") or "") == "cursor_agent"
 
 
 def _trim_history(messages: list[Message]) -> list[Message]:
@@ -651,6 +694,8 @@ class SessionHub:
         """无 task_id → 新建；有线程则 LLM/规则判断续跑或另开（终态不一律 sibling）。"""
         raw_focus = (inbound.task_id or "").strip() or None
         if not raw_focus:
+            if _cursor_agent_requested(inbound):
+                return await self._create_cursor_agent_task(goal, inbound=inbound)
             return await self._create_and_maybe_run(goal, inbound=inbound)
 
         resolved = self.supervisor.resolve_task_id(raw_focus)
@@ -672,6 +717,22 @@ class SessionHub:
             )
             await self.publish(err)
             return err
+
+        # 开着直连但当前焦点是 fawai 线程：新开 Cursor 会话（不把旧线程改成 Cursor）
+        if _cursor_agent_requested(inbound) and not _is_cursor_agent_task(task):
+            return await self._create_cursor_agent_task(goal, inbound=inbound)
+
+        # Cursor Agent 线程：不进主脑编排 / 澄清 / 复盘闸
+        if _is_cursor_agent_task(task):
+            if task.status == "running":
+                note = Message.progress(
+                    "Cursor Agent 仍在执行上一轮，请稍候…",
+                    task_id=resolved,
+                    meta={"phase": "cursor_agent", "inbound_id": inbound.message_id},
+                )
+                await self.publish(note)
+                return note
+            return await self._cursor_agent_followup(task, goal, inbound=inbound)
 
         from fawai_avatar.brain.clarification import is_awaiting_clarification
         from fawai_avatar.brain.plan_scheduler import (
@@ -871,6 +932,9 @@ class SessionHub:
             "mode": "append",
         }
         append_patch.update(_effort_fast_meta_from_inbound(inbound))
+        append_patch.update(
+            _at_dirs_meta_from_inbound(inbound, existing_meta=dict(task.meta or {}))
+        )
         self.supervisor.merge_task_meta(task_id, append_patch)
         self._active_task_id = task_id
         # 先发卡再开新时间线段：会话里顺序为「前段时间线 → 用户气泡 → 追加卡 → 后段时间线」
@@ -1185,6 +1249,256 @@ class SessionHub:
         task.add_done_callback(_done)
         return task
 
+    async def _create_cursor_agent_task(
+        self,
+        goal: str,
+        *,
+        inbound: Message,
+        related_task_id: str | None = None,
+    ) -> Message:
+        """直连 Cursor Agent：建卡后后台跑一轮，不进主脑 Worker。"""
+        from fawai_avatar.task.title import suggest_task_title
+
+        title = suggest_task_title(goal)
+        extra: dict[str, Any] = {
+            "inbound_id": inbound.message_id,
+            "source": "session_hub",
+            "title": title,
+            "title_source": "heuristic",
+            "runtime": "cursor_agent",
+            "cursor_agent": True,
+        }
+        extra.update(_at_dirs_meta_from_inbound(inbound))
+        if related_task_id:
+            extra["related_task_id"] = related_task_id
+            extra["parent_task_id"] = related_task_id
+            extra["routed_from"] = "thread_new_task"
+
+        task_id = self.supervisor.create_task(goal, meta=extra)
+        self.bind_inbound_to_task(inbound, task_id)
+        self._active_task_id = task_id
+        card = Message.card(
+            f"已创建 Cursor Agent 任务「{title}」",
+            task_id=task_id,
+            meta={
+                "status": "pending",
+                "goal": goal[:200],
+                "title": title,
+                "mode": "create",
+                "runtime": "cursor_agent",
+            },
+        )
+        await self.publish(card)
+        await self.publish(
+            Message.progress(
+                "已收到，正在调用 Cursor Agent…",
+                task_id=task_id,
+                meta={
+                    "phase": "cursor_status",
+                    "status": "running",
+                    "inbound_id": inbound.message_id,
+                    "timeline_segment": "new",
+                },
+            )
+        )
+        self._spawn_bg(
+            self._run_cursor_agent_turn(
+                task_id,
+                prompt=goal,
+                title=title,
+                inbound_id=inbound.message_id,
+                create=True,
+            )
+        )
+        return card
+
+    async def _cursor_agent_followup(
+        self, task: Any, followup: str, *, inbound: Message
+    ) -> Message:
+        task_id = task.task_id
+        followups = list((task.meta or {}).get("followups") or [])
+        followups.append(
+            {"text": followup[:500], "inbound_id": inbound.message_id, "ts": inbound.ts}
+        )
+        self.supervisor.merge_task_meta(
+            task_id,
+            {
+                "followups": followups[-20:],
+                "last_followup": followup[:500],
+            },
+        )
+        await self.publish(
+            Message.progress(
+                "Cursor Agent 续聊中…",
+                task_id=task_id,
+                meta={
+                    "phase": "cursor_agent",
+                    "status": "running",
+                    "inbound_id": inbound.message_id,
+                },
+            )
+        )
+        self._spawn_bg(
+            self._run_cursor_agent_turn(
+                task_id,
+                prompt=followup,
+                title=str((task.meta or {}).get("title") or ""),
+                inbound_id=inbound.message_id,
+                create=False,
+            )
+        )
+        return Message.progress(
+            "已提交给 Cursor Agent",
+            task_id=task_id,
+            meta={"phase": "cursor_agent", "inbound_id": inbound.message_id},
+        )
+
+    async def _run_cursor_agent_turn(
+        self,
+        task_id: str,
+        *,
+        prompt: str,
+        title: str = "",
+        inbound_id: str | None = None,
+        create: bool = False,
+    ) -> None:
+        from fawai_avatar.cursor_agent import manager as ca_mgr
+
+        task = self.supervisor.get_task(task_id)
+        if task is None:
+            return
+        if str(task.status or "") in {
+            "completed",
+            "failed",
+            "cancelled",
+            "archived",
+        }:
+            self.supervisor.requeue_task(task_id, reopen=True)
+        self.supervisor.set_running(task_id)
+
+        agent_row = ca_mgr.agent_for_task(task_id)
+        agent_id = str((task.meta or {}).get("cursor_agent_id") or "")
+        if not agent_id and agent_row:
+            agent_id = str(agent_row.get("agent_id") or "")
+
+        from fawai_avatar.cursor_agent.session_progress import CursorSessionProgress
+
+        run_meta: dict[str, Any] = {}
+        stream_ui = CursorSessionProgress(
+            self.emit_progress,
+            task_id=task_id,
+            base_meta={"inbound_id": inbound_id} if inbound_id else {},
+        )
+
+        def on_event(ev: dict[str, Any]) -> None:
+            et = str(ev.get("type") or "")
+            if et in {"run_start", "agent", "run_done"}:
+                rid = ev.get("run_id")
+                aid_ev = ev.get("agent_id")
+                if rid:
+                    run_meta["run_id"] = rid
+                if aid_ev:
+                    run_meta["agent_id"] = aid_ev
+            stream_ui.handle(ev)
+
+        if create or not agent_id:
+            result = await self._run_blocking(
+                ca_mgr.create_and_prompt,
+                prompt,
+                title=title or prompt[:80],
+                task_id=task_id,
+                on_event=on_event,
+            )
+        else:
+            result = await self._run_blocking(
+                ca_mgr.send_followup,
+                agent_id,
+                prompt,
+                task_id=task_id,
+                on_event=on_event,
+            )
+
+        stream_tail = stream_ui.finalize()
+        new_steps = stream_tail.pop("steps", None)
+        if not isinstance(new_steps, list):
+            new_steps = []
+        settle_meta: dict[str, Any] = {
+            "phase": "cursor_status",
+            "step": 0,
+            "live": False,
+            "api_wait": False,
+            **run_meta,
+            **{k: v for k, v in stream_tail.items() if k != "steps"},
+        }
+        # 状态条只保留短文案；步骤明细在 plan/act 卡与 meta.steps
+        self.emit_progress("Cursor Agent 本轮结束", task_id=task_id, meta=settle_meta)
+
+        aid = str(
+            result.get("agent_id")
+            or run_meta.get("agent_id")
+            or stream_tail.get("agent_id")
+            or agent_id
+            or ""
+        )
+        patch: dict[str, Any] = {
+            "runtime": "cursor_agent",
+            "cursor_agent": True,
+            "inbound_id": inbound_id,
+        }
+        if aid:
+            patch["cursor_agent_id"] = aid
+        if result.get("model"):
+            patch["cursor_model"] = result.get("model")
+        if stream_tail.get("cursor_tools"):
+            patch["cursor_tools"] = stream_tail.get("cursor_tools")
+        if stream_tail.get("cursor_events"):
+            patch["cursor_events"] = stream_tail.get("cursor_events")
+        rid = str(result.get("run_id") or run_meta.get("run_id") or stream_tail.get("run_id") or "")
+        if rid:
+            patch["cursor_run_id"] = rid
+        # 跨追问追加 steps，裁到尾部（与 Worker 落盘上限一致）
+        if new_steps:
+            from fawai_avatar.cursor_agent.session_progress import clip_cursor_steps
+
+            prev_task = self.supervisor.get_task(task_id)
+            prev_steps = list(((prev_task.meta if prev_task else None) or {}).get("steps") or [])
+            merged_steps = [s for s in prev_steps if isinstance(s, dict)] + [
+                s for s in new_steps if isinstance(s, dict)
+            ]
+            patch["steps"] = clip_cursor_steps(merged_steps)
+        if result.get("ok"):
+            patch["final_thought"] = str(result.get("result") or "")[:4000]
+            patch["ok"] = True
+            self.supervisor.merge_task_meta(task_id, patch)
+            self.supervisor.complete(task_id)
+            body = str(result.get("result") or "").strip() or "（Cursor Agent 无正文）"
+            await self.publish(
+                Message.text_assistant(
+                    body,
+                    task_id=task_id,
+                    meta={
+                        "runtime": "cursor_agent",
+                        "agent_id": aid,
+                        "status": result.get("status"),
+                        "run_id": rid or None,
+                    },
+                )
+            )
+            await self.publish(
+                Message.card(
+                    "Cursor Agent 本轮完成",
+                    task_id=task_id,
+                    meta={"mode": "cursor_done", "status": "completed", "agent_id": aid},
+                )
+            )
+        else:
+            err = str(result.get("error") or "Cursor Agent 失败")
+            patch["error"] = err
+            patch["ok"] = False
+            self.supervisor.merge_task_meta(task_id, patch)
+            self.supervisor.fail(task_id, message=err[:200])
+            await self.publish(Message.error(err, task_id=task_id))
+
     async def _create_and_maybe_run(
         self,
         goal: str,
@@ -1193,6 +1507,10 @@ class SessionHub:
         related_task_id: str | None = None,
     ) -> Message:
         """先建卡 + 受理进度，再异步判定/出图，避免发消息后黑屏等 LLM。"""
+        if _cursor_agent_requested(inbound):
+            return await self._create_cursor_agent_task(
+                goal, inbound=inbound, related_task_id=related_task_id
+            )
         from fawai_avatar.brain.plan_scheduler import META_AWAITING_PLAN
         from fawai_avatar.task.title import suggest_task_title
 
@@ -1207,6 +1525,7 @@ class SessionHub:
             "fast": False,
         }
         extra.update(_effort_fast_meta_from_inbound(inbound))
+        extra.update(_at_dirs_meta_from_inbound(inbound))
         if related_task_id:
             extra["related_task_id"] = related_task_id
             extra["parent_task_id"] = related_task_id
@@ -1569,9 +1888,10 @@ class SessionHub:
                 extra["related_task_id"] = related_task_id
                 extra["parent_task_id"] = related_task_id
                 extra["routed_from"] = "thread_new_task"
-            # 进图会整表替换 meta：须保留建卡时写入的 effort/fast/step_tier/plan_auto/mode_auto
+            # 进图会整表替换 meta：须保留建卡时写入的 effort/fast/step_tier/plan_auto/mode_auto/at_dirs
             cur_before = self.supervisor.get_task(task_id)
             if cur_before is not None and isinstance(cur_before.meta, dict):
+                from fawai_avatar.brain.at_dirs import at_dirs_from_meta
                 from fawai_avatar.brain.effort import effort_from_meta
                 from fawai_avatar.brain.fast import fast_from_meta
                 from fawai_avatar.brain.mode_auto import prefs_from_meta
@@ -1589,6 +1909,9 @@ class SessionHub:
                     if flag is not None:
                         extra["plan_auto"] = bool(flag)
                 extra["mode_prefs"] = prefs_from_meta(cur_before.meta)
+                kept_dirs = at_dirs_from_meta(cur_before.meta)
+                if kept_dirs:
+                    extra["at_dirs"] = kept_dirs
             meta = bootstrap_parent_meta(graph=graph, title=title, extra=extra)
             # bootstrap 不含 awaiting_plan；整表替换清掉闸门键
             self.supervisor.replace_task_meta(task_id, meta)
@@ -1772,6 +2095,9 @@ class SessionHub:
             "mode": "continue",
         }
         continue_patch.update(_effort_fast_meta_from_inbound(inbound))
+        continue_patch.update(
+            _at_dirs_meta_from_inbound(inbound, existing_meta=dict(task.meta or {}))
+        )
         self.supervisor.merge_task_meta(task_id, continue_patch)
 
         # 计划父任务续跑：失败默认重试失败节点；显式「整图重规划」口令才整图重做
@@ -3335,7 +3661,10 @@ class SessionHub:
         if control == "unarchive":
             return await self._handle_unarchive(task_id)
         if control in {"confirm_diff", "reject_diff"}:
-            return await self._handle_diff_control(control, task_id)
+            pending_id = str((message.meta or {}).get("pending_id") or "").strip() or None
+            return await self._handle_diff_control(
+                control, task_id, pending_id=pending_id
+            )
 
         ok = False
         if control == "pause":
@@ -4467,13 +4796,22 @@ class SessionHub:
             message.meta = meta
         await self.publish(message)
 
-    async def _handle_diff_control(self, control: str, task_id: str) -> Message:
+    async def _handle_diff_control(
+        self,
+        control: str,
+        task_id: str,
+        *,
+        pending_id: str | None = None,
+    ) -> Message:
         from fawai_avatar.control.background import BackgroundTools
         from fawai_avatar.types import Action
 
         tools = BackgroundTools(task_id=task_id)
         kind = "diff_confirm" if control == "confirm_diff" else "diff_reject"
-        result = tools.execute(Action(kind=kind, args={"task_id": task_id}))
+        args: dict[str, Any] = {"task_id": task_id}
+        if pending_id:
+            args["pending_id"] = pending_id
+        result = tools.execute(Action(kind=kind, args=args))
         self.log_system(
             control,
             message=result.message,
@@ -4493,11 +4831,21 @@ class SessionHub:
         )
         await self.publish(out)
         if result.data and result.data.get("diff"):
+            data = result.data or {}
             await self.publish(
                 Message.progress(
-                    f"Diff\n{str(result.data.get('diff'))[:2500]}",
+                    f"Diff {data.get('path') or ''}\n{str(data.get('diff'))[:2500]}",
                     task_id=task_id,
-                    meta={"phase": "diff", "control": control},
+                    meta={
+                        "phase": "diff",
+                        "control": control,
+                        "path": data.get("path"),
+                        "diff_id": data.get("diff_id"),
+                        "added": data.get("added"),
+                        "deleted": data.get("deleted"),
+                        "truncated": data.get("truncated"),
+                        "pending": False,
+                    },
                 )
             )
         return out

@@ -1,4 +1,4 @@
-# term:任务与事件管理  doc:doc/功能/任务与事件管理/说明.md
+# term:任务与事件管理  doc:doc/功能/02-任务线/01-任务与事件管理/说明.md
 """任务短标题：启发式兜底 + LLM 首轮命名规范化。"""
 from __future__ import annotations
 

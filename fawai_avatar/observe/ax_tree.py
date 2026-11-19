@@ -1,4 +1,4 @@
-# term:AX观察 tool:obs_ax doc:doc/功能/自主操控/说明.md
+# term:AX观察 tool:obs_ax doc:doc/功能/05-控制/03-自主操控/说明.md
 """macOS 辅助功能（AX）树观察：产出带 ref/bounds 的控件摘要。
 
 非 Darwin / headless：失败摘要，不抛崩闭环。

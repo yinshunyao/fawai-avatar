@@ -1,4 +1,4 @@
-# term:改码回证  tool:code_check  doc:doc/功能/编码闭环/说明.md
+# term:改码回证  tool:code_check  doc:doc/功能/06-工作区与编码/04-编码闭环/说明.md
 """改后机读检查：按后缀选默认命令。"""
 
 from __future__ import annotations

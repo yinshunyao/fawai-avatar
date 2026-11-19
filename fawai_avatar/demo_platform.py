@@ -1,4 +1,4 @@
-# term:运行平台  doc:doc/功能/运行平台/说明.md
+# term:运行平台  doc:doc/功能/08-运行与分发/03-运行平台/说明.md
 """无界面 / 平台闸门冒烟：不依赖显示与 GUI extras。"""
 from __future__ import annotations
 

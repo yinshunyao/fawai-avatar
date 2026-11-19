@@ -1,4 +1,4 @@
-# term:任务图  doc:doc/功能/复杂任务计划模式/说明.md
+# term:任务图  doc:doc/功能/02-任务线/03-复杂任务计划模式/说明.md
 """计划模式任务图：节点、依赖、产物契约与状态。"""
 from __future__ import annotations
 

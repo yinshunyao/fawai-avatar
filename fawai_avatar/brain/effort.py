@@ -1,4 +1,4 @@
-# term:Effort  tool:brain_effort  doc:doc/功能/Effort/说明.md
+# term:Effort  tool:brain_effort  doc:doc/功能/03-大脑/06-Effort/说明.md
 """任务努力开关：Effort 开/关（默认关）。
 
 开时收紧 enough_to_answer、可修复失败不得早退；关时保持平衡收束。

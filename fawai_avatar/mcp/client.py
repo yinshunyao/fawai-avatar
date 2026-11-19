@@ -1,4 +1,4 @@
-# term:MCP 外挂工具  doc:doc/功能/MCP外挂工具/说明.md
+# term:MCP 外挂工具  doc:doc/功能/07-知识线/04-MCP外挂工具/说明.md
 """MCP stdio 客户端：list_tools / call_tool（同步封装）。"""
 
 from __future__ import annotations

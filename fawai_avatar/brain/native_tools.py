@@ -1,5 +1,5 @@
-# term:逐步工具调用  doc:doc/功能/编码闭环/说明.md
-# term:架构校验  doc:doc/功能/守规约束/说明.md
+# term:逐步工具调用  doc:doc/功能/06-工作区与编码/04-编码闭环/说明.md
+# term:架构校验  doc:doc/功能/03-大脑/14-守规约束/说明.md
 """OpenAI 兼容 tools schema ↔ Action。"""
 
 from __future__ import annotations
@@ -537,7 +537,7 @@ def openai_tools_for_coding(
     verify_read=True：在 mutate_prefer 基础上临时放行定向 fs_read/fs_grep/fs_glob。
     allow_delegate：主脑可调 delegate_to_fast；快模型段关闭。
     """
-    from fawai_avatar.brain.delegate import fast_model_from_env
+    from fawai_avatar.brain.delegate import cursor_agent_ready, fast_model_from_env
     from fawai_avatar.brain.explore_progress import (
         mutate_prefer_tool_kinds,
         mutate_prefer_with_verify_read_tool_kinds,
@@ -596,6 +596,35 @@ def openai_tools_for_coding(
                 },
             }
         )
+    if allow_delegate and cursor_agent_ready() and not mutate_prefer:
+        tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": "delegate_to_cursor",
+                    "description": (
+                        "将较大编码子目标委派给 Cursor Agent（local）；适合多文件改写、"
+                        "需 Cursor 工具链的实现段。本步不再给其它工具。"
+                        "终答/互斥架构决断/需向用户澄清勿用。"
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "goal": {
+                                "type": "string",
+                                "description": "子目标（给 Cursor Agent）",
+                            },
+                            "stop_when": {
+                                "type": "string",
+                                "description": "停条件 / 验收口径",
+                            },
+                        },
+                        "required": ["goal"],
+                        "additionalProperties": False,
+                    },
+                },
+            }
+        )
     return tools
 
 
@@ -609,7 +638,7 @@ def plan_from_tool_calls(
     # 优先识别委派：与其它工具同轮时只取委派
     for call in tool_calls:
         name = str(call.get("name") or "").strip()
-        if name != "delegate_to_fast":
+        if name not in {"delegate_to_fast", "delegate_to_cursor"}:
             continue
         from fawai_avatar.brain.delegate import parse_delegate, with_delegate
 
@@ -621,9 +650,10 @@ def plan_from_tool_calls(
             except json.JSONDecodeError:
                 parsed = {}
             args_obj = parsed if isinstance(parsed, dict) else {}
+        tier = "cursor" if name == "delegate_to_cursor" else "fast"
         spec = parse_delegate(
             {
-                "tier": "fast",
+                "tier": tier,
                 "goal": args_obj.get("goal"),
                 "stop_when": args_obj.get("stop_when"),
                 "max_steps": args_obj.get("max_steps"),
@@ -631,7 +661,8 @@ def plan_from_tool_calls(
         )
         if spec is None:
             break
-        thought = (content or f"委派快模型：{spec.goal}").strip()
+        label = "委派 Cursor Agent" if spec.tier == "cursor" else "委派快模型"
+        thought = (content or f"{label}：{spec.goal}").strip()
         from fawai_avatar.task.title import resolve_step_label
 
         plan = Plan(
@@ -644,7 +675,7 @@ def plan_from_tool_calls(
                 thought=thought,
                 actions=[],
             )
-            or "委派快模型",
+            or label,
             delegate=spec.to_dict(),
         )
         return with_delegate(plan, spec)
@@ -652,7 +683,7 @@ def plan_from_tool_calls(
     actions: list[Action] = []
     for call in tool_calls:
         name = str(call.get("name") or "").strip()
-        if not name or name == "delegate_to_fast":
+        if not name or name in {"delegate_to_fast", "delegate_to_cursor"}:
             continue
         args_obj = call.get("arguments_obj")
         if not isinstance(args_obj, dict):

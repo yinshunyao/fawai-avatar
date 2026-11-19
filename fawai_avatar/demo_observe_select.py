@@ -1,4 +1,4 @@
-# term:观察选取  doc:doc/功能/观察/说明.md
+# term:观察选取  doc:doc/功能/04-观察/01-观察/说明.md
 """观察选取 + 工具结果压缩冒烟（不调 LLM、不真截屏）。"""
 from __future__ import annotations
 

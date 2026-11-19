@@ -1,4 +1,4 @@
-# term:MCP 外挂工具  doc:doc/功能/MCP外挂工具/说明.md
+# term:MCP 外挂工具  doc:doc/功能/07-知识线/04-MCP外挂工具/说明.md
 """把已发现 MCP tools 映射为动态 Capability。"""
 
 from __future__ import annotations

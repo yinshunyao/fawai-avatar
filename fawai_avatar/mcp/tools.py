@@ -1,4 +1,4 @@
-# term:MCP 外挂工具  tool:mcp__  doc:doc/功能/MCP外挂工具/说明.md
+# term:MCP 外挂工具  tool:mcp__  doc:doc/功能/07-知识线/04-MCP外挂工具/说明.md
 """控制层 MCP 执行入口。"""
 
 from __future__ import annotations

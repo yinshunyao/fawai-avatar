@@ -1,4 +1,4 @@
-# term:MCP 外挂工具  doc:doc/功能/MCP外挂工具/说明.md
+# term:MCP 外挂工具  doc:doc/功能/07-知识线/04-MCP外挂工具/说明.md
 """HTTP helpers for MCP server CRUD / refresh."""
 
 from __future__ import annotations

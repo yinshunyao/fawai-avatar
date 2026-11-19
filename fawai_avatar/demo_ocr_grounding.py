@@ -1,4 +1,4 @@
-# term:截屏识别接地  doc:doc/功能/截屏识别接地/说明.md
+# term:截屏识别接地  doc:doc/功能/04-观察/02-截屏识别接地/说明.md
 """OCR 接地自检：解析/登记/配置；可选真调 API。"""
 from __future__ import annotations
 

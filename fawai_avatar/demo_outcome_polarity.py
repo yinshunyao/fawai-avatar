@@ -1,4 +1,4 @@
-# term:成败经验与检索极性  doc:doc/功能/成败经验与检索极性/说明.md
+# term:成败经验与检索极性  doc:doc/功能/07-知识线/07-成败经验与检索极性/说明.md
 """成败维 + Skill 极性 + 差评软闸冒烟（无真实 LLM）。"""
 
 from __future__ import annotations
@@ -50,6 +50,7 @@ def main() -> None:
             "steps": "1. do good\n2. verify",
             "tags": ["success", "review"],
             "source": "tasks:abc",
+            "enabled": True,
         }
     )
     store.write(
@@ -60,6 +61,7 @@ def main() -> None:
             "steps": "1. do not copy blindly",
             "tags": ["failure", "lesson", "review"],
             "source": "tasks:def",
+            "enabled": True,
         }
     )
     polarized = store.search_polarized("失败 成功", limit=10)

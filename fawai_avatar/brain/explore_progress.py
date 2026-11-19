@@ -1,4 +1,4 @@
-# term:探索进度闸门  doc:doc/功能/编码闭环/说明.md
+# term:探索进度闸门  doc:doc/功能/06-工作区与编码/04-编码闭环/说明.md
 """改文件类目标：连续只读探索过久则注入约束 / 强制改写 / 止损。"""
 
 from __future__ import annotations

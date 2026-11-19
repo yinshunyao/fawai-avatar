@@ -1,4 +1,4 @@
-# term:守规约束  doc:doc/功能/守规约束/说明.md
+# term:守规约束  doc:doc/功能/03-大脑/14-守规约束/说明.md
 """守规约束验收：规则命中、架构 doc_refs/skip、校验拒绝。"""
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ def _write_control_plan(*, with_docs: bool = False, skip: str = "") -> Plan:
             observe_kinds=list(plan.observe_kinds),
         )
     if with_docs:
-        return annotate_plan_with_docs(plan, ["doc/功能/控制/说明.md"])
+        return annotate_plan_with_docs(plan, ["doc/功能/05-控制/01-控制/说明.md"])
     return plan
 
 
@@ -122,7 +122,7 @@ def main() -> None:
     assert validate_architecture("会话页支持 Markdown", native) is None
     assert plan_satisfies_architecture(native)
     assert (native.raw or {}).get("architecture_auto_bound") is True
-    assert "doc/功能/会话通道/说明.md" in ((native.raw or {}).get("doc_refs") or [])
+    assert "doc/功能/01-接入与呈现/02-会话通道/说明.md" in ((native.raw or {}).get("doc_refs") or [])
     print("[PASS] native auto-bind")
 
     print("== native write args lift doc_refs ==")
@@ -134,7 +134,7 @@ def main() -> None:
                     "path": "fawai_avatar/control/executor.py",
                     "old": "a",
                     "new": "b",
-                    "doc_refs": ["doc/功能/控制/说明.md"],
+                    "doc_refs": ["doc/功能/05-控制/01-控制/说明.md"],
                 },
             }
         ]
@@ -656,13 +656,21 @@ def main() -> None:
     assert "lesson_answer_must_cover_goal" in installed
     assert "lesson_compressed_dump_must_read" in installed
     assert "lesson_no_shell_bypass_fs" in installed
-    stored = SkillStore(skills_tmp).get("lesson_write_set_not_acceptance")
+    # 内置拷入后默认停用；用 include_disabled 核对内容
+    stored = SkillStore(skills_tmp).get(
+        "lesson_write_set_not_acceptance", include_disabled=True
+    )
     assert stored is not None
+    assert stored.get("enabled") is False
     assert "验收" in str(stored.get("title") or "")
-    stored_vr = SkillStore(skills_tmp).get("lesson_verify_read_not_endless_explore")
+    stored_vr = SkillStore(skills_tmp).get(
+        "lesson_verify_read_not_endless_explore", include_disabled=True
+    )
     assert stored_vr is not None
     assert "无限只读" in str(stored_vr.get("title") or "")
-    stored_ans = SkillStore(skills_tmp).get("lesson_answer_must_cover_goal")
+    stored_ans = SkillStore(skills_tmp).get(
+        "lesson_answer_must_cover_goal", include_disabled=True
+    )
     assert stored_ans is not None
     assert "问点" in str(stored_ans.get("title") or "")
 

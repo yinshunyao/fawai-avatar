@@ -1,4 +1,4 @@
-# term:探仓  tool:explore_search  doc:doc/功能/编码闭环/说明.md
+# term:探仓  tool:explore_search  doc:doc/功能/06-工作区与编码/04-编码闭环/说明.md
 """只读并行探仓：进程内线程池跑多路 grep；符号索引默认关闭（可 opt-in）。"""
 
 from __future__ import annotations

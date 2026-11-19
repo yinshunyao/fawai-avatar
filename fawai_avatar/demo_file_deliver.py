@@ -1,4 +1,4 @@
-# term:任务产物交付  doc:doc/功能/任务产物交付/说明.md
+# term:任务产物交付  doc:doc/功能/02-任务线/05-任务产物交付/说明.md
 """产物登记 / 办公摘录 / file 信封冒烟。"""
 
 from __future__ import annotations

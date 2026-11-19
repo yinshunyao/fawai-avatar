@@ -1,4 +1,4 @@
-# term:执行配置自动模式  tool:brain_mode_auto  doc:doc/功能/执行配置自动模式/说明.md
+# term:执行配置自动模式  tool:brain_mode_auto  doc:doc/功能/03-大脑/08-执行配置自动模式/说明.md
 """执行配置：四项各自三态 auto|on|off；自动项由首轮任务分析回写生效布尔。"""
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-# term:Python 扩展  doc:doc/功能/Python扩展/说明.md
+# term:Python 扩展  doc:doc/功能/06-工作区与编码/05-Python扩展/说明.md
 """Python 扩展冒烟：py_write / py_pip / py_run + 路径闸 / 无 task_id。"""
 
 from __future__ import annotations

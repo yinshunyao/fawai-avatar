@@ -1,4 +1,4 @@
-# term:LLM 接入  tool:llm_route  doc:doc/功能/LLM接入/说明.md
+# term:LLM 接入  tool:llm_route  doc:doc/功能/01-接入与呈现/01-LLM接入/说明.md
 from __future__ import annotations
 
 from typing import Any, Literal

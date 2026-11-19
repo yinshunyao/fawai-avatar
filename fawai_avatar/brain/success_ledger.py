@@ -1,4 +1,4 @@
-# term:成功价值台账  tool:success_ledger_upsert|success_ledger_search|success_ledger_get  doc:doc/功能/成功价值台账/说明.md
+# term:成功价值台账  tool:success_ledger_upsert|success_ledger_search|success_ledger_get  doc:doc/功能/07-知识线/05-成功价值台账/说明.md
 """本任务成功步骤价值台账：落盘、检索；三维过门后实写 lore。"""
 
 from __future__ import annotations

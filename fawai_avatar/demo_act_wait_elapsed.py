@@ -1,4 +1,4 @@
-# term:会话通道  doc:doc/功能/会话通道/说明.md
+# term:会话通道  doc:doc/功能/01-接入与呈现/02-会话通道/说明.md
 """工具执行心跳与耗时口径冒烟（不调 LLM）。"""
 from __future__ import annotations
 

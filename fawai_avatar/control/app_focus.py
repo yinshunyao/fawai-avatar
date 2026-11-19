@@ -1,4 +1,4 @@
-# term:应用前台  doc:doc/功能/多屏与全屏观察/说明.md
+# term:应用前台  doc:doc/功能/04-观察/03-多屏与全屏观察/说明.md
 """按 App 名 / bundle 激活前台（常用于找回全屏 Space 上的窗）。
 
 成功须以 frontmost 回证为准：脚本 activate 退出码 0 不够。

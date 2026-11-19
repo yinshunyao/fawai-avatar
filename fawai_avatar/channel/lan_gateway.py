@@ -1,4 +1,4 @@
-# term:会话网关  doc:doc/功能/会话网关/说明.md
+# term:会话网关  doc:doc/功能/01-接入与呈现/03-会话网关/说明.md
 from __future__ import annotations
 
 import asyncio
@@ -168,6 +168,38 @@ def create_app(
                             fromlist=["guess_mime"],
                         ).guess_mime(src),
                     )
+                    # 旁路投影一并拷入 media，跨端只开 projection_url
+                    proj_src = Path(str(meta.get("projection_path") or ""))
+                    if not proj_src.is_file():
+                        try:
+                            from fawai_avatar.channel.file_projection import ensure_projection
+
+                            proj = ensure_projection(src)
+                            if proj.get("projection_path"):
+                                meta.update(
+                                    {
+                                        k: proj[k]
+                                        for k in (
+                                            "projection_path",
+                                            "projection_kind",
+                                            "projection_mime",
+                                            "projection_note",
+                                        )
+                                        if k in proj
+                                    }
+                                )
+                                proj_src = Path(str(proj["projection_path"]))
+                        except Exception:  # noqa: BLE001
+                            proj_src = Path("")
+                    if proj_src.is_file():
+                        psuf = proj_src.suffix or ".html"
+                        pdest = media_dir / f"out_{message.message_id}.preview{psuf}"
+                        if not pdest.exists():
+                            pdest.write_bytes(proj_src.read_bytes())
+                        meta["projection_url"] = f"/media/{pdest.name}"
+                        meta["projection_kind"] = meta.get("projection_kind") or (
+                            "pdf" if psuf.lower() == ".pdf" else "html"
+                        )
                     message.meta = meta
         await manager.broadcast(message)
 
@@ -220,6 +252,25 @@ def create_app(
             "degraded": not slog_ok,
             "system_log_available": slog_ok,
         }
+
+    @app.get("/api/workspace/dirs")
+    async def workspace_dirs(
+        request: Request,
+        path: str = Query(default=""),
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        """列举 work_root 下子目录（compose @ 级联）；禁止越界绝对路径。"""
+        _check_token(x_fawai_token, request)
+        from fawai_avatar.config import RuntimeConfig
+        from fawai_avatar.workspace.dir_list import list_workspace_dirs
+        from fawai_avatar.workspace.paths import WorkspacePathError
+
+        cfg = RuntimeConfig.from_env()
+        try:
+            data = list_workspace_dirs(cfg.work_root, path or "")
+        except WorkspacePathError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return JSONResponse(data)
 
     def _releases() -> ReleaseStore:
         store = getattr(app.state, "releases", None)
@@ -430,6 +481,10 @@ def create_app(
             raise HTTPException(status_code=400, detail={"errors": result["errors"]})
         # 工作区/可读区/索引策略变更后重挂文件监视
         updated = set(result.get("updated") or [])
+        if "FAWAI_GATEWAY_PASSCODE" in updated:
+            new_pc = (os.environ.get("FAWAI_GATEWAY_PASSCODE") or "").strip()
+            if new_pc:
+                app.state.passcode = new_pc.upper()
         if updated & {
             "FAWAI_WORK_ROOT",
             "FAWAI_READ_ROOTS",
@@ -445,6 +500,36 @@ def create_app(
             except Exception:
                 pass
         return JSONResponse(result)
+
+    @app.post("/api/passcode")
+    async def passcode_change(
+        payload: dict[str, Any] | None = Body(default=None),
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        """修改会话口令：校验当前口令后写 .env 并热更新进程内口令。"""
+        _check_token(x_fawai_token)
+        body = payload or {}
+        current = str(body.get("current") or "").strip()
+        new_raw = str(body.get("new") or "").strip()
+        confirm = str(body.get("confirm") or "").strip()
+        if not current or current.upper() != str(app.state.passcode).upper():
+            raise HTTPException(status_code=400, detail="current_passcode_mismatch")
+        if not new_raw:
+            raise HTTPException(status_code=400, detail="new_passcode_empty")
+        if new_raw != confirm:
+            raise HTTPException(status_code=400, detail="confirm_mismatch")
+        if len(new_raw) < 4:
+            raise HTTPException(status_code=400, detail="new_passcode_too_short")
+        if len(new_raw) > 64:
+            raise HTTPException(status_code=400, detail="new_passcode_too_long")
+        result = update_settings(
+            values={"FAWAI_GATEWAY_PASSCODE": new_raw},
+            scope="system",
+        )
+        if not result.get("ok", True) and result.get("errors"):
+            raise HTTPException(status_code=400, detail={"errors": result["errors"]})
+        app.state.passcode = new_raw.upper()
+        return JSONResponse({"ok": True, "updated": True})
 
     @app.get("/api/llm/settings")
     async def llm_settings_get(
@@ -612,6 +697,178 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return JSONResponse({"ok": True, "param_schema": list(PARAM_SCHEMA), "profile": profile})
+
+    # --- Cursor Agent（与 LLM 聊天供应商分库）---
+    @app.get("/api/cursor-agent/settings")
+    async def cursor_agent_settings_get(
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.cursor_agent import manager as ca_mgr
+        from fawai_avatar.cursor_agent.settings_store import get_store
+
+        payload = get_store().settings_payload()
+        payload["diagnose"] = ca_mgr.diagnose()
+        return JSONResponse(payload)
+
+    @app.put("/api/cursor-agent/settings")
+    async def cursor_agent_settings_put(
+        payload: dict[str, Any] | None = Body(default=None),
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.cursor_agent import manager as ca_mgr
+        from fawai_avatar.cursor_agent.settings_store import get_store
+
+        body = payload or {}
+        store = get_store()
+        enabled = body.get("enabled")
+        model_id = body.get("model_id")
+        mode = body.get("mode")
+        auto_accept = body.get("auto_accept")
+        # 不再接受 UI 提交 api_key；登录走 /api/cursor-agent/auth/*
+        try:
+            store.update_settings(
+                enabled=bool(enabled) if enabled is not None else None,
+                model_id=str(model_id) if model_id is not None else None,
+                mode=str(mode) if mode is not None else None,
+                auto_accept=bool(auto_accept) if auto_accept is not None else None,
+            )
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        out = store.settings_payload()
+        out["diagnose"] = ca_mgr.diagnose()
+        out["ok"] = True
+        return JSONResponse(out)
+
+    @app.get("/api/cursor-agent/auth/status")
+    async def cursor_agent_auth_status(
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.cursor_agent import auth as ca_auth
+        from fawai_avatar.cursor_agent import manager as ca_mgr
+
+        snap = ca_auth.auth_snapshot()
+        return JSONResponse(
+            {
+                "ok": True,
+                "auth": snap,
+                "diagnose": ca_mgr.diagnose(),
+            }
+        )
+
+    @app.post("/api/cursor-agent/auth/login")
+    async def cursor_agent_auth_login(
+        payload: dict[str, Any] | None = Body(default=None),
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.cursor_agent import auth as ca_auth
+
+        body = payload or {}
+        open_browser = body.get("open_browser")
+        result = ca_auth.start_login(
+            open_browser=True if open_browser is None else bool(open_browser)
+        )
+        return JSONResponse(result)
+
+    @app.post("/api/cursor-agent/auth/logout")
+    async def cursor_agent_auth_logout(
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.cursor_agent import auth as ca_auth
+
+        result = await hub._run_blocking(ca_auth.logout)
+        return JSONResponse(result)
+
+    @app.post("/api/cursor-agent/models")
+    async def cursor_agent_models_refresh(
+        payload: dict[str, Any] | None = Body(default=None),
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.cursor_agent import manager as ca_mgr
+
+        result = await hub._run_blocking(ca_mgr.refresh_models)
+        return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+    @app.post("/api/cursor-agent/diagnose")
+    async def cursor_agent_diagnose(
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.cursor_agent import manager as ca_mgr
+
+        return JSONResponse(ca_mgr.diagnose())
+
+    @app.get("/api/cursor-agent/agents")
+    async def cursor_agent_list(
+        include_archived: bool = False,
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.cursor_agent import manager as ca_mgr
+
+        return JSONResponse(
+            {"ok": True, "agents": ca_mgr.list_agents(include_archived=include_archived)}
+        )
+
+    @app.post("/api/cursor-agent/agents")
+    async def cursor_agent_create(
+        payload: dict[str, Any] | None = Body(default=None),
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.cursor_agent import manager as ca_mgr
+
+        body = payload or {}
+        prompt = str(body.get("prompt") or body.get("initial_prompt") or "").strip()
+        if not prompt:
+            raise HTTPException(status_code=400, detail="prompt required")
+        result = await hub._run_blocking(
+            ca_mgr.create_and_prompt,
+            prompt,
+            title=str(body.get("title") or ""),
+            task_id=str(body.get("task_id") or ""),
+            cwd=str(body.get("cwd") or "") or None,
+            model=str(body.get("model") or body.get("model_id") or "") or None,
+        )
+        return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+    @app.post("/api/cursor-agent/agents/{agent_id}/send")
+    async def cursor_agent_send(
+        agent_id: str,
+        payload: dict[str, Any] | None = Body(default=None),
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.cursor_agent import manager as ca_mgr
+
+        body = payload or {}
+        prompt = str(body.get("prompt") or body.get("text") or "").strip()
+        if not prompt:
+            raise HTTPException(status_code=400, detail="prompt required")
+        result = await hub._run_blocking(
+            ca_mgr.send_followup,
+            agent_id,
+            prompt,
+            cwd=str(body.get("cwd") or "") or None,
+            model=str(body.get("model") or body.get("model_id") or "") or None,
+            task_id=str(body.get("task_id") or ""),
+        )
+        return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+    @app.post("/api/cursor-agent/agents/{agent_id}/archive")
+    async def cursor_agent_archive(
+        agent_id: str,
+        x_fawai_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        _check_token(x_fawai_token)
+        from fawai_avatar.cursor_agent import manager as ca_mgr
+
+        return JSONResponse(ca_mgr.archive_agent(agent_id))
 
     @app.get("/api/session")
     async def session_info(x_fawai_token: str | None = Header(default=None)) -> JSONResponse:
@@ -1777,18 +2034,35 @@ def create_app(
         step_tier: str = Form(default=""),
         plan_auto: str = Form(default=""),
         mode_prefs: str = Form(default=""),
-        file: UploadFile = File(...),
+        at_dirs: str = Form(default=""),
+        cursor_agent: str = Form(default=""),
+        runtime: str = Form(default=""),
+        file: UploadFile | None = File(default=None),
+        files: list[UploadFile] | None = File(default=None),
     ) -> JSONResponse:
         _check_token(x_fawai_token)
-        suffix = Path(file.filename or "upload.png").suffix or ".png"
-        dest = media_dir / f"in_{secrets.token_hex(8)}{suffix}"
-        dest.write_bytes(await file.read())
+        batch: list[UploadFile] = []
+        if file is not None and (file.filename or "").strip():
+            batch.append(file)
+        for item in files or []:
+            if item is not None and (item.filename or "").strip():
+                batch.append(item)
+        if not batch:
+            raise HTTPException(status_code=400, detail="未选择图片")
+        saved_paths: list[Path] = []
+        for uf in batch:
+            suffix = Path(uf.filename or "upload.png").suffix or ".png"
+            dest = media_dir / f"in_{secrets.token_hex(8)}{suffix}"
+            dest.write_bytes(await uf.read())
+            saved_paths.append(dest)
         mid = (message_id or "").strip()
+        from fawai_avatar.brain.at_dirs import sanitize_at_dirs
         from fawai_avatar.brain.effort import coerce_effort
         from fawai_avatar.brain.fast import coerce_fast
         from fawai_avatar.brain.mode_auto import normalize_mode_prefs
         from fawai_avatar.brain.orchestrator import coerce_plan_auto
         from fawai_avatar.brain.step_run import coerce_step_tier
+        from fawai_avatar.config import RuntimeConfig
 
         meta: dict[str, Any] = {}
         if str(effort or "").strip() != "":
@@ -1807,12 +2081,39 @@ def create_app(
                 meta["mode_prefs"] = normalize_mode_prefs(_json.loads(prefs_raw))
             except Exception:  # noqa: BLE001
                 pass
+        at_raw = str(at_dirs or "").strip()
+        if at_raw:
+            try:
+                import json as _json
+
+                parsed_dirs = _json.loads(at_raw)
+            except Exception:  # noqa: BLE001
+                parsed_dirs = at_raw
+            try:
+                work_root = RuntimeConfig.from_env().work_root
+            except Exception:  # noqa: BLE001
+                work_root = None
+            cleaned = sanitize_at_dirs(parsed_dirs, work_root=work_root)
+            if cleaned:
+                meta["at_dirs"] = cleaned
+        ca_flag = str(cursor_agent or "").strip().lower()
+        if ca_flag in {"1", "true", "yes", "on"}:
+            meta["cursor_agent"] = True
+        runtime_v = str(runtime or "").strip()
+        if runtime_v:
+            meta["runtime"] = runtime_v
+        caption = (text or "").strip()
+        extra_marks = "\n".join(f"[image:{p}]" for p in saved_paths[1:])
+        body = caption
+        if extra_marks:
+            body = f"{caption}\n{extra_marks}".strip() if caption else extra_marks
+        primary = saved_paths[0]
         msg = Message(
             kind="image",
             role="user",
-            text=text,
-            media_path=str(dest),
-            media_url=f"/media/{dest.name}",
+            text=body,
+            media_path=str(primary),
+            media_url=f"/media/{primary.name}",
             task_id=(task_id or "").strip() or None,
             message_id=mid or secrets.token_hex(16),
             meta=meta,
@@ -1923,9 +2224,48 @@ def create_app(
         from fawai_avatar.channel.file_deliver import describe_file
 
         info = describe_file(path)
+        # 投影若在源旁生成，拷一份到 media 并返回 URL
+        proj_path = Path(str(info.get("projection_path") or ""))
+        if proj_path.is_file():
+            psuf = proj_path.suffix or ".html"
+            pdest = media_dir / f"{path.stem}.preview{psuf}"
+            if not pdest.exists() or pdest.stat().st_mtime < proj_path.stat().st_mtime:
+                pdest.write_bytes(proj_path.read_bytes())
+            info["projection_url"] = f"/media/{pdest.name}"
         # 不回传本机绝对路径
         info.pop("path", None)
+        info.pop("projection_path", None)
         return JSONResponse({"ok": True, **info})
+
+    @app.get("/api/tasks/{task_id}/diffs")
+    async def task_diffs(
+        task_id: str,
+        request: Request,
+        token: str = "",
+    ) -> JSONResponse:
+        _check_token(token or None, request)
+        from fawai_avatar.workspace.diff_store import DiffStore
+
+        # session_media 的上一级即 data_dir
+        store = DiffStore(media_dir.parent)
+        items = store.list_for_task(task_id)
+        return JSONResponse({"ok": True, "items": items})
+
+    @app.get("/api/tasks/{task_id}/diffs/{diff_id}")
+    async def task_diff_one(
+        task_id: str,
+        diff_id: str,
+        request: Request,
+        token: str = "",
+    ) -> JSONResponse:
+        _check_token(token or None, request)
+        from fawai_avatar.workspace.diff_store import DiffStore
+
+        store = DiffStore(media_dir.parent)
+        rec = store.get(task_id, diff_id)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="diff not found")
+        return JSONResponse({"ok": True, **rec})
 
     @app.websocket("/ws")
     async def ws_endpoint(websocket: WebSocket, token: str = "") -> None:
@@ -2318,6 +2658,13 @@ def main() -> None:
 
     # 磁盘 .env 覆盖进程环境：与 Web 写盘一致；避免壳层/保活父进程旧 FAWAI_* 盖住
     load_dotenv(override=True)
+    # 系统 HTTP 代理勿劫持 cursor-sdk → 本机 Bridge（否则常见空 502）
+    try:
+        from fawai_avatar.cursor_agent.runtime import ensure_loopback_no_proxy
+
+        ensure_loopback_no_proxy()
+    except Exception:  # noqa: BLE001
+        pass
     _raise_nofile_soft_limit()
 
     # 已在保活子进程内，或显式关闭保活 → 直接跑网关

@@ -1,4 +1,4 @@
-# term:MCP 外挂工具  doc:doc/功能/MCP外挂工具/说明.md
+# term:MCP 外挂工具  doc:doc/功能/07-知识线/04-MCP外挂工具/说明.md
 """MCP 注册表 / 动态能力 / 执行分发冒烟（可不连真 MCP server）。"""
 
 from __future__ import annotations

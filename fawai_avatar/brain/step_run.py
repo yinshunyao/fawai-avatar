@@ -1,4 +1,4 @@
-# term:步级执行档  doc:doc/功能/步级执行档/说明.md
+# term:步级执行档  doc:doc/功能/03-大脑/05-步级执行档/说明.md
 """规划同轮三档：reflect / brief / act —— 管成功后观察反省深度。
 
 任务级开关：meta.step_tier（compose「分档」，默认关）。

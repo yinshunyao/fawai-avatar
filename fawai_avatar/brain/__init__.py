@@ -1,6 +1,6 @@
-# term:大脑  doc:doc/功能/大脑/说明.md
-# term:完成任务  doc:doc/功能/完成任务/说明.md
-# term:执行反省  doc:doc/功能/执行反省/说明.md
+# term:大脑  doc:doc/功能/03-大脑/01-大脑/说明.md
+# term:完成任务  doc:doc/功能/03-大脑/04-完成任务/说明.md
+# term:执行反省  doc:doc/功能/03-大脑/09-执行反省/说明.md
 from fawai_avatar.brain.capabilities import (
     CAPABILITIES,
     list_capabilities,

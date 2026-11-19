@@ -1,5 +1,5 @@
-# term:脚本铲子生命周期  doc:doc/功能/脚本铲子生命周期/说明.md
-# term:成败经验与检索极性  doc:doc/功能/成败经验与检索极性/说明.md
+# term:脚本铲子生命周期  doc:doc/功能/06-工作区与编码/06-脚本铲子生命周期/说明.md
+# term:成败经验与检索极性  doc:doc/功能/07-知识线/07-成败经验与检索极性/说明.md
 """HTTP helpers: shovel list / get / scores+outcome edit (PWA 技能工具·工具表)."""
 
 from __future__ import annotations

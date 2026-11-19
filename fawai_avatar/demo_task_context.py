@@ -1,4 +1,4 @@
-# term:任务内上下文查询  doc:doc/功能/任务内上下文查询/说明.md
+# term:任务内上下文查询  doc:doc/功能/03-大脑/15-任务内上下文查询/说明.md
 """Smoke: task_context_search / task_context_get（同任务词法 Recall）。"""
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-# term:执行配置自动模式  doc:doc/功能/执行配置自动模式/说明.md
+# term:执行配置自动模式  doc:doc/功能/03-大脑/08-执行配置自动模式/说明.md
 """执行配置三态：推导、mode_prefs、启发式分析自检。"""
 
 from __future__ import annotations

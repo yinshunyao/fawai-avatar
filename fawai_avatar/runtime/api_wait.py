@@ -1,4 +1,4 @@
-# term:会话通道  doc:doc/功能/会话通道/说明.md
+# term:会话通道  doc:doc/功能/01-接入与呈现/02-会话通道/说明.md
 """阻塞等待时的心跳进度（远端 API 或本机长工具；只广播、不落业务结果）。"""
 from __future__ import annotations
 

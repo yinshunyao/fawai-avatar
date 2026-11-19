@@ -1,4 +1,4 @@
-# term:代码索引  doc:doc/功能/代码索引/说明.md
+# term:代码索引  doc:doc/功能/06-工作区与编码/03-代码索引/说明.md
 """代码索引冒烟：多语言 symbols / map / 落盘 / explore 借用 / 跳过目录。"""
 
 from __future__ import annotations

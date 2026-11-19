@@ -20,7 +20,7 @@ Single-task loop: `observe → brain → control → observe again`. The supervi
 
 ## Why fawai (vs common AI tools)
 
-Long-form contrast and version bounds: [`doc/分析/相对常见AI工具为何选fawai.md`](doc/分析/相对常见AI工具为何选fawai.md) (when conclusions change, update **this section and that file in the same turn**). Eval grades: [`doc/版本/`](doc/版本/【总表】版本评测一览.md) (current headline: **v0.1.4 — 81.3 / A**).
+Long-form contrast and version bounds: [`doc/分析/00-横切/02-相对常见AI工具为何选fawai.md`](doc/分析/00-横切/02-相对常见AI工具为何选fawai.md) (when conclusions change, update **this section and that file in the same turn**). Eval grades: [`doc/版本/`](doc/版本/【总表】版本评测一览.md) (current headline: **v0.1.5 — 82.3 / A**).
 
 Most “competitors” are not substitutes; people often need several of them. fawai competes for **hosted work on this machine**, not for app factories or the IDE itself.
 
@@ -171,7 +171,7 @@ Phone / browser PWA ──HTTP/WS──► session gateway ──► session hub
 | **Observe** | Environment → LLM-readable digest | Mutate system state |
 | **Knowledge** | Skills, personal lore, script shovels, task review & failure analysis, on-demand patches | Auto-distill every task |
 
-Learning loop (feeds self-evolution): mid-run **action reflect / observe reflect / step-repeat** corrects in place → optional **task review** after finish (mechanism-first full analysis → optimize checklist → backup then apply: Skill / lesson / code / rule / prompt) → **system log** / startup failures can one-click spawn a remediation task. See [`doc/功能/任务复盘/`](doc/功能/任务复盘/说明.md) and [分析规则](doc/功能/任务复盘/分析规则.md).
+Learning loop (feeds self-evolution): mid-run **action reflect / observe reflect / step-repeat** corrects in place → optional **task review** after finish (mechanism-first full analysis → optimize checklist → backup then apply: Skill / lesson / code / rule / prompt) → **system log** / startup failures can one-click spawn a remediation task. See [`doc/功能/07-知识线/08-任务复盘/`](doc/功能/07-知识线/08-任务复盘/说明.md) and [分析规则](doc/功能/07-知识线/08-任务复盘/分析规则.md).
 
 Capability suite: **C1 LLM / C2 complete-task / C4 self-evolution** are in place; **C3 autonomous GUI** narrow loop (TextEdit + AX) is supported; arbitrary Apps / Electron still later.
 
@@ -208,7 +208,7 @@ Capability suite: **C1 LLM / C2 complete-task / C4 self-evolution** are in place
 |:---|:---|
 | `doc/功能/` | Released / supported features and acceptance |
 | `doc/议题/` | Discussion & principles (≠ auto-release) |
-| `doc/分析/` | Mechanism contrasts & improvement notes (≠ release); why-fawai long form: [相对常见AI工具为何选fawai](doc/分析/相对常见AI工具为何选fawai.md) |
+| `doc/分析/` | Mechanism contrasts & improvement notes (≠ release); why-fawai long form: [相对常见AI工具为何选fawai](doc/分析/00-横切/02-相对常见AI工具为何选fawai.md) |
 | `doc/测试/` | Smoke / system / end-to-end test-task notes |
 | `doc/版本/` | Weighted eval totals per release |
 | `doc/术语与称呼索引.md` | Canonical names and tool ids |

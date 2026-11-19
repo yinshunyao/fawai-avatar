@@ -1,0 +1,77 @@
+[
+  {
+    "description": "Stock logs are shown in /usr/stock.log. The last two columns are stock index and count. Tell me how many times Alice sold a stock.",
+    "create": {
+      "local": "default",
+      "init": {
+        "file": "init/stock-log.sh"
+      }
+    },
+    "evaluation": {
+      "check": [
+        null,
+        {
+          "language": "python",
+          "file": "check/integer-match.py"
+        }
+      ],
+      "example": {
+        "code": "grep \"Alice | Sell\" /usr/stock.log | wc -l"
+      }
+    },
+    "labels": [
+      "log",
+      "file"
+    ]
+  },
+  {
+    "description": "Stock logs are shown in /usr/stock.log. The last two columns are stock index and count. Tell me how many times Bob bought a stock.",
+    "create": {
+      "local": "default",
+      "init": {
+        "file": "init/stock-log.sh"
+      }
+    },
+    "evaluation": {
+      "check": [
+        null,
+        {
+          "language": "python",
+          "file": "check/integer-match.py"
+        }
+      ],
+      "example": {
+        "code": "grep \"Bob | Purchase\" /usr/stock.log | wc -l"
+      }
+    },
+    "labels": [
+      "log",
+      "file"
+    ]
+  },
+  {
+    "description": "Stock logs are shown in /usr/stock.log. The last two columns are stock index and count. Please count the total number of stocks that Alice bought, and tell me the number.",
+    "create": {
+      "local": "default",
+      "init": {
+        "file": "init/stock-log.sh"
+      }
+    },
+    "evaluation": {
+      "check": [
+        null,
+        {
+          "language": "python",
+          "file": "check/integer-match.py"
+        }
+      ],
+      "example": {
+        "code": "grep \"Alice | Purchase\" /usr/stock.log | awk -F '|' '{sum += $NF} END {print sum}'"
+      }
+    },
+    "labels": [
+      "log",
+      "file"
+    ]
+  }
+]

@@ -1,4 +1,4 @@
-# term:步级执行档  doc:doc/功能/步级执行档/说明.md
+# term:步级执行档  doc:doc/功能/03-大脑/05-步级执行档/说明.md
 """步级执行档：step_run 解析 + act 规则 + brief 短观察反省。"""
 from __future__ import annotations
 

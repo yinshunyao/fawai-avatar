@@ -1,4 +1,4 @@
-# term:规划历史窗  doc:doc/功能/编码闭环/说明.md
+# term:规划历史窗  doc:doc/功能/06-工作区与编码/04-编码闭环/说明.md
 """简单目标的步骤待办：待办 / 进行中 / 已完成。不进入可被压缩的历史。"""
 
 from __future__ import annotations

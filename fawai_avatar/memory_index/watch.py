@@ -1,4 +1,4 @@
-# term:全文索引 term:文件名索引  doc:doc/功能/个人知识库/说明.md
+# term:全文索引 term:文件名索引  doc:doc/功能/07-知识线/01-个人知识库/说明.md
 """监视工作区/可读区文件变更，增量更新文件名与正文索引（复用 watchfiles / mtime 轮询）。"""
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-# term:失败价值台账  doc:doc/功能/失败价值台账/说明.md
+# term:失败价值台账  doc:doc/功能/07-知识线/06-失败价值台账/说明.md
 """Smoke: failure_ledger upsert / search / get + avoid lore + 阈值。"""
 
 from __future__ import annotations
@@ -77,7 +77,7 @@ def main() -> None:
                 "status": "rejected",
                 "pass": False,
                 "completeness": 3,
-                "generality": 3,
+                "importance": 3,
                 "efficiency": 3,
                 "threshold_pct": 80,
                 "rationale": "demo below threshold",
@@ -108,7 +108,7 @@ def main() -> None:
                 "status": "passed",
                 "pass": True,
                 "completeness": 4,
-                "generality": 4,
+                "importance": 4,
                 "efficiency": 5,
                 "threshold_pct": 80,
                 "rationale": "demo pass",

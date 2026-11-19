@@ -1,4 +1,4 @@
-# term:服务保活  doc:doc/功能/服务保活/说明.md
+# term:服务保活  doc:doc/功能/08-运行与分发/01-服务保活/说明.md
 """监视产品代码变更（仅源码后缀），供保活外层自动重启网关。"""
 from __future__ import annotations
 

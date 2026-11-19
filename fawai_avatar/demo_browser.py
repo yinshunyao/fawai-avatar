@@ -1,4 +1,4 @@
-# term:浏览器操作 tool:browser_* doc:doc/功能/浏览器操作/说明.md
+# term:浏览器操作 tool:browser_* doc:doc/功能/05-控制/02-浏览器操作/说明.md
 """浏览器工具冒烟：能力闸门 +（可选）无头打开 example.com。
 
 无 playwright：只断言能力标不可用 / dry_run 路径。
@@ -68,7 +68,7 @@ def main() -> None:
     live = (os.environ.get("FAWAI_BROWSER_LIVE") or "").strip() in {"1", "true", "yes"}
     if live:
         if not has_pw:
-            raise SystemExit("FAWAI_BROWSER_LIVE=1 但未安装 playwright；见 doc/功能/浏览器操作/说明.md")
+            raise SystemExit("FAWAI_BROWSER_LIVE=1 但未安装 playwright；见 doc/功能/05-控制/02-浏览器操作/说明.md")
         os.environ.setdefault("FAWAI_BROWSER_HEADLESS", "1")
         ctrl = Controller(dry_run=False)
         try:

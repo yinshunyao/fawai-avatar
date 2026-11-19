@@ -1,4 +1,4 @@
-# term:任务产物交付  doc:doc/功能/任务产物交付/说明.md
+# term:任务产物交付  doc:doc/功能/02-任务线/05-任务产物交付/说明.md
 """会话产物：登记交付物、办公摘录预览、出站 file 气泡。"""
 
 from __future__ import annotations
@@ -224,6 +224,18 @@ def describe_file(path: Path) -> dict[str, Any]:
         text = extract_text_preview(path)
         if text:
             info["preview_text"] = text
+        if path.suffix.lower() == ".md":
+            info["text_format"] = "markdown"
+        elif path.suffix.lower() == ".csv":
+            info["text_format"] = "csv"
+    # 主机投影：办公优先 HTML/PDF；跨端只打开投影
+    try:
+        from fawai_avatar.channel.file_projection import ensure_projection
+
+        proj = ensure_projection(path)
+        info.update(proj)
+    except Exception as exc:  # noqa: BLE001 — 投影失败仍可摘录/下载
+        info["projection_error"] = str(exc)[:200]
     return info
 
 
@@ -309,6 +321,16 @@ def message_for_deliverable(
         meta["slides"] = info["slides"]
     if info.get("preview_error"):
         meta["preview_error"] = info["preview_error"]
+    if info.get("text_format"):
+        meta["text_format"] = info["text_format"]
+    if info.get("projection_path"):
+        meta["projection_path"] = str(info["projection_path"])
+        meta["projection_kind"] = info.get("projection_kind")
+        meta["projection_mime"] = info.get("projection_mime")
+        if info.get("projection_note"):
+            meta["projection_note"] = info["projection_note"]
+    if info.get("projection_error"):
+        meta["projection_error"] = info["projection_error"]
     # 图片仍可用 image 气泡（lightbox）；其它走 file
     if kind == "image":
         return Message.image_out(

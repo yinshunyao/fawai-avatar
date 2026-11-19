@@ -1,4 +1,4 @@
-# term:操作分身  doc:doc/议题/操作分身三层/结论.md
+# term:操作分身  doc:doc/议题/00-横切/01-操作分身三层/结论.md
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field

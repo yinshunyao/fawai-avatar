@@ -1,19 +1,19 @@
-# term:工作任务  doc:doc/议题/操作分身三层/结论.md
-# term:会话通道  doc:doc/功能/会话通道/说明.md
-# term:执行反省  doc:doc/功能/执行反省/说明.md
-# term:观察反省  doc:doc/功能/观察反省/说明.md
-# term:步骤分类与执行流  doc:doc/功能/步骤分类与执行流/说明.md
-# term:步骤重复  doc:doc/功能/步骤重复/说明.md
-# term:进程中断续跑  doc:doc/功能/进程中断续跑/说明.md
-# term:守规约束  doc:doc/功能/守规约束/说明.md
-# term:探索进度闸门  doc:doc/功能/编码闭环/说明.md
-# term:弱写入闸门  doc:doc/功能/编码闭环/说明.md
-# term:可见副作用闸门  doc:doc/功能/编码闭环/说明.md
-# term:任务统计  doc:doc/功能/任务统计/说明.md
-# term:执行中澄清  doc:doc/功能/执行中澄清/说明.md
-# term:步骤业务名  doc:doc/功能/会话通道/说明.md
-# term:脚本铲子生命周期  doc:doc/功能/脚本铲子生命周期/说明.md
-# term:Effort  doc:doc/功能/Effort/说明.md
+# term:工作任务  doc:doc/议题/00-横切/01-操作分身三层/结论.md
+# term:会话通道  doc:doc/功能/01-接入与呈现/02-会话通道/说明.md
+# term:执行反省  doc:doc/功能/03-大脑/09-执行反省/说明.md
+# term:观察反省  doc:doc/功能/03-大脑/10-观察反省/说明.md
+# term:步骤分类与执行流  doc:doc/功能/03-大脑/13-步骤分类与执行流/说明.md
+# term:步骤重复  doc:doc/功能/03-大脑/11-步骤重复/说明.md
+# term:进程中断续跑  doc:doc/功能/02-任务线/02-进程中断续跑/说明.md
+# term:守规约束  doc:doc/功能/03-大脑/14-守规约束/说明.md
+# term:探索进度闸门  doc:doc/功能/06-工作区与编码/04-编码闭环/说明.md
+# term:弱写入闸门  doc:doc/功能/06-工作区与编码/04-编码闭环/说明.md
+# term:可见副作用闸门  doc:doc/功能/06-工作区与编码/04-编码闭环/说明.md
+# term:任务统计  doc:doc/功能/01-接入与呈现/07-任务统计/说明.md
+# term:执行中澄清  doc:doc/功能/02-任务线/04-执行中澄清/说明.md
+# term:步骤业务名  doc:doc/功能/01-接入与呈现/02-会话通道/说明.md
+# term:脚本铲子生命周期  doc:doc/功能/06-工作区与编码/06-脚本铲子生命周期/说明.md
+# term:Effort  doc:doc/功能/03-大脑/06-Effort/说明.md
 from __future__ import annotations
 
 import itertools
@@ -1480,6 +1480,19 @@ class WorkerLoop:
                 setattr(self.brain, "_plan_effort", effort_on)
                 setattr(self.brain, "_plan_fast", fast_on)
                 setattr(self.brain, "_plan_step_tier", step_tier_on)
+                try:
+                    from fawai_avatar.brain.at_dirs import (
+                        at_dirs_from_meta,
+                        format_semantic_dirs_block,
+                    )
+
+                    setattr(
+                        self.brain,
+                        "_plan_at_dirs_block",
+                        format_semantic_dirs_block(at_dirs_from_meta(task.meta)),
+                    )
+                except Exception:  # noqa: BLE001
+                    setattr(self.brain, "_plan_at_dirs_block", "")
                 plan, plan_cancelled = self._call_cancellable(
                     task_id,
                     lambda hc=dict(history_compact), td=list(step_todos), allow=allow_todos: self.brain.plan(
@@ -1608,10 +1621,14 @@ class WorkerLoop:
                 if halted is not None:
                     return halted
 
-                # 主脑委派快模型：段内子闭环，摘要回灌后再由主脑规划
+                # 主脑委派：快模型子闭环 或 Cursor Agent；摘要回灌后再由主脑规划
                 delegate_spec = plan_delegate(plan)
                 if delegate_spec is not None and not awaiting_user_answer:
-                    fast_model = fast_model_from_env()
+                    from fawai_avatar.brain.delegate import (
+                        cursor_agent_ready,
+                        cursor_model_id,
+                    )
+
                     history.append(
                         {
                             "role": "assistant",
@@ -1619,6 +1636,81 @@ class WorkerLoop:
                         }
                     )
                     traces.append(StepTrace(observation=obs, plan=plan, results=[]))
+                    if delegate_spec.tier == "cursor":
+                        if not cursor_agent_ready():
+                            history.append(
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        "【委派未执行】Cursor Agent 未启用或不可用。"
+                                        "请主脑自行规划 actions 完成子目标，勿再输出 tier=cursor。"
+                                        f"原委派：{delegate_spec.goal}"
+                                    ),
+                                }
+                            )
+                            self._progress(
+                                "委派跳过：Cursor Agent 不可用",
+                                phase="delegate_skip",
+                                step=step,
+                            )
+                            persist(next_step=step + 1)
+                            step += 1
+                            continue
+                        cmodel = cursor_model_id() or "composer-2.5"
+                        history.append(
+                            {
+                                "role": "user",
+                                "content": format_delegate_handoff(
+                                    delegate_spec, model=cmodel
+                                ),
+                            }
+                        )
+                        self._progress(
+                            f"委派 Cursor Agent：{delegate_spec.goal[:80]}",
+                            phase="delegate_cursor",
+                            step=step,
+                            model=cmodel,
+                            delegate=delegate_spec.to_dict(),
+                        )
+                        seg = self._run_cursor_delegate(
+                            task_id,
+                            task_goal=task.goal,
+                            spec=delegate_spec,
+                            model=cmodel,
+                            history=history,
+                            traces=traces,
+                            write_set=write_set,
+                            start_step=step + 1,
+                            persist=persist,
+                        )
+                        history = seg["history"]
+                        traces = seg["traces"]
+                        write_set = seg["write_set"]
+                        step = int(seg["step"])
+                        if seg.get("halted") is not None:
+                            return seg["halted"]
+                        history.append(
+                            {
+                                "role": "user",
+                                "content": format_delegate_feedback(
+                                    delegate_spec,
+                                    outcome=str(seg.get("outcome") or "done"),
+                                    summary=str(seg.get("summary") or ""),
+                                    steps_used=int(seg.get("steps_used") or 1),
+                                    model=cmodel,
+                                ),
+                            }
+                        )
+                        self._progress(
+                            "Cursor 委派回灌",
+                            phase="delegate_done",
+                            step=step,
+                            delegate_tier="cursor",
+                        )
+                        persist(next_step=step)
+                        continue
+
+                    fast_model = fast_model_from_env()
                     if not fast_model:
                         history.append(
                             {
@@ -2020,14 +2112,25 @@ class WorkerLoop:
                     diff = ""
                     if isinstance(r.data, dict) and r.data.get("diff"):
                         diff = str(r.data.get("diff") or "")
+                        # 气泡只塞预览；全文靠 diff_id 懒加载
+                        preview = diff[:2500]
                         self._progress(
-                            f"Diff {r.data.get('path') or ''}\n{diff[:2500]}",
+                            f"Diff {r.data.get('path') or ''}\n{preview}",
                             phase="diff",
                             step=step,
                             ok=r.ok,
                             pending=bool(r.data.get("pending")),
                             pending_id=r.data.get("pending_id"),
                             path=r.data.get("path"),
+                            diff_id=r.data.get("diff_id"),
+                            added=r.data.get("added"),
+                            deleted=r.data.get("deleted"),
+                            truncated=bool(
+                                r.data.get("truncated")
+                                or len(diff) > 2500
+                                or "…(diff truncated)" in diff
+                            ),
+                            diff_mode=r.data.get("diff_mode"),
                             **acted_extra,
                             **self._step_label_extra(task_id, plan),
                         )
@@ -4191,6 +4294,64 @@ class WorkerLoop:
                 )
             ]
 
+    def _run_cursor_delegate(
+        self,
+        task_id: str,
+        *,
+        task_goal: str,
+        spec: Any,
+        model: str,
+        history: list[dict[str, Any]],
+        traces: list[StepTrace],
+        write_set: list[str],
+        start_step: int,
+        persist: Callable[..., None],
+    ) -> dict[str, Any]:
+        """Cursor Agent 委派：一轮 prompt，摘要回灌主脑。"""
+        from fawai_avatar.brain.delegate import DelegateSpec
+        from fawai_avatar.cursor_agent import manager as ca_mgr
+
+        assert isinstance(spec, DelegateSpec)
+        step = int(start_step)
+        prompt = (
+            f"{task_goal}\n\n【委派子目标】{spec.goal}\n"
+            f"【停条件】{spec.stop_when or '子目标完成或无法继续'}"
+        )
+
+        def on_event(ev: dict[str, Any]) -> None:
+            et = str(ev.get("type") or "")
+            if et == "run_start":
+                self._progress(
+                    "Cursor Agent 执行中…",
+                    phase="delegate_cursor",
+                    step=step,
+                    run_id=ev.get("run_id"),
+                    agent_id=ev.get("agent_id"),
+                )
+
+        result = ca_mgr.create_and_prompt(
+            prompt,
+            title=f"delegate:{spec.goal[:60]}",
+            task_id=task_id,
+            model=model,
+            on_event=on_event,
+        )
+        ok = bool(result.get("ok"))
+        summary = str(result.get("result") or result.get("error") or "").strip()
+        outcome = "done" if ok else "failed"
+        persist(next_step=step)
+        return {
+            "history": history,
+            "traces": traces,
+            "write_set": write_set,
+            "step": step,
+            "outcome": outcome,
+            "summary": summary or ("Cursor Agent 完成" if ok else "Cursor Agent 失败"),
+            "steps_used": 1,
+            "halted": None,
+            "agent_id": result.get("agent_id"),
+        }
+
     def _run_fast_delegate(
         self,
         task_id: str,
@@ -4363,6 +4524,22 @@ class WorkerLoop:
                 model=model,
                 delegate_tier="fast",
             )
+            try:
+                from fawai_avatar.brain.at_dirs import (
+                    at_dirs_from_meta,
+                    format_semantic_dirs_block,
+                )
+
+                fast_task = self.supervisor.get_task(task_id)
+                setattr(
+                    self.brain,
+                    "_plan_at_dirs_block",
+                    format_semantic_dirs_block(
+                        at_dirs_from_meta(fast_task.meta if fast_task else None)
+                    ),
+                )
+            except Exception:  # noqa: BLE001
+                setattr(self.brain, "_plan_at_dirs_block", "")
             plan, plan_cancelled = self._call_cancellable(
                 task_id,
                 lambda hc=fast_compact: self.brain.plan(

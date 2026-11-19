@@ -1,4 +1,4 @@
-# term:完成任务  doc:doc/功能/完成任务/说明.md
+# term:完成任务  doc:doc/功能/03-大脑/04-完成任务/说明.md
 """C2 验收：用例 A 写入 / B 读取；默认 mock 大脑（可 FAWAI_C2_LIVE=1 走真 LLM）。"""
 
 from __future__ import annotations

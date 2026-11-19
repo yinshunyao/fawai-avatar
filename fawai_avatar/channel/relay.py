@@ -1,4 +1,4 @@
-# term:云端中继  doc:doc/功能/云端中继/说明.md
+# term:云端中继  doc:doc/功能/01-接入与呈现/04-云端中继/说明.md
 from __future__ import annotations
 
 import logging

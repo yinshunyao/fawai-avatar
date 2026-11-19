@@ -1,4 +1,4 @@
-# term:MCP 外挂工具  tool:mcp__  doc:doc/功能/MCP外挂工具/说明.md
+# term:MCP 外挂工具  tool:mcp__  doc:doc/功能/07-知识线/04-MCP外挂工具/说明.md
 """MCP stdio 外挂：注册表、客户端、动态能力与执行。"""
 
 from fawai_avatar.mcp.capabilities_dyn import list_mcp_capabilities, parse_mcp_action_kind

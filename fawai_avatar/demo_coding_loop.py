@@ -1,4 +1,4 @@
-# term:编码闭环  doc:doc/功能/编码闭环/说明.md
+# term:编码闭环  doc:doc/功能/06-工作区与编码/04-编码闭环/说明.md
 """P0/P1 编码闭环冒烟：patch / grep 上下文 / check / confirm / explore / git。"""
 
 from __future__ import annotations
