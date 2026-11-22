@@ -1682,6 +1682,46 @@ def create_app(
             {"ok": True, "task": _task_detail(task, supervisor=hub.supervisor)}
         )
 
+    @app.post("/api/tasks/{task_id}/exec-config")
+    async def patch_task_exec_config_api(
+        task_id: str,
+        x_fawai_token: str | None = Header(default=None),
+        body: dict[str, Any] | None = Body(default=None),
+    ) -> JSONResponse:
+        """任务级执行配置：四开关写入 meta；不改 Cursor runtime。"""
+        _check_token(x_fawai_token)
+        task = _resolve_task(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="unknown task")
+        status = str(getattr(task, "status", "") or "")
+        if status == "archived":
+            raise HTTPException(status_code=409, detail="已归档任务无法改执行配置")
+        if status in {"completed", "failed", "cancelled"}:
+            raise HTTPException(status_code=409, detail="已结束任务不回写执行配置")
+        from fawai_avatar.brain.mode_auto import (
+            patch_exec_config_from_body,
+            public_exec_config,
+        )
+
+        patch = patch_exec_config_from_body(
+            body if isinstance(body, dict) else {},
+            existing_meta=dict(task.meta or {}),
+        )
+        if not patch:
+            raise HTTPException(status_code=400, detail="empty exec-config patch")
+        ok = hub.supervisor.merge_task_meta(task.task_id, patch)
+        if not ok:
+            raise HTTPException(status_code=500, detail="merge task meta failed")
+        updated = hub.supervisor.get_task(task.task_id)
+        meta = dict(getattr(updated, "meta", None) or {}) if updated else {}
+        return JSONResponse(
+            {
+                "ok": True,
+                "task_id": task.task_id,
+                "exec_config": public_exec_config(meta),
+            }
+        )
+
     @app.get("/api/tasks/{task_id}/history")
     async def get_task_history_api(
         task_id: str,
@@ -2414,6 +2454,12 @@ def _task_summary(
         stats = _task_stats_summary(meta if isinstance(meta, dict) else {})
     if stats is not None:
         out["stats"] = stats
+    try:
+        from fawai_avatar.brain.mode_auto import public_exec_config
+
+        out["exec_config"] = public_exec_config(meta if isinstance(meta, dict) else {})
+    except Exception:  # noqa: BLE001
+        pass
     return out
 
 
@@ -2436,6 +2482,12 @@ def _task_detail(t: Any, *, supervisor: Any = None) -> dict[str, Any]:
         "kind": meta.get("kind"),
         "review_phase": meta.get("review_phase"),
     }
+    # 任务级执行配置（底栏回填 / 重启后隔离）
+    for k in ("mode_prefs", "fast", "effort", "step_tier", "plan_auto", "runtime", "cursor_agent"):
+        if k in meta:
+            detail_meta[k] = meta.get(k)
+    if data.get("exec_config"):
+        detail_meta["exec_config"] = data.get("exec_config")
     if str(meta.get("plan_role") or "") == "orchestrator" and isinstance(
         meta.get("plan_graph"), dict
     ):
@@ -2665,6 +2717,15 @@ def main() -> None:
         ensure_loopback_no_proxy()
     except Exception:  # noqa: BLE001
         pass
+    # 保活/非交互 PATH 常只有 nvm 默认 v20：预解析 ≥22 写入 FAWAI_CURSOR_NODE 供登录脚本
+    try:
+        from fawai_avatar.cursor_agent import auth as ca_auth
+
+        node_bin = ca_auth._which_node()
+        if node_bin and not (os.environ.get("FAWAI_CURSOR_NODE") or "").strip():
+            os.environ["FAWAI_CURSOR_NODE"] = node_bin
+    except Exception:  # noqa: BLE001
+        pass
     _raise_nofile_soft_limit()
 
     # 已在保活子进程内，或显式关闭保活 → 直接跑网关
@@ -2678,7 +2739,8 @@ def main() -> None:
         return
 
     # 主入口获取权限（辅助功能 + 屏幕录制）；任务执行中不再弹窗
-    if is_macos():
+    # FAWAI_SKIP_STARTUP_PERMISSIONS=1：跳过弹窗探测（部分环境下 WithOptions 会 SIGSEGV）
+    if is_macos() and not _env_flag("FAWAI_SKIP_STARTUP_PERMISSIONS", "0"):
         from fawai_avatar.runtime.console_log import cprint
 
         cprint("正在检查 / 请求 macOS 权限（辅助功能、屏幕录制、完全磁盘访问）…")
@@ -2698,6 +2760,10 @@ def main() -> None:
                 "  → 只读根已含整盘路径，但「完全磁盘访问」可能未开；"
                 "仓外配置目录可能仍读失败，请在系统设置勾选后重启。"
             )
+    elif is_macos():
+        from fawai_avatar.runtime.console_log import cprint
+
+        cprint("已跳过启动权限弹窗（FAWAI_SKIP_STARTUP_PERMISSIONS=1）")
 
     cfg = RuntimeConfig.from_env()
     host = (os.environ.get("FAWAI_GATEWAY_HOST") or "0.0.0.0").strip()

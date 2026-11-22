@@ -130,10 +130,9 @@ def _cursor_agent_requested(inbound: Message) -> bool:
 
 
 def _is_cursor_agent_task(task: Any) -> bool:
-    meta = getattr(task, "meta", None) or {}
-    if not isinstance(meta, dict):
-        return False
-    return str(meta.get("runtime") or "") == "cursor_agent"
+    from fawai_avatar.brain.mode_auto import is_cursor_agent_meta
+
+    return is_cursor_agent_meta(getattr(task, "meta", None))
 
 
 def _trim_history(messages: list[Message]) -> list[Message]:
@@ -315,6 +314,13 @@ class SessionHub:
         """从工作线程把出站消息投递到主循环。"""
         loop = self._loop
         if loop is not None and loop.is_running():
+            try:
+                if asyncio.get_running_loop() is loop:
+                    # 已在 hub 事件循环协程内：不得 fut.result()，否则死锁
+                    asyncio.create_task(self.publish(message))
+                    return
+            except RuntimeError:
+                pass
             fut = asyncio.run_coroutine_threadsafe(self.publish(message), loop)
             fut.result(timeout=timeout)
             return
@@ -720,7 +726,9 @@ class SessionHub:
 
         # 开着直连但当前焦点是 fawai 线程：新开 Cursor 会话（不把旧线程改成 Cursor）
         if _cursor_agent_requested(inbound) and not _is_cursor_agent_task(task):
-            return await self._create_cursor_agent_task(goal, inbound=inbound)
+            return await self._create_cursor_agent_task(
+                goal, inbound=inbound, related_task_id=resolved
+            )
 
         # Cursor Agent 线程：不进主脑编排 / 澄清 / 复盘闸
         if _is_cursor_agent_task(task):
@@ -806,11 +814,12 @@ class SessionHub:
         decision = await self._run_blocking(
             route_followup, task, goal, recent_notes=notes
         )
-        action = str(decision.get("action") or "continue")
-        reason = str(decision.get("reason") or "")
-        source = str(decision.get("source") or "")
+        # 一对话一任务：同线程禁止拆 sibling（即使路由误返 new_task）
+        action = "continue"
+        reason = str(decision.get("reason") or "一对话一任务，同线程续跑")
+        source = str(decision.get("source") or "policy")
         route_prog = Message.progress(
-            f"任务路由 → {'续跑' if action == 'continue' else '新建'}（{source}）{('：' + reason) if reason else ''}",
+            f"任务路由 → 续跑（{source}）{('：' + reason) if reason else ''}",
             task_id=resolved,
             meta={
                 "route": action,
@@ -823,12 +832,6 @@ class SessionHub:
         )
         route_prog.ts = base_ts + 0.002
         await self.publish(route_prog)
-        if action == "new_task":
-            return await self._create_and_maybe_run(
-                goal,
-                inbound=inbound,
-                related_task_id=resolved,
-            )
         return await self._continue_task(task, goal, inbound=inbound)
 
     async def _append_while_running(
@@ -874,36 +877,14 @@ class SessionHub:
             followup,
             recent_steps_summary=steps_summary,
         )
-        action = str(decision.get("action") or "apply")
-        reason = str(decision.get("reason") or "")
-        source = str(decision.get("source") or "")
-        instruction = str(decision.get("instruction") or "").strip()
+        # 一对话一任务：执行中追加一律并入，禁止拆 sibling
+        action = "apply"
+        reason = str(decision.get("reason") or "一对话一任务，执行中追加并入")
+        source = str(decision.get("source") or "policy")
+        instruction = str(decision.get("instruction") or "").strip() or followup[:80]
         append_progress_text = (
-            f"执行中追加 → {'并入' if action == 'apply' else '新建'}（{source}）"
-            f"{('：' + reason) if reason else ''}"
+            f"执行中追加 → 并入（{source}）{('：' + reason) if reason else ''}"
         )
-
-        if action == "new_task":
-            # 另开：先记路由进度，再建 sibling（不拆当前 run 的时间线）
-            route_prog = Message.progress(
-                append_progress_text,
-                task_id=task_id,
-                meta={
-                    "route": action,
-                    "reason": reason,
-                    "source": source,
-                    "phase": "append",
-                    "instruction": instruction[:120],
-                    "inbound_id": inbound.message_id,
-                },
-            )
-            route_prog.ts = base_ts + 0.001
-            await self.publish(route_prog)
-            return await self._create_and_maybe_run(
-                followup,
-                inbound=inbound,
-                related_task_id=task_id,
-            )
 
         # 追问/追加不并入 goal 正文（会话气泡各自独立）；靠 pending_appends 注入大脑 history
         followups = list((task.meta or {}).get("followups") or [])
@@ -1010,6 +991,9 @@ class SessionHub:
             node_id=node_id,
         )
         kind = str(decision.get("kind") or "no_graph_change")
+        # 一对话一任务：计划追加禁止 new_task 拆 sibling
+        if kind == "new_task":
+            kind = "no_graph_change"
         reason = str(decision.get("reason") or "")
         source = str(decision.get("source") or "")
         instruction = str(decision.get("instruction") or followup[:80]).strip()
@@ -1017,7 +1001,7 @@ class SessionHub:
             f"计划追加 → {kind}（{source}）{('：' + reason) if reason else ''}"
         )
         soft_kinds = {"no_graph_change", "dispatch_note"}
-        # 改图 / 新建：进度留脊柱；软追加延后发布并 stamp 节点，避免贴在节点轨上方
+        # 改图：进度留脊柱；软追加延后发布并 stamp 节点，避免贴在节点轨上方
         if kind not in soft_kinds:
             route_prog = Message.progress(
                 progress_text,
@@ -1032,11 +1016,6 @@ class SessionHub:
             )
             route_prog.ts = base_ts + 0.001
             await self.publish(route_prog)
-
-        if kind == "new_task":
-            return await self._create_and_maybe_run(
-                followup, inbound=inbound, related_task_id=parent_id
-            )
 
         # 记录追加到父计划
         followups = list((parent.meta or {}).get("followups") or [])
@@ -1401,22 +1380,29 @@ class SessionHub:
                     run_meta["agent_id"] = aid_ev
             stream_ui.handle(ev)
 
-        if create or not agent_id:
-            result = await self._run_blocking(
-                ca_mgr.create_and_prompt,
-                prompt,
-                title=title or prompt[:80],
-                task_id=task_id,
-                on_event=on_event,
-            )
-        else:
-            result = await self._run_blocking(
-                ca_mgr.send_followup,
-                agent_id,
-                prompt,
-                task_id=task_id,
-                on_event=on_event,
-            )
+        try:
+            if create or not agent_id:
+                result = await self._run_blocking(
+                    ca_mgr.create_and_prompt,
+                    prompt,
+                    title=title or prompt[:80],
+                    task_id=task_id,
+                    on_event=on_event,
+                )
+            else:
+                result = await self._run_blocking(
+                    ca_mgr.send_followup,
+                    agent_id,
+                    prompt,
+                    task_id=task_id,
+                    on_event=on_event,
+                )
+        except Exception as exc:  # noqa: BLE001
+            err = str(exc) or exc.__class__.__name__
+            logger.exception("cursor agent turn failed task=%s", task_id[:8])
+            self.supervisor.fail(task_id, message=err[:200])
+            await self.publish(Message.error(err, task_id=task_id))
+            return
 
         stream_tail = stream_ui.finalize()
         new_steps = stream_tail.pop("steps", None)
@@ -1431,7 +1417,13 @@ class SessionHub:
             **{k: v for k, v in stream_tail.items() if k != "steps"},
         }
         # 状态条只保留短文案；步骤明细在 plan/act 卡与 meta.steps
-        self.emit_progress("Cursor Agent 本轮结束", task_id=task_id, meta=settle_meta)
+        await self.publish(
+            Message.progress(
+                "Cursor Agent 本轮结束",
+                task_id=task_id,
+                meta=settle_meta,
+            )
+        )
 
         aid = str(
             result.get("agent_id")
@@ -3311,7 +3303,84 @@ class SessionHub:
             )
         if started:
             logger.info("recovered %d interrupted task(s)", len(started))
+        cursor_healed = self.recover_stuck_cursor_agent_settles()
+        if cursor_healed:
+            started.extend(cursor_healed)
         return started
+
+    def recover_stuck_cursor_agent_settles(self) -> list[str]:
+        """Cursor 回合在「本轮结束」处 publish 死锁时：历史有收尾进度但未 complete。"""
+        healed: list[str] = []
+        tasks = self.supervisor.list_tasks(status="running", limit=200)
+        for task in tasks:
+            meta = task.meta if isinstance(task.meta, dict) else {}
+            if not meta.get("cursor_agent"):
+                continue
+            hist = self.history_for_task(task.task_id)
+            saw_settle = False
+            has_done_card = False
+            settle_meta: dict[str, Any] = {}
+            for msg in hist:
+                mm = msg.meta if isinstance(msg.meta, dict) else {}
+                if msg.kind == "card" and mm.get("mode") == "cursor_done":
+                    has_done_card = True
+                if msg.kind == "progress" and (msg.text or "").strip() == "Cursor Agent 本轮结束":
+                    saw_settle = True
+                    settle_meta = dict(mm)
+            if not saw_settle or has_done_card:
+                continue
+            patch: dict[str, Any] = {
+                **meta,
+                "runtime": "cursor_agent",
+                "cursor_agent": True,
+                "ok": True,
+                "final_thought": str(meta.get("final_thought") or "").strip()
+                or "（Cursor 侧已完成；库态收尾异常已自动修复，详情见步骤流。）",
+            }
+            for key in (
+                "steps",
+                "cursor_tools",
+                "cursor_events",
+                "cursor_steps",
+                "agent_id",
+                "run_id",
+            ):
+                val = settle_meta.get(key)
+                if val is None:
+                    continue
+                if key == "agent_id":
+                    patch["cursor_agent_id"] = str(val)
+                elif key == "run_id":
+                    patch["cursor_run_id"] = str(val)
+                else:
+                    patch[key] = val
+            aid = str(patch.get("cursor_agent_id") or "")
+            self.supervisor.merge_task_meta(task.task_id, patch)
+            if not self.supervisor.complete(task.task_id):
+                continue
+            healed.append(task.task_id)
+            self.publish_threadsafe(
+                Message.card(
+                    "Cursor Agent 本轮完成",
+                    task_id=task.task_id,
+                    meta={
+                        "mode": "cursor_done",
+                        "status": "completed",
+                        "agent_id": aid,
+                        "recovered": True,
+                    },
+                )
+            )
+            self.log_system(
+                "recover",
+                message=f"Cursor 收尾恢复 {task.task_id[:8]}…",
+                ok=True,
+                task_id=task.task_id,
+                actor="runtime",
+            )
+        if healed:
+            logger.info("recovered %d stuck cursor agent settle(s)", len(healed))
+        return healed
 
     def _run_worker_safe(self, task_id: str) -> None:
         assert self._worker is not None

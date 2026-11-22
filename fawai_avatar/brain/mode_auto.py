@@ -210,6 +210,82 @@ def summarize_prefs(meta: dict[str, Any] | None) -> str:
     return "、".join(bits)
 
 
+def is_cursor_agent_meta(meta: dict[str, Any] | None) -> bool:
+    """任务是否为 Cursor Agent 直连线程。"""
+    if not isinstance(meta, dict):
+        return False
+    if str(meta.get("runtime") or "").strip() == "cursor_agent":
+        return True
+    flag = meta.get("cursor_agent")
+    return flag is True or str(flag).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def public_exec_config(meta: dict[str, Any] | None) -> dict[str, Any]:
+    """任务级执行配置快照（API / 底栏回填）。"""
+    m = meta if isinstance(meta, dict) else {}
+    prefs = prefs_from_meta(m)
+    cursor = is_cursor_agent_meta(m)
+    out: dict[str, Any] = {
+        "mode_prefs": dict(prefs),
+        "cursor_agent": cursor,
+    }
+    runtime = str(m.get("runtime") or "").strip()
+    if runtime:
+        out["runtime"] = runtime
+    for key in MODE_KEYS:
+        if key in m:
+            out[key] = bool(m.get(key))
+        else:
+            forced = pref_to_bool(prefs.get(key, PREF_AUTO))
+            if forced is not None:
+                out[key] = bool(forced)
+    return out
+
+
+def patch_exec_config_from_body(
+    body: dict[str, Any] | None,
+    *,
+    existing_meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """从请求体整理可写入任务 meta 的执行配置补丁。
+
+    只动四开关（mode_prefs + 生效布尔）。不经由本函数改 runtime / 把任务改成 Cursor。
+    """
+    if not isinstance(body, dict):
+        return {}
+    base = existing_meta if isinstance(existing_meta, dict) else {}
+    cur_prefs = prefs_from_meta(base)
+    raw_prefs = body.get("mode_prefs")
+    if isinstance(raw_prefs, dict):
+        for key in MODE_KEYS:
+            if key in raw_prefs:
+                cur_prefs[key] = coerce_mode_pref(raw_prefs.get(key))
+    else:
+        for key in MODE_KEYS:
+            if key not in body:
+                continue
+            # 允许顶层传 auto|on|off 或布尔
+            v = body.get(key)
+            if isinstance(v, str) and str(v).strip().lower() in {
+                "auto",
+                "on",
+                "off",
+                "automatic",
+            }:
+                cur_prefs[key] = coerce_mode_pref(v)
+            elif v is True or v is False or isinstance(v, (int, float)):
+                cur_prefs[key] = coerce_mode_pref(v)
+
+    patch: dict[str, Any] = {"mode_prefs": dict(cur_prefs)}
+    for key in MODE_KEYS:
+        forced = pref_to_bool(cur_prefs[key])
+        if forced is None:
+            # auto：保留任务上已有分析布尔，不在此清掉
+            continue
+        patch[key] = bool(forced)
+    return patch
+
+
 # --- 兼容旧名（调度/旧调用） ---
 
 

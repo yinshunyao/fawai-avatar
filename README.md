@@ -20,7 +20,7 @@ Single-task loop: `observe → brain → control → observe again`. The supervi
 
 ## Why fawai (vs common AI tools)
 
-Long-form contrast and version bounds: [`doc/分析/00-横切/02-相对常见AI工具为何选fawai.md`](doc/分析/00-横切/02-相对常见AI工具为何选fawai.md) (when conclusions change, update **this section and that file in the same turn**). Eval grades: [`doc/版本/`](doc/版本/【总表】版本评测一览.md) (current headline: **v0.1.5 — 82.3 / A**).
+Long-form contrast and version bounds: [`doc/分析/00-横切/02-相对常见AI工具为何选fawai.md`](doc/分析/00-横切/02-相对常见AI工具为何选fawai.md) (when conclusions change, update **this section and that file in the same turn**). Eval grades: [`doc/版本/`](doc/版本/【总表】版本评测一览.md) (current headline: **v0.1.6 — 84.0 / A**).
 
 Most “competitors” are not substitutes; people often need several of them. fawai competes for **hosted work on this machine**, not for app factories or the IDE itself.
 

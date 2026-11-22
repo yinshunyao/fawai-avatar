@@ -63,6 +63,21 @@ def _which_node() -> str:
     which = shutil.which("node") or ""
     if which:
         candidates.append(which)
+    # cursor-sdk 自带 bridge Node（常 ≥22），不依赖用户 PATH / nvm 默认版
+    try:
+        import cursor_sdk
+
+        vendor_node = (
+            Path(cursor_sdk.__file__).resolve().parent
+            / "_vendor"
+            / "bridge"
+            / "bin"
+            / "node"
+        )
+        if vendor_node.is_file():
+            candidates.append(str(vendor_node))
+    except Exception:  # noqa: BLE001
+        pass
     home = Path.home()
     for rel in (
         ".nvm/versions/node/v22.22.1/bin/node",
@@ -72,14 +87,25 @@ def _which_node() -> str:
         p = home / rel
         if p.is_file():
             candidates.append(str(p))
-    # 扫 nvm 下任意 v22.*
+    # 扫 nvm 下 v22+（含 v23/v24…）；按主版本再按路径倒序
     nvm_root = home / ".nvm/versions/node"
     if nvm_root.is_dir():
-        for d in sorted(nvm_root.glob("v22.*"), reverse=True):
+        found: list[tuple[int, str]] = []
+        for d in nvm_root.iterdir():
+            name = d.name  # v22.22.1
+            if not name.startswith("v"):
+                continue
+            try:
+                major = int(name[1:].split(".", 1)[0])
+            except ValueError:
+                continue
+            if major < 22:
+                continue
             p = d / "bin" / "node"
             if p.is_file():
-                candidates.append(str(p))
-                break
+                found.append((major, str(p)))
+        for _maj, path in sorted(found, key=lambda x: (x[0], x[1]), reverse=True):
+            candidates.append(path)
     seen: set[str] = set()
     for c in candidates:
         if not c or c in seen:

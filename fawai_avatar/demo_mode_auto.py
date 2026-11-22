@@ -13,8 +13,10 @@ from fawai_avatar.brain.mode_auto import (
     apply_auto_prefs,
     coerce_mode_pref,
     inbound_prefs_patch,
+    patch_exec_config_from_body,
     prefs_from_analysis,
     prefs_from_meta,
+    public_exec_config,
     summarize_prefs,
 )
 from fawai_avatar.brain.orchestrator import analyze_task_exec_config
@@ -108,6 +110,26 @@ def main() -> None:
     )
     _ok("summary_auto_resolved", "极速自动·开" in text)
     _ok("summary_manual_on", "全力开" in text)
+
+    pub = public_exec_config(
+        {
+            "mode_prefs": {"fast": "on", "effort": "auto"},
+            "fast": True,
+            "runtime": "cursor_agent",
+            "cursor_agent": True,
+        }
+    )
+    _ok("public_fast_on", pub.get("fast") is True)
+    _ok("public_cursor", pub.get("cursor_agent") is True)
+    _ok("public_prefs_effort_auto", pub["mode_prefs"]["effort"] == PREF_AUTO)
+
+    ec_patch = patch_exec_config_from_body(
+        {"mode_prefs": {"fast": "off", "effort": "on"}},
+        existing_meta={"mode_prefs": {"fast": "auto"}, "fast": True},
+    )
+    _ok("patch_fast_off", ec_patch.get("fast") is False)
+    _ok("patch_effort_on", ec_patch.get("effort") is True)
+    _ok("patch_no_runtime", "runtime" not in ec_patch)
 
     print("demo_mode_auto: all ok")
 

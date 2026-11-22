@@ -8121,11 +8121,20 @@
     let sending = false;
     const MODE_PREFS_KEY = "fawai_mode_prefs";
     const MODE_PREF_KEYS = ["fast", "effort", "step_tier", "plan_auto"];
-    let cursorAgentMode = false;
+    /** 无焦点任务时的全局末次（本机）；打开任务时面板改跟任务 meta。 */
+    /** @type {Record<string, "auto"|"on"|"off">} */
+    let globalModePrefs = {
+      fast: "auto",
+      effort: "auto",
+      step_tier: "auto",
+      plan_auto: "auto",
+    };
+    let globalCursorAgentMode = false;
     try {
-      cursorAgentMode = localStorage.getItem("fawai_cursor_agent_mode") === "1";
+      globalCursorAgentMode = localStorage.getItem("fawai_cursor_agent_mode") === "1";
     } catch (_) { /* ignore */ }
-    /** 仅记用户偏好 auto|on|off；自动项每次任务初始化再判定，不记分析结果。 */
+    /** 当前底栏展示（任务焦点或全局）。 */
+    let cursorAgentMode = globalCursorAgentMode;
     /** @type {Record<string, "auto"|"on"|"off">} */
     let modePrefs = {
       fast: "auto",
@@ -8140,11 +8149,15 @@
         if (parsed && typeof parsed === "object") {
           MODE_PREF_KEYS.forEach((k) => {
             const v = String(parsed[k] || "").toLowerCase();
-            if (v === "auto" || v === "on" || v === "off") modePrefs[k] = v;
+            if (v === "auto" || v === "on" || v === "off") globalModePrefs[k] = v;
           });
         }
       }
     } catch (_) { /* keep defaults */ }
+    MODE_PREF_KEYS.forEach((k) => {
+      modePrefs[k] = globalModePrefs[k];
+    });
+    let execConfigPersistSeq = 0;
     /** @type {Map<string, Array<() => void>>} */
     const pendingInboundAcks = new Map();
     let stoppingTask = false;
@@ -10020,9 +10033,23 @@
           let cached = taskCache.find((x) => x.task_id === task.task_id);
           if (!cached) {
             taskCache.push({ ...task });
-          } else if (apiTitle) {
-            cached.title = apiTitle;
-            if (apiSrc) cached.title_source = apiSrc;
+            cached = taskCache.find((x) => x.task_id === task.task_id);
+          } else {
+            if (apiTitle) {
+              cached.title = apiTitle;
+              if (apiSrc) cached.title_source = apiSrc;
+            }
+            if (task.status) cached.status = task.status;
+            if (task.meta) cached.meta = { ...(cached.meta || {}), ...task.meta };
+            if (task.exec_config) cached.exec_config = task.exec_config;
+          }
+          const ec =
+            (task.exec_config) ||
+            (task.meta && task.meta.exec_config) ||
+            execConfigFromMeta(task.meta || {});
+          rememberTaskExecConfig(task.task_id, ec);
+          if (taskId === activeTaskId && view === "thread") {
+            syncExecConfigFromActiveTask();
           }
         }
         const g =
@@ -10844,10 +10871,154 @@
       syncModePanel();
     }
 
-    function persistModePrefs() {
+    function persistGlobalModePrefs() {
       try {
-        localStorage.setItem(MODE_PREFS_KEY, JSON.stringify(modePrefs));
+        localStorage.setItem(MODE_PREFS_KEY, JSON.stringify(globalModePrefs));
       } catch (_) { /* ignore */ }
+    }
+
+    function persistGlobalCursorAgentMode() {
+      try {
+        localStorage.setItem(
+          "fawai_cursor_agent_mode",
+          globalCursorAgentMode ? "1" : "0"
+        );
+      } catch (_) { /* ignore */ }
+    }
+
+    function defaultExecPrefs() {
+      return {
+        fast: "auto",
+        effort: "auto",
+        step_tier: "auto",
+        plan_auto: "auto",
+      };
+    }
+
+    function normalizeExecPrefs(raw) {
+      const out = defaultExecPrefs();
+      if (!raw || typeof raw !== "object") return out;
+      MODE_PREF_KEYS.forEach((k) => {
+        const v = String(raw[k] || "").toLowerCase();
+        if (v === "auto" || v === "on" || v === "off") out[k] = v;
+      });
+      return out;
+    }
+
+    function execConfigFromMeta(meta) {
+      const m = meta && typeof meta === "object" ? meta : {};
+      const fromEc = m.exec_config && typeof m.exec_config === "object" ? m.exec_config : null;
+      const prefsSrc =
+        (fromEc && fromEc.mode_prefs) ||
+        m.mode_prefs ||
+        null;
+      const prefs = normalizeExecPrefs(prefsSrc);
+      // 无 mode_prefs 时用生效布尔回填开/关（旧任务 / 终态）
+      if (!prefsSrc) {
+        MODE_PREF_KEYS.forEach((k) => {
+          const src = fromEc && k in fromEc ? fromEc[k] : m[k];
+          if (typeof src === "boolean") prefs[k] = src ? "on" : "off";
+        });
+      }
+      const runtime = String(
+        (fromEc && fromEc.runtime) || m.runtime || ""
+      );
+      const cursor =
+        runtime === "cursor_agent" ||
+        !!(fromEc && fromEc.cursor_agent) ||
+        m.cursor_agent === true ||
+        String(m.cursor_agent || "").toLowerCase() === "true";
+      return { mode_prefs: prefs, cursor_agent: cursor, runtime };
+    }
+
+    function applyExecConfigToPanel(cfg, opts) {
+      const asGlobal = !!(opts && opts.asGlobal);
+      const next = cfg && typeof cfg === "object" ? cfg : {};
+      const prefs = normalizeExecPrefs(next.mode_prefs || next);
+      MODE_PREF_KEYS.forEach((k) => {
+        modePrefs[k] = prefs[k];
+        if (asGlobal) globalModePrefs[k] = prefs[k];
+      });
+      cursorAgentMode = !!next.cursor_agent;
+      if (asGlobal) globalCursorAgentMode = cursorAgentMode;
+      syncModePanel();
+    }
+
+    function applyGlobalExecConfigToPanel() {
+      applyExecConfigToPanel(
+        { mode_prefs: globalModePrefs, cursor_agent: globalCursorAgentMode },
+        { asGlobal: false }
+      );
+    }
+
+    function rememberTaskExecConfig(taskId, cfg) {
+      const tid = String(taskId || "").trim();
+      if (!tid || !cfg) return;
+      let cached = taskCache.find((x) => x.task_id === tid);
+      if (!cached) {
+        cached = { task_id: tid };
+        taskCache.push(cached);
+      }
+      cached.exec_config = cfg;
+      cached.meta = { ...(cached.meta || {}), ...(cfg.mode_prefs ? { mode_prefs: cfg.mode_prefs } : {}), exec_config: cfg };
+      if (cfg.runtime) cached.meta.runtime = cfg.runtime;
+      if ("cursor_agent" in cfg) cached.meta.cursor_agent = !!cfg.cursor_agent;
+      MODE_PREF_KEYS.forEach((k) => {
+        if (k in cfg) cached.meta[k] = !!cfg[k];
+      });
+    }
+
+    function syncExecConfigFromActiveTask() {
+      if (view !== "thread" || !activeTaskId) {
+        applyGlobalExecConfigToPanel();
+        return;
+      }
+      const cached = taskCache.find((x) => x.task_id === activeTaskId) || {};
+      const cfg = execConfigFromMeta({
+        ...(cached.meta || {}),
+        exec_config: cached.exec_config || (cached.meta && cached.meta.exec_config),
+        runtime:
+          (cached.exec_config && cached.exec_config.runtime) ||
+          (cached.meta && cached.meta.runtime) ||
+          "",
+        cursor_agent:
+          (cached.exec_config && cached.exec_config.cursor_agent) ||
+          (cached.meta && cached.meta.cursor_agent),
+      });
+      applyExecConfigToPanel(cfg, { asGlobal: false });
+    }
+
+    function canPersistExecConfigToActiveTask() {
+      if (view !== "thread" || !activeTaskId) return false;
+      const st = String(activeTaskStatus || lookupStatus(activeTaskId) || "");
+      return !isTerminalTaskStatus(st);
+    }
+
+    async function persistActiveTaskExecConfig() {
+      if (!canPersistExecConfigToActiveTask() || !token) return;
+      const tid = activeTaskId;
+      const seq = ++execConfigPersistSeq;
+      const body = {
+        mode_prefs: { ...modePrefs },
+      };
+      try {
+        const data = await taskApi(
+          `/api/tasks/${encodeURIComponent(tid)}/exec-config`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          }
+        );
+        if (seq !== execConfigPersistSeq || activeTaskId !== tid) return;
+        const cfg = (data && data.exec_config) || {
+          mode_prefs: { ...modePrefs },
+          cursor_agent: isCursorAgentTaskId(tid),
+        };
+        rememberTaskExecConfig(tid, cfg);
+      } catch (_) {
+        /* 底栏已更新；失败时下次入站仍会带 mode_prefs */
+      }
     }
 
     function modeManualOnCount() {
@@ -10979,8 +11150,13 @@
       if (!MODE_PREF_KEYS.includes(key)) return;
       const next = pref === "on" || pref === "off" ? pref : "auto";
       modePrefs[key] = next;
-      persistModePrefs();
+      // 全局末次始终更新（新建任务继承）；进行中任务再写任务 meta
+      globalModePrefs[key] = next;
+      persistGlobalModePrefs();
       syncModePanel();
+      if (canPersistExecConfigToActiveTask()) {
+        persistActiveTaskExecConfig().catch(() => {});
+      }
     }
 
     function outboundEffortMeta() {
@@ -11030,9 +11206,26 @@
     function isCursorAgentTaskId(taskId) {
       const tid = String(taskId || "").trim();
       if (!tid) return false;
-      const cached = taskCache.find((x) => x.task_id === tid);
-      const meta = (cached && cached.meta) || {};
-      return String(meta.runtime || "") === "cursor_agent";
+      const cached = taskCache.find((x) => x.task_id === tid) || {};
+      // 列表摘要常只有 exec_config，无完整 meta；须与底栏 sync 同源判定
+      const cfg = execConfigFromMeta({
+        ...(cached.meta || {}),
+        exec_config:
+          cached.exec_config ||
+          (cached.meta && cached.meta.exec_config) ||
+          null,
+        runtime:
+          (cached.exec_config && cached.exec_config.runtime) ||
+          (cached.meta && cached.meta.runtime) ||
+          "",
+        cursor_agent:
+          (cached.exec_config && cached.exec_config.cursor_agent) ||
+          (cached.meta && cached.meta.cursor_agent),
+      });
+      return !!(
+        cfg.cursor_agent ||
+        String(cfg.runtime || "") === "cursor_agent"
+      );
     }
 
     /** 直连开着时：仅续跑已有 Cursor 线程；fawai 线程则不带 task_id，让服务端新开 Cursor 会话。 */
@@ -11044,9 +11237,10 @@
 
     function setCursorAgentMode(on) {
       cursorAgentMode = !!on;
-      try {
-        localStorage.setItem("fawai_cursor_agent_mode", cursorAgentMode ? "1" : "0");
-      } catch (_) { /* ignore */ }
+      // Cursor 直连：任务级身份以 meta.runtime 为准；面板开关作全局末次 + 下一句路由。
+      // 不在此把普通任务改写成 Cursor / 也不剥掉已有 Cursor 线程。
+      globalCursorAgentMode = cursorAgentMode;
+      persistGlobalCursorAgentMode();
       syncModePanel();
     }
 
@@ -12017,6 +12211,7 @@
       clearChoiceBar();
       markNavSelection(null);
       setComposerPlaceholder(tr("chat.placeholder"));
+      applyGlobalExecConfigToPanel();
       // 已有缓存时先画侧栏，再后台对齐远端
       renderThreadList();
       refreshHome().catch(() => {});
@@ -12044,6 +12239,7 @@
       appbar.classList.add("ready", "in-thread");
       titleText.textContent = tr("title.newTask");
       setComposerPlaceholder(tr("chat.placeholder.new"));
+      applyGlobalExecConfigToPanel();
       syncThreadActions();
       clearChoiceBar();
       markNavSelection(null);
@@ -12166,6 +12362,7 @@
       else if (cached.goal) cached.goal = originalGoalText(cached.goal);
       titleText.textContent = displayTitle(cached);
       setComposerPlaceholder(composerPlaceholderForStatus(activeTaskStatus));
+      syncExecConfigFromActiveTask();
       syncThreadActions();
       markNavSelection(taskId);
       // 先切线程并画出近段气泡；执行步骤靠全量 /history，须醒目提示且优先于详情请求
@@ -16620,6 +16817,7 @@
               updated_at: m.ts || 0,
               plan_mode: !!(m.meta && m.meta.plan_mode),
               plan_role: (m.meta && m.meta.plan_mode) ? "orchestrator" : "",
+              meta: m.meta ? { ...m.meta } : {},
             };
             taskCache.push(cached);
           } else {
@@ -16643,6 +16841,10 @@
               cached.plan_allow_session_worker = true;
               cached.mode = "plan_session_continue";
             }
+            if (m.meta) cached.meta = { ...(cached.meta || {}), ...m.meta };
+          }
+          if (m.meta) {
+            rememberTaskExecConfig(m.task_id, execConfigFromMeta(m.meta));
           }
           openThread(m.task_id, goal, taskStatusFromMessage(m) || "pending");
           refreshHome().catch(() => {});
@@ -21561,6 +21763,42 @@
             const tid = t.task_id;
             const allowResume = !!(tid && resumeUnlockedTasks.has(tid));
             const graph = (tid && planGraphByTask.get(tid)) || t.plan_graph;
+            const mergePrev = (row) => {
+              if (!prev) {
+                // 冷列表无本地 prev：把 exec_config.runtime 提进 meta，避免多轮剥 task_id
+                const cold = { ...row };
+                if (row.exec_config) {
+                  cold.exec_config = row.exec_config;
+                  const rt = String(row.exec_config.runtime || "");
+                  if (rt || row.exec_config.cursor_agent) {
+                    cold.meta = { ...(row.meta || {}) };
+                    if (rt) cold.meta.runtime = rt;
+                    if ("cursor_agent" in row.exec_config) {
+                      cold.meta.cursor_agent = !!row.exec_config.cursor_agent;
+                    }
+                  }
+                }
+                return cold;
+              }
+              const out = { ...row };
+              // 列表摘要无完整 meta：保留详情已拉过的执行配置等
+              if (prev.meta && !row.meta) out.meta = prev.meta;
+              else if (prev.meta && row.meta) out.meta = { ...prev.meta, ...row.meta };
+              if (row.exec_config) {
+                out.exec_config = row.exec_config;
+                const rt = String(row.exec_config.runtime || "");
+                if (rt || row.exec_config.cursor_agent) {
+                  out.meta = { ...(out.meta || {}) };
+                  if (rt) out.meta.runtime = rt;
+                  if ("cursor_agent" in row.exec_config) {
+                    out.meta.cursor_agent = !!row.exec_config.cursor_agent;
+                  }
+                }
+              } else if (prev.exec_config) {
+                out.exec_config = prev.exec_config;
+              }
+              return out;
+            };
             // 仅纠正误粘 completed；failed/cancelled 后下游常仍 pending，勿被滞后 running 盖回
             const planStillOpen =
               !!(t.plan_mode || t.plan_role === "orchestrator") &&
@@ -21572,22 +21810,23 @@
               (t.status === "running" || t.status === "pending" || t.status === "waiting")
             ) {
               unlockTaskResume(tid);
-              return t;
+              return mergePrev(t);
             }
             if (
               prev &&
               prev.status &&
               !canReplaceTaskStatus(prev.status, t.status || "", { allowResume })
             ) {
-              return { ...t, status: prev.status };
+              return mergePrev({ ...t, status: prev.status });
             }
             if (allowResume && tid && t.status && !isTerminalTaskStatus(t.status)) {
               // 续跑中保持解锁，直到再入终态
             } else if (tid && t.status && isTerminalTaskStatus(t.status)) {
               lockTaskResume(tid);
             }
-            return t;
+            return mergePrev(t);
           });
+          if (view === "thread" && activeTaskId) syncExecConfigFromActiveTask();
         } catch (_) {
           /* 列表仍可用消息推导 */
         }

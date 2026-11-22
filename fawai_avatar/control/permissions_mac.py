@@ -330,13 +330,24 @@ def ensure_startup_permissions(
 
     同一进程默认只执行一次（``force=True`` 可再请求）。
     当 FAWAI_READ_ROOTS 默认含 ``/`` 时，会引导「完全磁盘访问」。
+
+    ``FAWAI_SKIP_STARTUP_PERMISSIONS=1``：只读状态、不弹窗（部分环境下
+    ``AXIsProcessTrustedWithOptions`` 会 SIGSEGV，跳过以免拖垮网关）。
     """
     global _startup_done, _allow_runtime_dialogs
+
+    import os
 
     from fawai_avatar.config import RuntimeConfig
 
     cfg = RuntimeConfig.from_env()
     roots = tuple(cfg.read_roots)
+    skip_prompts = (os.environ.get("FAWAI_SKIP_STARTUP_PERMISSIONS") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
     if not is_macos():
         _startup_done = True
@@ -362,23 +373,24 @@ def ensure_startup_permissions(
     prompted = False
     clear_permission_cache()
 
-    if accessibility and not accessibility_trusted():
-        prompt_accessibility(force_dialog=True)
-        prompted = True
-        clear_permission_cache()
+    if not skip_prompts:
+        if accessibility and not accessibility_trusted():
+            prompt_accessibility(force_dialog=True)
+            prompted = True
+            clear_permission_cache()
 
-    if screen_recording and not screen_recording_granted():
-        prompt_screen_recording(force_dialog=True)
-        prompted = True
-        clear_permission_cache()
+        if screen_recording and not screen_recording_granted():
+            prompt_screen_recording(force_dialog=True)
+            prompted = True
+            clear_permission_cache()
 
-    want_fda = full_disk_access and any(
-        str(r) in {"/", "/System", "/Volumes"} or str(r).startswith("/")
-        for r in roots
-    )
-    if want_fda and not full_disk_access_likely():
-        prompt_full_disk_access(force_dialog=True)
-        prompted = True
+        want_fda = full_disk_access and any(
+            str(r) in {"/", "/System", "/Volumes"} or str(r).startswith("/")
+            for r in roots
+        )
+        if want_fda and not full_disk_access_likely():
+            prompt_full_disk_access(force_dialog=True)
+            prompted = True
 
     _startup_done = True
     # 启动已引导过：任务内不再弹自定义对话框（仍可读状态拒绝动作）

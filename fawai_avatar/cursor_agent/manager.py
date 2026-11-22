@@ -41,15 +41,17 @@ def diagnose() -> dict[str, Any]:
     elif snap.get("login_pending"):
         status = "logging_in"
         detail = "正在登录 Cursor…"
-    elif not snap.get("node_available"):
-        status = "no_node"
-        detail = (
-            "未找到 Node.js ≥22（浏览器登录依赖 @cursor/sdk；"
-            "可安装 nvm install 22 或设置环境变量 FAWAI_CURSOR_NODE）"
-        )
     elif not has_auth:
-        status = "no_auth"
-        detail = "未登录 Cursor（侧栏 Cursor Agent → 登录）"
+        # 已有 API Key 时 Agent.create / 刷模型不依赖 Node；Node 仅浏览器登录需要
+        if not snap.get("node_available"):
+            status = "no_node"
+            detail = (
+                "未登录且未找到 Node.js ≥22（浏览器登录依赖 @cursor/sdk；"
+                "可安装 nvm install 22、设置 FAWAI_CURSOR_NODE，或配置 CURSOR_API_KEY）"
+            )
+        else:
+            status = "no_auth"
+            detail = "未登录 Cursor（侧栏 Cursor Agent → 登录）"
     elif not enabled:
         status = "disabled"
         detail = "已禁用"
